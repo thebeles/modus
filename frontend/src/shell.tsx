@@ -100,7 +100,7 @@ function Layout() {
           <span><strong>{user.name}</strong><small>{label(user.role)}</small></span><ChevronDown size={15} /></button>
       </div></>;
   }
-  return <div className="app-shell">
+  return <div className={user.role === 'EMPLOYEE' && location.pathname === '/' ? 'app-shell home-shell' : 'app-shell'}>
     <a href="#content" className="skip">К содержанию</a>
     <aside className="sidebar">{sideContent()}</aside>
     {mobile && <Modal title="Навигация" close={() => setMobile(false)}><div className="mobile-nav">{sideContent()}</div></Modal>}

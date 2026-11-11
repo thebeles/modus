@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDownRight, ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
+import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
   Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -26,7 +26,7 @@ function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow
       <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} />}</small><strong>{item.title}</strong>
     </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td>{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
       <td className="date-cell">{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
-      <td><Link className="icon-button row-arrow" to={to} aria-label={`Открыть ${item.number}`}><ChevronRight size={17} /></Link></td></tr>;
+      <td><Link className="icon-button row-arrow" to={to} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -36,27 +36,32 @@ export function Home() {
   const waiting = useQuery({ queryKey: ['appeals', 'waiting'], queryFn: () => api<Page<AppealRow>>('/appeals?own=true&status=WAITING_AUTHOR&limit=3') });
   const changes = useQuery({ queryKey: ['changes', 'home'], queryFn: () => api<Page<Change>>('/publications?limit=2') });
   return <div className="home-page">
-    <section className="home-hero"><div className="hero-grid" aria-hidden="true" /><div className="orbit-art" aria-hidden="true"><i /><i /><i /><i /><b /><b /><b /></div>
-      <div className="hero-content"><span className="hero-kicker"><span /> ОБРАТНАЯ СВЯЗЬ</span><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p>
-        <h1>Сделаем работу<br />удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
+    <section className="home-hero">
+      <svg className="hero-waves" viewBox="0 0 900 250" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <path d="M0 250C320 224 305 119 476 94C647 69 746 192 900 172V251H0Z" />
+        <path d="M270 250C420 247 481 136 654 51C753 2 824 2 900 32V251H270Z" />
+        <path d="M510 250C635 179 767 125 900 151V251H510Z" />
+      </svg>
+      <div className="hero-content"><div className="hero-meta"><span className="hero-kicker"><span />ОБРАТНАЯ СВЯЗЬ</span><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p></div>
+        <h1>Сделаем работу удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
         <Link className="button hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
       </div></section>
-    <section className="home-start"><div className="standalone-head"><h2>С чего начнём?</h2></div>
+    <section className="home-start"><h2>С чего начнём?</h2>
       <div className="kind-grid">{kinds.map(({ code, name, description, icon: Icon, tone }) => <Link key={code} className="kind-card" to={`/appeals/new?type=${code}`}>
-        <span className={`kind-icon ${tone}`}><Icon size={22} strokeWidth={1.9} /></span><ArrowDownRight size={18} className="kind-arrow" />
-        <strong>{name}</strong><p>{description}</p></Link>)}</div>
+        <span className={`kind-icon ${tone}`}><Icon size={27} strokeWidth={1.75} aria-hidden="true" /></span>
+        <div><strong>{name}</strong><p>{description}</p></div><ArrowRight size={21} className="kind-arrow" aria-hidden="true" /></Link>)}</div>
     </section>
     <ErrorBox error={waiting.error} retry={() => waiting.refetch()} />
     {waiting.data?.items.length ? <Section title="Требует вашего ответа" icon={<MessageCircle size={18} />} className="attention-section">
       {waiting.data.items.map(item => <Link key={item.id} className="inline-reference" to={`/appeals/${item.id}`}><small>{item.number}</small>{item.title}<ArrowRight size={16} /></Link>)}
     </Section> : null}
     <div className="home-columns">
-      <Section title="Мои последние обращения" icon={<Inbox size={19} />} className="recent-section"
+      <Section title="Мои последние обращения" icon={<Inbox size={25} />} className="recent-section"
         action={<Link className="text-button" to="/my/appeals">Все обращения <ArrowRight size={15} /></Link>}>
         {latest.isPending && <Loading />}<ErrorBox error={latest.error} retry={() => latest.refetch()} />
         {latest.data && (latest.data.items.length ? <AppealTable rows={latest.data.items} compact /> : <Empty title="Обращений пока нет"><Link to="/appeals/new">Создать первое обращение</Link></Empty>)}
       </Section>
-      <Section title="Что улучшилось" icon={<BookOpen size={19} />} className="home-library">
+      <Section title="Что улучшилось" icon={<BookOpen size={25} />} className="home-library">
         {changes.isPending && <Loading />}<ErrorBox error={changes.error} retry={() => changes.refetch()} />
         {changes.data && (changes.data.items.length ? changes.data.items.map(item => <article className="mini-change" key={item.id}>
           <div className="mini-change-cover"><Layers3 size={26} /><span>БИБЛИОТЕКА ИЗМЕНЕНИЙ</span></div>
