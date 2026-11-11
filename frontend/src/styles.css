@@ -24,7 +24,9 @@
   --primary: #a7b9fa;
   --primary-hover: #cad6ff;
   --primary-fill: var(--primary);
-  --focus: #b9c8ff;
+  --focus: #8a96af;
+  --hover: #373e50;
+  --scroll-thumb: #545c6d;
   --line: #3a4154;
   --control-line: #555f77;
   --surface: var(--panel);
@@ -35,15 +37,15 @@
   --control-radius: 11px;
   --shadow: 0 6px 16px #0003;
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
 body { margin: 0; min-width: 320px; }
 button, input, textarea, select { font: inherit; }
 button, summary { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .58; }
 a { color: inherit; text-decoration: none; }
 a:hover { text-decoration: none; }
-button, a, input, textarea, select { outline-offset: 3px; }
-:focus-visible { outline: 2px solid var(--focus); }
+button, a, input, textarea, select { outline-offset: 2px; }
+:focus-visible { outline: 1px solid var(--focus); }
 h1, h2, h3, strong { overflow-wrap: anywhere; }
 h1, h2, h3, .brand, .metric strong { font-family: var(--font-ui); }
 h1, h2, h3, p, dl, dd { margin: 0; }
@@ -103,7 +105,8 @@ svg { flex-shrink: 0; }
   font-size: clamp(11px, .8vw, 13px);
 }
 .nav-list a svg, .nav-help svg { width: 17px; height: 17px; color: var(--icon); }
-.nav-list a.active, .nav-list a:hover, .nav-help:hover { background: var(--selected); color: var(--selected-ink); }
+.nav-list a.active { background: var(--selected); color: var(--selected-ink); }
+.nav-list a:hover, .nav-help:hover { background: var(--hover); color: var(--ink); }
 .nav-list a.active { font-weight: 700; }
 .nav-list a.active svg { color: var(--accent); }
 .nav-count { margin-left: auto; text-align: center; font-weight: 700; min-width: 22px; padding: 3px; border-radius: 50%; background: #362831; color: #e1a9b7; font-size: 11px; }
@@ -124,12 +127,11 @@ svg { flex-shrink: 0; }
 .back-link, .text-button { color: var(--accent); display: inline-flex; align-items: center; gap: 7px; font-weight: 650; border: 0; background: transparent; text-align: left; padding: 0; font-size: 12px; }
 .back-link { margin-bottom: 13px; }
 .back-link:hover, .text-button:hover { color: var(--primary-hover); text-decoration: underline; text-underline-offset: 4px; }
-.button { min-height: 36px; padding: 6px 11px; border-radius: var(--control-radius); border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-size: 12px; line-height: 1.35; font-weight: 700; text-align: center; transition: background .16s, box-shadow .16s, transform .16s; }
-.button:active:not(:disabled) { transform: translateY(1px); }
+.button { min-height: 36px; padding: 6px 11px; border-radius: var(--control-radius); border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-size: 12px; line-height: 1.35; font-weight: 700; text-align: center; transition: background-color .16s, border-color .16s; }
 .button.primary { background: var(--primary-fill); color: var(--action-ink); }
 .button.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .button.secondary { background: var(--surface); border-color: var(--control-line); color: var(--selected-ink); }
-.button.secondary:hover:not(:disabled), .button.subtle:hover:not(:disabled), .icon-button:hover { background: var(--selected); }
+.button.secondary:hover:not(:disabled), .button.subtle:hover:not(:disabled), .icon-button:hover { background: var(--hover); }
 .button.subtle { background: var(--soft); color: var(--icon); }
 .icon-button { border: 0; padding: 0; background: transparent; color: var(--icon); border-radius: 9px; width: 34px; height: 34px; display: inline-grid; place-items: center; }
 .surface { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
@@ -177,12 +179,12 @@ svg { flex-shrink: 0; }
 .filter-bar { display: flex; gap: 9px; align-items: end; flex-wrap: wrap; padding: 11px; margin-bottom: 12px; }
 .filter-bar > select { width: auto; max-width: 240px; min-width: 0; }
 .search-field { display: flex; align-items: center; gap: 8px; color: var(--icon); flex: 1 1 220px; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--control-radius); padding: 0 11px; background: var(--surface); }
-.search-field:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.search-field:focus-within { border-color: var(--focus); }
 .search-field input { border: 0; padding-left: 0; outline: none; background: transparent; }
 .list-meta { padding: 13px 18px; color: var(--muted); font-size: 12px; }
 .tab-strip { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; margin: 0 0 15px; }
 .tab-strip button, .tab-strip a { padding: 7px 10px; border: 0; background: var(--soft); color: var(--muted); font-weight: 650; font-size: 12px; border-radius: 9px; }
-.tab-strip button:hover, .tab-strip a:hover { background: var(--selected); }
+.tab-strip button:hover, .tab-strip a:hover { background: var(--hover); }
 .tab-strip button[aria-pressed=true], .tab-strip button[data-state=active], .tab-strip .active { color: var(--selected-ink); background: var(--selected); box-shadow: inset 0 0 0 1px #566689; }
 .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 7px; padding: 13px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .pagination > span { margin-right: 6px; }
@@ -416,7 +418,7 @@ a.metric:hover { border-color: #5c6785; }
   overflow-wrap: anywhere;
 }
 .demo-options button svg { flex: none; color: var(--accent); }
-.demo-options button:hover:not(:disabled) { background: var(--selected); }
+.demo-options button:hover:not(:disabled) { background: var(--hover); }
 
 @media (max-width: 500px) {
   .login-main { padding-inline: 12px; }
@@ -507,7 +509,7 @@ a.metric:hover { border-color: #5c6785; }
   color: var(--ink);
 }
 .app-shell .mobile-menu:hover, .sidebar-account .sidebar-logout:hover,
-.dialog-content .dialog-header .icon-button:hover { background: var(--selected); }
+.dialog-content .dialog-header .icon-button:hover { background: var(--hover); }
 :is(.app-shell, .dialog-content) .brand strong { font-weight: 750; letter-spacing: -.035em; }
 :is(.app-shell, .dialog-content) .nav-label { color: var(--muted); font-size: 10px; letter-spacing: .075em; }
 :is(.app-shell, .dialog-content) :is(.nav-list a, .nav-help) { gap: 10px; color: var(--muted); font-size: 12px; }
@@ -535,7 +537,7 @@ a.metric:hover { border-color: #5c6785; }
 .dialog-content .sidebar-create .button.primary:hover:not(:disabled),
 :is(.app-shell, .dialog-content) .button.secondary:hover:not(:disabled) {
   border-color: var(--control-line);
-  background: var(--selected);
+  background: var(--hover);
 }
 
 .home-page { display: grid; gap: 16px; }
@@ -582,7 +584,7 @@ a.metric:hover { border-color: #5c6785; }
 .kind-card strong { display: block; font-size: clamp(12px, .86vw, 15px); letter-spacing: -.015em; }
 .kind-card p { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .kind-arrow { box-sizing: content-box; width: 14px; height: 14px; padding: 6px; border-radius: 50%; background: var(--soft); color: var(--icon); }
-.kind-card:hover .kind-arrow { background: var(--selected); color: var(--accent); }
+.kind-card:hover .kind-arrow { background: var(--hover); color: var(--accent); }
 
 .home-columns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(217px, 1fr); gap: clamp(10px, 1vw, 18px); }
 .home-page .surface { border-radius: var(--radius); }
@@ -607,7 +609,7 @@ a.metric:hover { border-color: #5c6785; }
   color: var(--ink);
   font-size: 11px;
 }
-.home-page .text-button:hover { background: var(--selected); text-decoration: none; }
+.home-page .text-button:hover { background: var(--hover); text-decoration: none; }
 .home-page .text-button svg { width: 14px; height: 14px; }
 .home-page .data-table th { background: var(--soft); color: var(--icon); padding: 7px 8px; }
 .home-page .data-table td { padding: 6px 8px; }
@@ -682,8 +684,8 @@ a.metric:hover { border-color: #5c6785; }
   color: var(--action-ink);
 }
 :root .button.primary:hover:not(:disabled) {
-  border-color: #edf1ff;
-  background: #edf1ff;
+  border-color: #d1dcf7;
+  background: #d1dcf7;
 }
 :root .sidebar-create .button.primary {
   border-color: var(--control-line);
@@ -692,7 +694,7 @@ a.metric:hover { border-color: #5c6785; }
 }
 :root .sidebar-create .button.primary:hover:not(:disabled) {
   border-color: var(--control-line);
-  background: var(--selected);
+  background: var(--hover);
 }
 
 :root .app-shell .surface { border-color: var(--line); }
@@ -714,12 +716,12 @@ a.metric:hover { border-color: #5c6785; }
   transition: background-color .16s ease, border-color .16s ease;
 }
 :root .app-shell :is(a.kind-card, a.metric):is(:hover, :focus-visible) {
-  background-color: #30384c;
-  border-color: #69799f;
+  background-color: #2c3242;
+  border-color: var(--control-line);
 }
 :root .kind-card:is(:hover, :focus-visible) .kind-arrow {
-  background: var(--selected);
-  color: var(--accent);
+  background: var(--hover);
+  color: var(--ink);
 }
 :root :is(.back-link, .text-button):hover { color: var(--accent); }
 
@@ -731,5 +733,136 @@ a.metric:hover { border-color: #5c6785; }
   background: var(--soft);
   color: var(--muted);
 }
+
+:is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus-visible {
+  outline-offset: -1px;
+}
+.search-field input:focus-visible { outline: none; }
+.search-field:has(input:focus-visible) { outline: 1px solid var(--focus); outline-offset: -1px; }
+
+:root select:not([multiple]):not([size]) {
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='m3 5.5 5 5 5-5' stroke='%23edf0f8' stroke-width='1.7'/%3E%3C/svg%3E");
+  appearance: none;
+  padding-inline: 12px 34px;
+  background-image: var(--select-chevron);
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 14px;
+}
+
+@supports (appearance: base-select) and selector(::picker(select)) {
+  :root select:not([multiple]):not([size]),
+  select:not([multiple]):not([size])::picker(select) {
+    appearance: base-select;
+  }
+  :root select:not([multiple]):not([size]) {
+    background-image: none;
+    padding-inline-end: 12px;
+    align-items: center;
+    gap: 8px;
+  }
+  select::picker-icon {
+    content: "";
+    align-self: center;
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    margin-inline-start: auto;
+    background-color: currentColor;
+    mask: var(--select-chevron) center / contain no-repeat;
+    rotate: 0deg;
+    transition: rotate .32s ease-in-out;
+  }
+  select:open::picker-icon { rotate: 180deg; }
+  @media (prefers-reduced-motion: reduce) {
+    select::picker-icon { transition: none; }
+  }
+  select::picker(select) {
+    margin-block: 4px;
+    max-block-size: min(16rem, 50dvh);
+    max-inline-size: calc(100vw - 16px);
+    padding: 4px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--control-radius);
+    background: var(--input);
+    color: var(--ink);
+    box-shadow: var(--shadow);
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+  select:not([multiple]):not([size]) option {
+    min-block-size: 32px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    gap: 8px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  select:not([multiple]):not([size]) option:checked { background: var(--soft); }
+  select:not([multiple]):not([size]) option:is(:hover, :focus-visible) { background: var(--hover); }
+  option::checkmark { color: var(--muted); }
+}
+
+@media (forced-colors: active) {
+  :root select:not([multiple]):not([size]) { appearance: auto; background-image: none; }
+}
+
+.date-picker { position: relative; min-width: 0; }
+.date-picker-trigger, .date-picker-panel { display: none; }
+
+@supports selector(:popover-open) {
+  .date-picker input { padding-inline-end: 38px; }
+  .date-picker input::-webkit-calendar-picker-indicator { display: none; }
+  .date-picker .date-picker-trigger {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 7px;
+    margin-block: auto;
+    display: inline-grid;
+    width: 26px;
+    height: 26px;
+  }
+}
+
+.date-picker-panel:popover-open {
+  display: grid;
+  gap: 8px;
+  width: min(288px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--input);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  animation: date-picker-enter .18s ease-out;
+}
+@supports (position-area: block-end) {
+  .date-picker-panel:popover-open {
+    inset: auto;
+    margin: 6px 0;
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+@keyframes date-picker-enter { from { opacity: 0; } }
+
+.date-picker-month { display: flex; align-items: center; justify-content: space-between; }
+.date-picker-month strong { text-transform: capitalize; }
+.date-picker-month .icon-button { width: 30px; height: 30px; }
+.date-picker-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; text-align: center; }
+.date-picker-grid span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.date-picker-grid button { min-height: 32px; border: 1px solid transparent; border-radius: 6px; font-weight: 500; }
+.date-picker-grid button[data-outside=true] { color: var(--muted); }
+.date-picker-grid button:hover:not(:disabled) { background: var(--hover); }
+.date-picker-grid button[aria-current=date] { border-color: var(--control-line); }
+.date-picker-grid button[aria-pressed=true] { background: var(--selected); color: var(--selected-ink); }
+.date-picker-panel button:disabled { cursor: default; opacity: .45; }
+.date-picker-time { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 6px; }
+.date-picker-time select { width: 100%; }
+.date-picker-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.date-picker-actions .button { min-height: 30px; }
 
 :root .recharts-tooltip-cursor { fill: var(--soft); }

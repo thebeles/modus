@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertCircle, ArrowLeft, ArrowRight, Check, CircleDashed, FileText, Inbox, X } from 'lucide-react';
-import { cloneElement, useId, type FormEvent, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, useEffect, useId, useRef, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { label } from '@kontur/api/contracts';
 import { ApiError, type Entity, type EventRow } from './api';
@@ -80,8 +80,18 @@ export function Pagination({ total, limit, page, onChange }: { total: number; li
 }
 
 export function Modal({ title, description, close, children }: { title: string; description?: string; close: () => void; children: ReactNode }) {
+  const content = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || !(event.target instanceof Node) || !content.current?.contains(event.target)) return;
+      // Let the browser dismiss the topmost picker before Radix handles Escape for the modal.
+      if (content.current.querySelector(':is(select:open, .date-picker-panel:popover-open)')) event.stopPropagation();
+    }
+    window.addEventListener('keydown', handleEscape, true);
+    return () => window.removeEventListener('keydown', handleEscape, true);
+  }, []);
   return <Dialog.Root open onOpenChange={open => { if (!open) close(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" />
-    <Dialog.Content className="dialog-content" aria-describedby={description ? undefined : 'dialog-description'}>
+    <Dialog.Content ref={content} className="dialog-content" aria-describedby={description ? undefined : 'dialog-description'}>
       <div className="dialog-header"><Dialog.Title>{title}</Dialog.Title><Dialog.Close asChild><button className="icon-button" aria-label="Закрыть"><X size={19} /></button></Dialog.Close></div>
       <Dialog.Description id="dialog-description" className={description ? 'subtle-text' : 'sr-only'}>{description ?? title}</Dialog.Description>{children}
     </Dialog.Content></Dialog.Portal></Dialog.Root>;

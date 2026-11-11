@@ -1,3 +1,4 @@
+import { DatePicker } from './date-picker';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, BookOpen, CheckCircle2, Clock3, Download, GitPullRequest, Inbox, Layers3, Search, TriangleAlert } from 'lucide-react';
@@ -57,8 +58,8 @@ export function RadarPage() {
     <div className="surface filter-bar">
       <Field label="Подразделение"><select value={filters.departmentId} onChange={event => updateFilters({ ...filters, departmentId: event.target.value })}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все доступные" /></select></Field>
       <Field label="Процесс"><select value={filters.processId} onChange={event => updateFilters({ ...filters, processId: event.target.value })}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select></Field>
-      <Field label="Создано с"><input type="date" value={filters.from} max={filters.to || undefined} onChange={event => updateFilters({ ...filters, from: event.target.value })} /></Field>
-      <Field label="Создано по"><input type="date" value={filters.to} min={filters.from || undefined} onChange={event => updateFilters({ ...filters, to: event.target.value })} /></Field>
+      <Field label="Создано с"><DatePicker type="date" value={filters.from} max={filters.to || undefined} onValueChange={value => updateFilters({ ...filters, from: value })} /></Field>
+      <Field label="Создано по"><DatePicker type="date" value={filters.to} min={filters.from || undefined} onValueChange={value => updateFilters({ ...filters, to: value })} /></Field>
       {Object.values(filters).some(Boolean) && <button type="button" className="button subtle" onClick={() => updateFilters({ processId: '', departmentId: '', from: '', to: '' })}>Сбросить</button>}
     </div>
     <ErrorBox error={data.error || catalog.error} retry={() => { void data.refetch(); void catalog.refetch(); }} />{data.isPending && <Loading />}

@@ -1,3 +1,4 @@
+import { DatePicker } from './date-picker';
 import * as Tabs from '@radix-ui/react-tabs';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullRequest, Layers3, Plus, Search, Sparkles } from 'lucide-react';
@@ -283,7 +284,7 @@ export function ImprovementDetail() {
     path: path + '/actions' + (task ? '/' + task.id : ''), method: task ? 'PATCH' : 'POST',
     fields: <><Field label="Название"><input name="title" defaultValue={task?.title} required minLength={3} /></Field>
       <Field label="Исполнитель"><select name="ownerId" defaultValue={task?.owner.id ?? record.owner?.id ?? ''}><EntityOptions rows={record.people} blank="Владелец инициативы" /></select></Field>
-      <Field label="Срок (дата в UTC)"><input name="dueAt" type="date" defaultValue={task?.dueAt?.slice(0, 10)} /></Field>
+      <Field label="Срок (дата в UTC)"><DatePicker name="dueAt" type="date" defaultValue={task?.dueAt?.slice(0, 10)} /></Field>
       <label className="checkbox-line"><input name="blocking" type="checkbox" defaultChecked={task?.blocking ?? true} /> Задача блокирует завершение</label></>,
     body: data => ({ title: field(data, 'title'), ownerId: optional(data, 'ownerId'), dueAt: timestamp(data, 'dueAt') ?? null, blocking: data.has('blocking') }),
   });
@@ -336,7 +337,7 @@ export function ImprovementDetail() {
         <Tabs.Content value="result" className="inner-stack">
           <Section title="Измерения" icon={<Activity size={18} />} action={record.canMeasure && <button className="button secondary" onClick={() => edit.open({
             title: 'Добавить измерение', path: path + '/measurements', fields: <><Field label="Этап"><select name="phase"><Options items={record.implementedAt ? ['BEFORE', 'AFTER'] : ['BEFORE']} /></select></Field>
-              <div className="two-fields"><Field label="Начало периода (UTC)"><input name="periodStart" type="datetime-local" step={1} required /></Field><Field label="Конец периода (UTC)"><input name="periodEnd" type="datetime-local" step={1} required /></Field></div>
+              <div className="two-fields"><Field label="Начало периода (UTC)"><DatePicker name="periodStart" type="datetime-local" step={1} required /></Field><Field label="Конец периода (UTC)"><DatePicker name="periodEnd" type="datetime-local" step={1} required /></Field></div>
               <div className="two-fields"><Field label="Значение"><input name="value" type="number" step="any" required={plan?.method !== 'QUALITATIVE'} /></Field>
                 <Field label="Размер выборки"><input name="sampleSize" type="number" min={1} /></Field></div><Field label="Вид источника"><select name="sourceType" defaultValue="OTHER">
                 {Object.entries(sourceTypes).map(([code, title]) => <option key={code} value={code}>{title}</option>)}

@@ -1,3 +1,4 @@
+import { DatePicker } from './date-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Plus, Settings, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
@@ -124,8 +125,8 @@ function AdminResource({ resource }: { resource: Resource }) {
           {select('Процесс', 'processId', processes.data, row?.processId)}{select('Очередь', 'queueId', queues.data?.filter(item => item.visibility === 'NORMAL_INTERNAL'), row?.queueId, true)}
           {select('Ответственный', 'assigneeId', staff, row?.assigneeId)}
           <Field label="Приоритет правила" hint="Меньшее число имеет преимущество. При совпадении сработает резерв."><input name="rank" type="number" min={0} max={1000} defaultValue={row?.rank ?? 100} required /></Field>
-          <div className="two-fields"><Field label="Действует с (UTC)"><input name="effectiveFrom" type="date" defaultValue={row?.effectiveFrom?.slice(0, 10)} /></Field>
-            <Field label="Действует до (UTC)"><input name="effectiveTo" type="date" defaultValue={row?.effectiveTo?.slice(0, 10)} /></Field></div>{active}
+          <div className="two-fields"><Field label="Действует с (UTC)"><DatePicker name="effectiveFrom" type="date" defaultValue={row?.effectiveFrom?.slice(0, 10)} /></Field>
+            <Field label="Действует до (UTC)"><DatePicker name="effectiveTo" type="date" defaultValue={row?.effectiveTo?.slice(0, 10)} /></Field></div>{active}
         </>}
         {resource === 'sla-policies' && <>
           <Field label="Приоритет"><select name="priority" defaultValue={row?.priority ?? 'MEDIUM'}><Options items={priorities} /></select></Field>

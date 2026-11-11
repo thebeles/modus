@@ -1,3 +1,4 @@
+import { DatePicker } from './date-picker';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
@@ -99,10 +100,10 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
         <select aria-label="Исполнитель" value={filter.assigneeId ?? ''} onChange={event => apply('assigneeId', event.target.value)}>
           <EntityOptions rows={assignees.data ?? []} blank="Все исполнители" />
         </select>
-        <Field label="Срок с (UTC)"><input type="datetime-local" value={filter.dueFrom?.slice(0, 16) ?? ''}
-          onChange={event => apply('dueFrom', event.target.value && new Date(event.target.value + 'Z').toISOString())} /></Field>
-        <Field label="Срок до (UTC)"><input type="datetime-local" value={filter.dueTo?.slice(0, 16) ?? ''}
-          onChange={event => apply('dueTo', event.target.value && new Date(event.target.value + 'Z').toISOString())} /></Field>
+        <Field label="Срок с (UTC)"><DatePicker type="datetime-local" value={filter.dueFrom?.slice(0, 16) ?? ''}
+          onValueChange={value => apply('dueFrom', value && new Date(value + 'Z').toISOString())} /></Field>
+        <Field label="Срок до (UTC)"><DatePicker type="datetime-local" value={filter.dueTo?.slice(0, 16) ?? ''}
+          onValueChange={value => apply('dueTo', value && new Date(value + 'Z').toISOString())} /></Field>
       </>}
       <select aria-label="Сортировка" value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select>
     </div>
