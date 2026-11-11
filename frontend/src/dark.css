@@ -18,14 +18,14 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --canvas: #1c1d20;
-  --panel: #26272b;
+  --canvas: #191a1e;
+  --panel: #282a30;
   --raised: #303136;
   --input: #222327;
   --nav-surface: #222327;
-  --hero-edge: #33343c;
-  --chart-accent: #b0b3d3;
-  --action-fill: #dcdfe5;
+  --hero-edge: #373b49;
+  --chart-accent: #b4bce5;
+  --action-fill: #e0e3ec;
   --action-ink: #23252b;
   background: var(--canvas);
   color: var(--ink);
@@ -35,23 +35,23 @@
   --ink: #ededf0;
   --muted: #b3b5bf;
   --icon: #c1c3cc;
-  --accent: #b9bddc;
+  --accent: #c1c7ed;
   --primary: #a9aecf;
   --primary-hover: #c3c7e0;
   --primary-fill: var(--primary);
-  --focus: #b9bddc;
+  --focus: #c1c7ed;
   --line: #383a40;
   --control-line: #45474f;
   --surface: var(--panel);
   --soft: var(--raised);
-  --selected: #373a47;
+  --selected: #393e50;
   --selected-ink: #e1e3ef;
   --radius: 22px;
   --control-radius: 11px;
   --shadow: 0 6px 16px #0003;
 }
 
-[data-theme="dark"] :is(.app-shell, .login-main) { background: linear-gradient(125deg, #232428, var(--canvas) 48%, #202125); }
+[data-theme="dark"] :is(.app-shell, .login-main) { background: linear-gradient(125deg, #222329, var(--canvas) 48%, #1d1f25); }
 [data-theme="dark"] .login-main::before, [data-theme="dark"] .login-main::after { background: #292a30; }
 [data-theme="dark"] .sidebar { background: var(--nav-surface); }
 [data-theme="dark"] .button.primary {
@@ -89,7 +89,7 @@
 }
 [data-theme="dark"] .home-hero { background-image: radial-gradient(ellipse at 100% 0%, var(--hero-edge), transparent 72%); }
 [data-theme="dark"] :is(.kind-card, .metric) {
-  background-image: radial-gradient(ellipse at 100% 0%, var(--card-tint, #333541), transparent 70%);
+  background-image: radial-gradient(ellipse at 100% 0%, var(--card-tint, #373b49), transparent 70%);
 }
 [data-theme="dark"] :is(.kind-card:has(.peach), .metric-grid:not(.three) > .metric:nth-child(2)) { --card-tint: #393239; }
 [data-theme="dark"] .kind-card:has(.lavender) { --card-tint: #35323d; }
