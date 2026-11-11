@@ -8,7 +8,7 @@ import { improvementStatuses, label, outcomes, problemStatuses } from '@kontur/a
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
-  PageHeading, Pagination, Section, Synthetic, TableRegion, Timeline, timestamp } from './ui';
+  PageHeading, Pagination, Section, TableRegion, Timeline, timestamp } from './ui';
 
 type Kind = 'problem' | 'improvement';
 const config = {
@@ -130,7 +130,7 @@ export function ProblemDetail() {
           <Field label="Владелец проблемы"><select name="ownerId" defaultValue={record.owner?.id ?? ''}><EntityOptions rows={record.people} blank="Текущий владелец" /></select></Field>
           {textBox('Симптомы', 'symptoms', true, record.symptoms)}{textBox('Гипотеза', 'hypothesis', false, record.hypothesis ?? '')}</>,
       })}>Редактировать</button>}>
-        <Synthetic show={record.isSynthetic} /><h3>Наблюдаемые симптомы</h3><p className="preserve">{record.symptoms}</p>
+        <h3>Наблюдаемые симптомы</h3><p className="preserve">{record.symptoms}</p>
         <h3>Рабочая гипотеза</h3><p className="preserve">{record.hypothesis ?? 'Гипотеза пока не сформулирована.'}</p>
         {record.conclusion && <><h3>Вывод</h3><p className="preserve">{record.conclusion}</p></>}
       </Section>
@@ -307,7 +307,7 @@ export function ImprovementDetail() {
             body: data => ({ title: field(data, 'title'), rationale: field(data, 'rationale'), goal: field(data, 'goal'), scope: field(data, 'scope'), ownerId: optional(data, 'ownerId'),
               processId: optional(data, 'processId') ?? null, risks: optional(data, 'risks') }),
           })}>Редактировать</button>}>
-            <Synthetic show={record.isSynthetic} /><h3>Что хотим изменить</h3><p className="preserve">{record.goal}</p>
+            <h3>Что хотим изменить</h3><p className="preserve">{record.goal}</p>
             <h3>Основание</h3><p className="preserve">{record.rationale}</p>{record.risks && <><h3>Риски</h3><p className="preserve">{record.risks}</p></>}
             {record.implementationNotes && <><h3>Что внедрили</h3><p className="preserve">{record.implementationNotes}</p><small>{date(record.implementedAt)}</small></>}
           </Section>
@@ -347,7 +347,7 @@ export function ImprovementDetail() {
               sourceType: field(data, 'sourceType'), evidenceIds: data.getAll('evidenceIds') }),
           })}><Plus size={16} />Измерение</button>}>
             {plan?.observations.length ? <div className="observations">{plan.observations.map(item => <article key={item.id}><small>{label(item.phase)}</small><strong>{item.value ?? '—'} {item.value != null && plan.unit}</strong>
-              <small>{sourceTypes[item.sourceType as keyof typeof sourceTypes] ?? sourceTypes.OTHER}</small><p>{item.source}</p><EvidenceLinks files={item.evidence} /><small>{date(item.periodStart)} — {date(item.periodEnd)}{item.sampleSize ? ` · N = ${item.sampleSize}` : ''}</small><Synthetic show={item.isSynthetic} /></article>)}</div> :
+              <small>{sourceTypes[item.sourceType as keyof typeof sourceTypes] ?? sourceTypes.OTHER}</small><p>{item.source}</p><EvidenceLinks files={item.evidence} /><small>{date(item.periodStart)} — {date(item.periodEnd)}{item.sampleSize ? ` · N = ${item.sampleSize}` : ''}</small></article>)}</div> :
               <Empty title="Измерений пока нет" />}
           </Section>
           <Section title="Проверка результата" icon={<CheckCircle2 size={18} />} action={record.canVerify && <button className="button primary" onClick={() => edit.open({
@@ -355,7 +355,7 @@ export function ImprovementDetail() {
               {textBox('Вывод', 'summary')}{textBox('Ограничения и доказательства', 'limitations')}<EvidencePicker onUploading={edit.setUploading} /></>,
             body: data => ({ outcome: field(data, 'outcome'), summary: field(data, 'summary'), limitations: field(data, 'limitations'), evidenceIds: data.getAll('evidenceIds') }),
           })}>Зафиксировать результат</button>}>
-            {record.verification ? <div className="inner-stack"><div className="inline-chips"><Chip value={record.verification.outcome} /><Synthetic show={record.verification.isSynthetic} /></div>
+            {record.verification ? <div className="inner-stack"><div className="inline-chips"><Chip value={record.verification.outcome} /></div>
               <p className="preserve">{record.verification.summary}</p><div><h3>Ограничения</h3><p className="preserve">{record.verification.limitations}</p></div><EvidenceLinks files={record.verification.evidence} />
               <small>{date(record.verification.verifiedAt)} · План v{record.verification.planVersion} · Наблюдений: {record.verification.measurementIds.length}</small></div> :
               <Empty title="Результат ещё не проверен">{plan?.observations.length ? 'Есть предварительные наблюдения.' : 'Добавьте наблюдения и передайте результат на проверку.'}</Empty>}
@@ -393,7 +393,7 @@ export function ImprovementDetail() {
       <Section title="Основания"><References items={record.sources} path="/appeals" />{record.problem && <References items={[record.problem]} path="/problems" />}</Section>
     </aside></div>{edit.modal}
     {publication && <Modal title={publication.title} close={() => setPublication(null)}>
-      <div className="inline-chips"><Synthetic show={publication.isSynthetic} /><span className="chip tone-muted">{publication.audienceId ? 'Подразделение' : 'Все сотрудники'}</span></div>
+      <div className="inline-chips"><span className="chip tone-muted">{publication.audienceId ? 'Подразделение' : 'Все сотрудники'}</span></div>
       <PublicationPreview item={publication} /><PublicationHistory key={publication.id} id={publication.id} version={publication.version} /><ErrorBox error={pub.error} />
       {publication.reviewNote && <div className="info-box">{publication.reviewNote}</div>}
       {record.canDraftPublication && publication.authorId === user.id && ['DRAFT', 'APPROVED'].includes(publication.state ?? '') &&

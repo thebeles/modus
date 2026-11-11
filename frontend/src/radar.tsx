@@ -9,7 +9,7 @@ import { feedbackChoices, label } from '@kontur/api/contracts';
 import { api, type AppealRow, type CaseRow, type Catalog, type Change, type Feedback, type LinkRow, type Page, queryString } from './api';
 import { LinkCards } from './appeals';
 import { useSession } from './session';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, optional, Options, PageHeading, Pagination, Section, Synthetic } from './ui';
+import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, optional, Options, PageHeading, Pagination, Section } from './ui';
 
 type Bucket = { id: string | null; name: string; count: number };
 type MetricGroup = { key: string; count: number };
@@ -138,7 +138,7 @@ export function Changes() {
     {rows.isPending && <Loading />}<ErrorBox error={rows.error} retry={() => rows.refetch()} />
     {rows.data && (rows.data.items.length ? <div className="change-grid">{rows.data.items.map(item => <article className="surface change-card" key={item.id}>
       <div className="publication-cover"><BookOpen size={22} /></div>
-      <div className="change-body"><div className="inline-chips"><Synthetic show={item.isSynthetic} /><small>{date(item.publishedAt)}</small></div>
+      <div className="change-body"><div className="inline-chips"><small>{date(item.publishedAt)}</small></div>
         <Link to={`/changes/${item.id}`}><h2>{item.title}</h2></Link><p>{item.change}</p><Link className="text-button" to={`/changes/${item.id}`}>Читать результат <ArrowRight size={15} /></Link></div>
     </article>)}</div> : <div className="surface"><Empty title="Публикации не найдены" /></div>)}
     {rows.data && <Pagination {...rows.data} onChange={setPage} />}
@@ -149,8 +149,7 @@ export function ChangeDetail() {
   const { id } = useParams();
   const query = useQuery({ queryKey: ['changes', id], queryFn: () => api<Change>(`/publications/${id}`) });
   const record = query.data;
-  return <><PageHeading title={record?.title ?? 'Публикация'} subtitle={record ? date(record.publishedAt) : undefined} back={{ to: '/changes', label: 'Библиотека изменений' }}
-    action={record && <Synthetic show={record.isSynthetic} />} />
+  return <><PageHeading title={record?.title ?? 'Публикация'} subtitle={record ? date(record.publishedAt) : undefined} back={{ to: '/changes', label: 'Библиотека изменений' }} />
     {query.isPending && <Loading />}<ErrorBox error={query.error} retry={() => query.refetch()} />
     {record && <div className="reading-column"><Section title="Что изменилось" icon={<Layers3 size={19} />}><p className="preserve">{record.change}</p></Section>
       <Section title="Какую задачу решали"><p className="preserve">{record.problem}</p></Section>

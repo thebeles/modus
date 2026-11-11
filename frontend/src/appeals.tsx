@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from '@kontur/api/contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, Synthetic, TableRegion, Timeline } from './ui';
+import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';
 
 const kinds = [
   { code: 'PROBLEM', name: 'Сообщить о проблеме', description: 'Расскажите, что мешает работе.', icon: TriangleAlert, tone: 'peach' },
@@ -62,7 +62,7 @@ export function Home() {
         {changes.isPending && <Loading />}<ErrorBox error={changes.error} retry={() => changes.refetch()} />
         {changes.data && (changes.data.items.length ? changes.data.items.map(item => <article className="mini-change" key={item.id}>
           <div className="publication-cover"><Layers3 size={22} /><span>БИБЛИОТЕКА ИЗМЕНЕНИЙ</span></div>
-          <div><Synthetic show={item.isSynthetic} /><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link><p>{item.change}</p>
+          <div><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link><p>{item.change}</p>
             <Link className="text-button" to={`/changes/${item.id}`}>Читать результат <ArrowRight size={14} /></Link></div></article>) : <Empty title="Публикаций пока нет" />)}
       </Section>
     </div>
@@ -434,7 +434,7 @@ export function AppealDetail() {
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     <div className="detail-grid"><div className="detail-main">
       <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
-        <div className="inline-chips"><Synthetic show={record.isSynthetic} /><Chip value={record.priority} dot={false} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
+        <div className="inline-chips"><Chip value={record.priority} dot={false} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
         <p className="preserve detail-text">{record.description}</p>
         {record.proposedSolution && <><h3>Предложенное решение</h3><p className="preserve">{record.proposedSolution}</p></>}
         {record.attachments.map(file => <a className="file-line" key={file.id} href={`/api/v1/attachments/${file.id}/download`}><Paperclip size={16} />{file.name}<small>{Math.max(1, Math.ceil(file.bytes / 1024))} КБ</small></a>)}

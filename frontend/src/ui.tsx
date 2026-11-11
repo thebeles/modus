@@ -20,10 +20,6 @@ export function Chip({ value, dot = true }: { value: string; dot?: boolean }) {
   return <span className={`chip tone-${tones[value] ?? 'muted'}`}>{dot && <span className="chip-dot" />}{label(value)}</span>;
 }
 
-export function Synthetic({ show }: { show: boolean }) {
-  return show ? <span className="chip tone-muted">Синтетические данные</span> : null;
-}
-
 export function ErrorBox({ error, retry }: { error: unknown; retry?: () => void }) {
   if (!error) return null;
   const message = error instanceof Error ? error.message : 'Не удалось загрузить данные.';
