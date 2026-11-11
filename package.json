@@ -2,48 +2,27 @@
   "name": "modus-kontur",
   "private": true,
   "packageManager": "pnpm@11.25.0",
-  "engines": { "node": ">=24" },
-  "scripts": {
-    "postinstall": "prisma generate",
-    "dev": "concurrently -k -n API,WEB,WORKER \"pnpm dev:api\" \"pnpm --filter @kontur/web dev\" \"pnpm worker\"",
-    "dev:api": "tsx watch apps/api/src/main.ts",
-    "worker": "tsx apps/worker/src/main.ts",
-    "build": "tsc -p tsconfig.server.json && pnpm --filter @kontur/web build",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit && pnpm --filter @kontur/web typecheck",
-    "lint": "eslint apps packages prisma tests",
-    "test": "tsx --test tests/domain.test.ts",
-    "test:integration": "tsx --test tests/integration.test.ts",
-    "test:e2e": "playwright test",
-    "db:migrate": "prisma migrate deploy",
-    "db:seed": "tsx prisma/seed.ts",
-    "db:admin": "tsx prisma/bootstrap-admin.ts"
+  "engines": {
+    "node": ">=24"
   },
-  "dependencies": {
-    "@nestjs/common": "^11.1.6",
-    "@nestjs/core": "^11.1.6",
-    "@nestjs/platform-express": "^11.1.6",
-    "@nestjs/swagger": "^11.2.0",
-    "@prisma/client": "6.19.3",
-    "bcryptjs": "^3.0.2",
-    "cookie-parser": "^1.4.7",
-    "dotenv": "^17.2.3",
-    "helmet": "^8.1.0",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2",
-    "zod": "^4.1.12"
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB,WORKER \"pnpm dev:api\" \"pnpm --filter @kontur/web dev\" \"pnpm worker\"",
+    "dev:api": "pnpm --filter @kontur/api dev",
+    "worker": "pnpm --filter @kontur/api worker",
+    "build": "pnpm --filter @kontur/api build && pnpm --filter @kontur/web build",
+    "typecheck": "pnpm --filter @kontur/api typecheck && pnpm --filter @kontur/web typecheck",
+    "lint": "eslint backend frontend",
+    "test": "pnpm --filter @kontur/api test",
+    "test:integration": "pnpm --filter @kontur/api test:integration",
+    "test:e2e": "pnpm --filter @kontur/web test:e2e",
+    "db:migrate": "pnpm --filter @kontur/api db:migrate",
+    "db:seed": "pnpm --filter @kontur/api db:seed",
+    "db:admin": "pnpm --filter @kontur/api db:admin"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@playwright/test": "^1.56.1",
-    "@types/cookie-parser": "^1.4.9",
-    "@types/express": "^5.0.5",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^24.10.0",
     "concurrently": "^9.2.1",
     "eslint": "^9.39.1",
-    "prisma": "6.19.3",
-    "tsx": "^4.20.6",
-    "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.3"
   }
 }

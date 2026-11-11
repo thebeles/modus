@@ -7,3 +7,10 @@ node_modules
 .storage
 playwright-report
 test-results
+
+**/.env*
+**/.storage
+**/playwright-report
+**/test-results
+backend/docs
+frontend/docs

@@ -1,0 +1,42 @@
+{
+  "name": "@kontur/api",
+  "private": true,
+  "exports": {
+    "./contracts": "./src/contracts.ts"
+  },
+  "scripts": {
+    "postinstall": "prisma generate",
+    "dev": "tsx watch --env-file-if-exists=../.env src/main.ts",
+    "worker": "tsx --env-file-if-exists=../.env src/worker.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/domain.test.ts",
+    "test:integration": "tsx --env-file-if-exists=../.env --test tests/integration.test.ts",
+    "db:migrate": "node --env-file-if-exists=../.env ./node_modules/prisma/build/index.js migrate deploy",
+    "db:seed": "tsx --env-file-if-exists=../.env prisma/seed.ts",
+    "db:admin": "tsx --env-file-if-exists=../.env prisma/bootstrap-admin.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-express": "^11.1.6",
+    "@nestjs/swagger": "^11.2.0",
+    "@prisma/client": "6.19.3",
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.3",
+    "helmet": "^8.1.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.9",
+    "@types/express": "^5.0.5",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.10.0",
+    "prisma": "6.19.3",
+    "tsx": "^4.20.6",
+    "typescript": "~5.9.3"
+  }
+}

@@ -47,10 +47,10 @@ jobs:
       - run: pnpm db:migrate && pnpm db:seed
         env:
           DATABASE_URL: ${{ env.E2E_DATABASE_URL }}
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm --filter @kontur/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-results
-          path: test-results/
+          path: frontend/test-results/

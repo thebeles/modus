@@ -3,7 +3,7 @@ x-server: &server
   image: modus-kontur-server
   build:
     context: .
-    target: server
+    dockerfile: backend/Dockerfile
   environment: &runtime
     NODE_ENV: development
     PORT: "4000"
@@ -61,11 +61,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    command: ["node", "dist/apps/worker/src/main.js"]
+    command: ["node", "dist/src/worker.js"]
   web:
     build:
       context: .
-      target: web
+      dockerfile: frontend/Dockerfile
     depends_on:
       api:
         condition: service_healthy

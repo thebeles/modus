@@ -1,6 +1,10 @@
 packages:
-  - apps/*
-  - packages/*
+  - backend
+  - frontend
+packageExtensions:
+  '@nestjs/platform-express@11.2.9':
+    dependencies:
+      rxjs: ^7.8.2
 allowBuilds:
   '@scarf/scarf': false
   '@prisma/client': true
