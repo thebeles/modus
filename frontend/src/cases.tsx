@@ -7,7 +7,7 @@ import { improvementStatuses, label, outcomes, problemStatuses } from '@kontur/a
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
-  PageHeading, Pagination, Section, Synthetic, Timeline, timestamp } from './ui';
+  PageHeading, Pagination, Section, Synthetic, TableRegion, Timeline, timestamp } from './ui';
 
 type Kind = 'problem' | 'improvement';
 const config = {
@@ -40,10 +40,10 @@ export function CaseList({ kind }: { kind: Kind }) {
       <select aria-label="Статус" value={status} onChange={event => filters('status', event.target.value)}><Options items={statuses} blank="Все статусы" /></select></div>
     {rows.isPending && <Loading />}<ErrorBox error={rows.error} retry={() => rows.refetch()} />
     {rows.data && <div className="surface"><div className="list-meta">Найдено: {rows.data.total}</div>
-      {rows.data.items.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Название</th><th>Статус</th><th>Владелец</th>{kind === 'improvement' && <th>Эффект</th>}<th>Обновлено</th></tr></thead>
+      {rows.data.items.length ? <TableRegion label={title}><table className="data-table"><thead><tr><th>Название</th><th>Статус</th><th>Владелец</th>{kind === 'improvement' && <th>Эффект</th>}<th>Обновлено</th></tr></thead>
         <tbody>{rows.data.items.map(item => <tr key={item.id}><td><Link className="table-title" to={`${path}/${item.id}`}><span className="row-icon">{kind === 'problem' ? <GitPullRequest size={17} /> : <Layers3 size={17} />}</span>
           <span><small>{item.number}{item.isSynthetic ? ' · демо' : ''}</small><strong>{item.title}</strong></span></Link></td>
-          <td><Chip value={item.status} /></td><td>{item.owner?.name ?? '—'}</td>{kind === 'improvement' && <td>{item.verification ? <Chip value={item.verification.outcome} /> : 'Ещё не проверен'}</td>}<td>{date(item.updatedAt)}</td></tr>)}</tbody></table></div>
+          <td><Chip value={item.status} /></td><td>{item.owner?.name ?? '—'}</td>{kind === 'improvement' && <td>{item.verification ? <Chip value={item.verification.outcome} /> : 'Ещё не проверен'}</td>}<td>{date(item.updatedAt)}</td></tr>)}</tbody></table></TableRegion>
         : <Empty title="Записи не найдены" />}
       <Pagination {...rows.data} onChange={next => filters('page', String(next))} /></div>}
   </>;

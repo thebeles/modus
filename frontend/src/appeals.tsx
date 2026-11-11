@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from '@kontur/api/contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, Synthetic, Timeline } from './ui';
+import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, Synthetic, TableRegion, Timeline } from './ui';
 
 const kinds = [
   { code: 'PROBLEM', name: 'Сообщить о проблеме', description: 'Расскажите, что мешает работе.', icon: TriangleAlert, tone: 'peach' },
@@ -18,7 +18,7 @@ const kinds = [
 ] as const;
 
 function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow[]; staff?: boolean; compact?: boolean }) {
-  return <div className="table-wrap"><table className={`data-table appeal-table ${compact ? 'compact' : ''}`}><thead><tr>
+  return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={`data-table appeal-table ${compact ? 'compact' : ''}`}><thead><tr>
     <th>Обращение</th><th>Статус</th>{!compact && <th>{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
     const to = `${staff ? '/work-queue' : ''}/appeals/${item.id}`;
@@ -27,7 +27,7 @@ function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow
     </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td>{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
       <td className="date-cell">{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
       <td><Link className="icon-button row-arrow" to={to} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
-  })}</tbody></table></div>;
+  })}</tbody></table></TableRegion>;
 }
 
 export function Home() {
@@ -44,7 +44,7 @@ export function Home() {
       </svg>
       <div className="hero-content"><div className="hero-meta"><span className="hero-kicker"><span />ОБРАТНАЯ СВЯЗЬ</span><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p></div>
         <h1>Сделаем работу удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
-        <Link className="button hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
+        <Link className="button primary hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
       </div></section>
     <section className="home-start"><h2>С чего начнём?</h2>
       <div className="kind-grid">{kinds.map(({ code, name, description, icon: Icon, tone }) => <Link key={code} className="kind-card" to={`/appeals/new?type=${code}`}>
@@ -64,7 +64,7 @@ export function Home() {
       <Section title="Что улучшилось" icon={<BookOpen size={25} />} className="home-library">
         {changes.isPending && <Loading />}<ErrorBox error={changes.error} retry={() => changes.refetch()} />
         {changes.data && (changes.data.items.length ? changes.data.items.map(item => <article className="mini-change" key={item.id}>
-          <div className="mini-change-cover"><Layers3 size={26} /><span>БИБЛИОТЕКА ИЗМЕНЕНИЙ</span></div>
+          <div className="publication-cover"><Layers3 size={22} /><span>БИБЛИОТЕКА ИЗМЕНЕНИЙ</span></div>
           <div><Synthetic show={item.isSynthetic} /><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link><p>{item.change}</p>
             <Link className="text-button" to={`/changes/${item.id}`}>Читать результат <ArrowRight size={14} /></Link></div></article>) : <Empty title="Публикаций пока нет" />)}
       </Section>

@@ -52,6 +52,10 @@ export function Section({ title, icon, action, children, className = '' }: { tit
   return <section className={`surface section ${className}`}><header className="section-head"><h2>{icon}{title}</h2>{action}</header>{children}</section>;
 }
 
+export function TableRegion({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="table-wrap" role="region" aria-label={label} tabIndex={0}>{children}</div>;
+}
+
 export function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string;
   children: ReactElement<{ id?: string; 'aria-describedby'?: string; 'aria-invalid'?: boolean }> }) {
   const id = useId();

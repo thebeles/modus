@@ -87,8 +87,9 @@ export function RadarPage() {
           </div>
           <Section title="Обращения по типам">{values.types.length ? <div className="chart" role="img" aria-label={values.types.map(row => label(row.key) + ': ' + row.count).join(', ')}>
             <ResponsiveContainer width="100%" height={230}><BarChart data={values.types.map(row => ({ name: label(row.key), count: row.count }))} margin={{ top: 12, right: 16, left: 0, bottom: 4 }}>
-              <CartesianGrid stroke="#e7edf1" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 11, fill: '#536779' }} /><YAxis allowDecimals={false} width={32} />
-              <Tooltip formatter={value => [value, 'Обращения']} /><Bar dataKey="count" fill="#13877e" radius={[5, 5, 0, 0]} maxBarSize={58} /></BarChart></ResponsiveContainer>
+              <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--muted)' }} /><YAxis allowDecimals={false} width={32} tick={{ fontSize: 11, fill: 'var(--muted)' }} />
+              <Tooltip formatter={value => [value, 'Обращения']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--control-radius)', boxShadow: 'var(--shadow)' }} />
+              <Bar dataKey="count" fill="var(--primary)" radius={[5, 5, 0, 0]} maxBarSize={58} /></BarChart></ResponsiveContainer>
             </div> : <Empty title="Нет данных за выбранный период" />}</Section>
         </Tabs.Content>
         <Tabs.Content value="topics"><Section title="Тематические связи" icon={<GitPullRequest size={18} />}>
@@ -135,7 +136,7 @@ export function Changes() {
       <input placeholder="Поиск по названию" value={q} maxLength={150} onChange={event => { setQuery(event.target.value); setPage(1); }} /></label></div>
     {rows.isPending && <Loading />}<ErrorBox error={rows.error} retry={() => rows.refetch()} />
     {rows.data && (rows.data.items.length ? <div className="change-grid">{rows.data.items.map(item => <article className="surface change-card" key={item.id}>
-      <div className="change-cover"><BookOpen size={34} /><div className="cover-circles" aria-hidden="true" /></div>
+      <div className="publication-cover"><BookOpen size={22} /></div>
       <div className="change-body"><div className="inline-chips"><Synthetic show={item.isSynthetic} /><small>{date(item.publishedAt)}</small></div>
         <Link to={`/changes/${item.id}`}><h2>{item.title}</h2></Link><p>{item.change}</p><Link className="text-button" to={`/changes/${item.id}`}>Читать результат <ArrowRight size={15} /></Link></div>
     </article>)}</div> : <div className="surface"><Empty title="Публикации не найдены" /></div>)}
