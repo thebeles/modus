@@ -15,7 +15,7 @@ async function main() {
   await db.$transaction(async tx => {
     await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(640212)`;
     if (await tx.user.count({ where: { role: 'ADMIN', demo: false } })) throw new Error('An administrator already exists.');
-    const admin = await tx.user.create({ data: { email, passwordHash, name: 'Администратор Контура', role: 'ADMIN' }, select: { id: true } });
+    const admin = await tx.user.create({ data: { email, passwordHash, name: 'Администратор', role: 'ADMIN' }, select: { id: true } });
     await tx.auditEvent.create({ data: { entity: 'users', entityId: admin.id, action: 'CREATED' } });
   });
   console.info('Administrator created');

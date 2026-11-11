@@ -101,7 +101,7 @@ export async function createApp() {
   app.useGlobalFilters(new Errors());
   app.useGlobalInterceptors(new ResponseEnvelope());
   if (process.env.NODE_ENV !== 'production') {
-    const options = new DocumentBuilder().setTitle('Модус · Контур').setDescription('API обращений и улучшений. Изменяющие запросы требуют Origin и CSRF-токен.').setVersion('1.0').addCookieAuth('kontur_session').build();
+    const options = new DocumentBuilder().setTitle('До результата').setDescription('API обращений и улучшений. Изменяющие запросы требуют Origin и CSRF-токен.').setVersion('1.0').addCookieAuth('kontur_session').build();
     const doc = SwaggerModule.createDocument(app, options);
     SwaggerModule.setup('api/v1/docs', app, doc, { jsonDocumentUrl: 'api/v1/openapi.json' });
   }

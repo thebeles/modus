@@ -38,7 +38,7 @@ const initials = (name: string) => name.split(' ').slice(0, 2).map(part => part[
 
 function Brand() {
   return <div className="brand"><span className="brand-mark"><Command size={22} strokeWidth={1.9} /></span>
-    <span><strong>Модус<span className="brand-separator"> · </span>Контур</strong><small>Модус Трейд</small></span></div>;
+    <strong>До результата</strong></div>;
 }
 
 function Login() {
@@ -53,7 +53,7 @@ function Login() {
     ['other-employee', 'Другой сотрудник'], ['sensitive-handler', 'Спецочередь']];
   return <main className="login-main">
     <div className="login-card">
-      <h1>Вход в Контур</h1>
+      <h1>До результата</h1>
       <p>Войдите с рабочей учётной записью.</p>
       <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
         <Field label="Рабочая почта"><input type="email" required autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} /></Field>

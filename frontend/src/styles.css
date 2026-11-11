@@ -94,8 +94,6 @@ svg { flex-shrink: 0; }
 }
 .brand-mark svg { width: 21px; height: 21px; }
 .brand strong { display: block; line-height: 1.2; letter-spacing: -.025em; font-size: clamp(12px, .98vw, 16px); }
-.brand small { display: block; margin-top: 4px; font-size: clamp(11px, .74vw, 12px); }
-.brand-separator { color: inherit; }
 .sidebar-create { padding: 9px clamp(10px, .94vw, 16px) 17px; }
 .sidebar-create .button {
   width: 100%;
