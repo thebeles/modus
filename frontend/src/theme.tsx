@@ -21,7 +21,7 @@ let theme: Theme;
 function applyTheme() {
   theme = preference ?? (systemTheme.matches ? 'dark' : 'light');
   document.documentElement.dataset.theme = theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#121620' : '#f5f7fa');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#1c1d20' : '#f5f7fa');
   listeners.forEach(listener => listener());
 }
 
