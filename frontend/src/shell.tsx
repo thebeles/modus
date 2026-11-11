@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, ArrowDownRight, ArrowRight, Bell, BookOpen, ChevronDown, ChevronRight, CircleHelp, Command,
-  GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, ShieldCheck, X } from 'lucide-react';
+import { Activity, ArrowRight, Bell, BookOpen, ChevronDown, ChevronRight, CircleHelp, Command,
+  GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from 'lucide-react';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { label } from '@kontur/api/contracts';
@@ -51,22 +51,26 @@ function Login() {
     onSuccess: session => { client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); client.setQueryData(['session'], session); navigate(landing[session.user.role], { replace: true }); } });
   const demoAccounts = [['employee', 'Сотрудник'], ['handler', 'Обработчик'], ['manager', 'Руководитель'], ['admin', 'Администратор'],
     ['other-employee', 'Другой сотрудник'], ['sensitive-handler', 'Спецочередь']];
-  return <div className="login-shell"><aside className="login-art"><Brand /><div className="orbit-art" aria-hidden="true"><i /><i /><i /><i /><b /><b /><b /></div>
-    <div className="login-story"><span className="hero-kicker"><span /> ВНУТРЕННИЙ СЕРВИС ОБРАТНОЙ СВЯЗИ</span><h1>От сигнала<br />к изменению.</h1>
-      <p>Обращения сотрудников, рабочие решения и проверка результата в одном месте.</p></div></aside>
-    <main className="login-main"><div className="login-card"><div className="mobile-brand"><Brand /></div><h2>Вход в Контур</h2><p>Войдите с рабочей учётной записью.</p>
+  return <main className="login-main">
+    <div className="login-card">
+      <h1>Вход в Контур</h1>
+      <p>Войдите с рабочей учётной записью.</p>
       <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
-        <Field label="Рабочая почта"><input type="email" required autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} placeholder="name@company.kz" /></Field>
+        <Field label="Рабочая почта"><input type="email" required autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} /></Field>
         <Field label="Пароль"><input type="password" required autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></Field>
-        <ErrorBox error={login.error} /><button className="button primary login-submit" disabled={login.isPending}>{login.isPending ? 'Входим…' : 'Войти'} <ArrowRight size={17} /></button>
+        <ErrorBox error={login.error} />
+        <button className="button primary login-submit" disabled={login.isPending}>{login.isPending ? 'Входим…' : 'Войти'} <ArrowRight size={20} aria-hidden="true" /></button>
       </form>
-      {demo.data?.demoMode && <div className="demo-box"><div className="demo-heading"><ShieldCheck size={18} /><strong>Демонстрационный вход</strong></div>
-        <p>Выберите профиль. Все примеры синтетические.</p><div className="demo-options">
+      {demo.data?.demoMode && <section className="demo-box" aria-labelledby="demo-heading">
+        <h2 id="demo-heading" className="demo-heading">Демонстрационный вход</h2>
+        <div className="demo-options">
           {demoAccounts.map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => {
             setEmail(`${account}@demo.local`); setPassword(''); login.mutate({ profile: account });
-          }}>{name}<ArrowDownRight size={14} /></button>)}
-        </div></div>}
-    </div></main></div>;
+          }}>{name}</button>)}
+        </div>
+      </section>}
+    </div>
+  </main>;
 }
 
 function Layout() {
