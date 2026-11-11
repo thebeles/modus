@@ -6,7 +6,7 @@ const profileNames = { employee: 'Сотрудник', handler: 'Обработ�
 async function login(page: Page, role: keyof typeof profileNames) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: profileNames[role], exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Профиль', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Выйти из аккаунта', exact: true })).toBeVisible();
 }
 
 async function session(browser: Browser, role: keyof typeof profileNames) {

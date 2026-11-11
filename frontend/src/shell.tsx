@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, ArrowRight, Bell, BookOpen, ChevronDown, ChevronRight, CircleHelp, Command,
+import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
   GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from 'lucide-react';
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
 import { label } from '@kontur/api/contracts';
 import { api, ApiError, type Session } from './api';
 import { SessionContext, useSession } from './session';
-import { ActionForm, date, Empty, ErrorBox, Field, field, Loading, Modal, PageHeading } from './ui';
+import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading } from './ui';
 import { AppealDetail, AppealList, Home, NewAppeal } from './appeals';
 const CaseList = lazy(() => import('./cases').then(module => ({ default: module.CaseList })));
 const CreateCase = lazy(() => import('./cases').then(module => ({ default: module.CreateCase })));
@@ -34,11 +34,9 @@ const managerNav = [handlerNav[3], handlerNav[2], { ...handlerNav[0], text: 'О�
 const adminNav = [{ to: '/admin/users', text: 'Администрирование', icon: Settings }];
 const navigation = { EMPLOYEE: employeeNav, HANDLER: handlerNav, MANAGER: managerNav, ADMIN: adminNav };
 const landing = { EMPLOYEE: '/', HANDLER: '/work-queue', MANAGER: '/radar', ADMIN: '/admin/users' };
-const initials = (name: string) => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 
 function Brand() {
-  return <div className="brand"><span className="brand-mark"><Command size={22} strokeWidth={1.9} /></span>
-    <strong>До результата</strong></div>;
+  return <div className="brand"><strong>До результата</strong></div>;
 }
 
 function Login() {
@@ -74,20 +72,14 @@ function Login() {
 }
 
 function Layout() {
-  const { user, demoMode } = useSession();
+  const { user } = useSession();
   const client = useQueryClient();
   const navigate = useNavigate();
-  const location = useLocation();
   const [mobile, setMobile] = useState(false);
-  const [profile, setProfile] = useState(false);
   const notices = useQuery({ queryKey: ['notifications'], queryFn: () => api<{ unread: number }>('/notifications'), refetchInterval: 5000 });
   const logout = useMutation({ mutationFn: () => api('/auth/logout', { method: 'POST' }),
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
-  const password = useMutation({ mutationFn: (data: { current: string; password: string }) => api('/auth/change-password', { method: 'POST', body: data }),
-    onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
   const nav = navigation[user.role];
-  const current = [...nav, { to: '/appeals/new', text: 'Новое обращение' }, { to: '/notifications', text: 'Уведомления' }]
-    .find(item => item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to));
   function sideContent() {
     return <><div className="sidebar-brand"><Link to={landing[user.role]} onClick={() => setMobile(false)}><Brand /></Link></div>
       {user.role !== 'ADMIN' && <div className="sidebar-create"><Link className="button primary" to="/appeals/new" onClick={() => setMobile(false)}><Plus size={19} />Создать обращение</Link></div>}
@@ -96,32 +88,23 @@ function Layout() {
         <NavLink to="/notifications" onClick={() => setMobile(false)}><Bell size={18} />Уведомления{notices.data?.unread ? <span className="nav-count">{notices.data.unread}</span> : null}</NavLink>
       </nav>
       <div className="sidebar-bottom"><Link to="/help" className="nav-help" onClick={() => setMobile(false)}><CircleHelp size={18} />Помощь</Link>
-        <button className="user-card" type="button" onClick={() => { setMobile(false); setProfile(true); }}><span className="avatar">{initials(user.name)}</span>
-          <span><strong>{user.name}</strong><small>{label(user.role)}</small></span><ChevronDown size={15} /></button>
+        <div className="sidebar-account">
+          <div className="user-card"><strong>{user.name}</strong><small>{label(user.role)}</small></div>
+          <button className="icon-button sidebar-logout" type="button" aria-label="Выйти из аккаунта" title="Выйти из аккаунта" disabled={logout.isPending} onClick={() => logout.mutate()}>
+            <LogOut size={17} aria-hidden="true" />
+          </button>
+        </div>
+        <ErrorBox error={logout.error} />
       </div></>;
   }
   return <div className="app-shell">
     <a href="#content" className="skip">К содержанию</a>
     <aside className="sidebar">{sideContent()}</aside>
     {mobile && <Modal title="Навигация" close={() => setMobile(false)}><div className="mobile-nav">{sideContent()}</div></Modal>}
-    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">
+    <div className="main-shell">
       <button className="icon-button mobile-menu" type="button" aria-label="Открыть навигацию" onClick={() => setMobile(true)}><Menu size={21} /></button>
-      <Link to={landing[user.role]} className="crumb-home" aria-label="Рабочая главная"><House size={16} aria-hidden="true" /></Link><ChevronRight size={14} className="crumb-separator" />
-      <span>{current?.text ?? 'Рабочее пространство'}</span></div>
-      <div className="top-actions">{demoMode && <span className="demo-pill"><span /> Демо-режим</span>}
-        <Link to="/notifications" className="icon-button bell-link" aria-label={`Уведомления, непрочитанных: ${notices.data?.unread ?? 0}`}><Bell size={19} />{notices.data?.unread ? <b /> : null}</Link>
-        <button className="avatar small-avatar" onClick={() => setProfile(true)} type="button" aria-label="Профиль">{initials(user.name)}</button>
-      </div></header>
       <main className="content" id="content" tabIndex={-1}><Suspense fallback={<Loading />}><Outlet /></Suspense></main>
     </div>
-    {profile && <Modal title="Профиль" close={() => setProfile(false)}>
-      <div className="profile-box"><span className="avatar">{initials(user.name)}</span><div><strong>{user.name}</strong><p>{user.email} · {label(user.role)}</p></div></div>
-      {!user.demo && <ActionForm pending={password.isPending} error={password.error} submit="Сменить пароль" onSubmit={data => password.mutate({ current: field(data, 'current'), password: field(data, 'password') })}>
-        <Field label="Текущий пароль"><input name="current" type="password" required autoComplete="current-password" /></Field>
-        <Field label="Новый пароль"><input name="password" type="password" minLength={12} required autoComplete="new-password" /></Field>
-      </ActionForm>}
-      <ErrorBox error={logout.error} /><button className="button secondary" onClick={() => logout.mutate()} disabled={logout.isPending}><LogOut size={17} /> Выйти из аккаунта</button>
-    </Modal>}
   </div>;
 }
 

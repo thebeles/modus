@@ -37,7 +37,7 @@ export function Home() {
   const changes = useQuery({ queryKey: ['changes', 'home'], queryFn: () => api<Page<Change>>('/publications?limit=2') });
   return <div className="home-page">
     <section className="home-hero">
-      <div className="hero-content"><div className="hero-meta"><span className="hero-kicker"><span />ОБРАТНАЯ СВЯЗЬ</span><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p></div>
+      <div className="hero-content"><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p>
         <h1>Сделаем работу удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
         <Link className="button primary hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
       </div></section>
