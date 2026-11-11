@@ -411,6 +411,7 @@ export function AppealDetail() {
     setNotice('Маршрут обновлён.');
   } });
   if (!record) return <><PageHeading title="Обращение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
+  const { timing } = record;
   const can = (key: string) => record.allowedActions.includes(key);
   const openAction = (operation: string) => {
     update.reset();
@@ -457,13 +458,13 @@ export function AppealDetail() {
         </form>}
       </Section>
       {staff && record.visibility === 'NORMAL_INTERNAL' && <RelatedAppeals record={record} reload={() => void query.refetch()} />}
-      <Section title="Время рассмотрения" icon={<Clock3 size={18} />}>
-        <dl className="facts"><div><dt>Активное время</dt><dd>{Math.floor(record.timing.activeSeconds / 60)} мин</dd></div>
-          <div><dt>Ожидание автора</dt><dd>{Math.floor(record.timing.waitingSeconds / 60)} мин</dd></div></dl>
-        {record.timing.periods.length > 0 && <details><summary>Последние периоды</summary><ul>
-          {record.timing.periods.map(period => <li key={period.startedAt}>{period.phase === 'ACTIVE' ? 'Рассмотрение' : 'Ожидание автора'} · {date(period.startedAt, true)} — {period.endedAt ? date(period.endedAt, true) : 'сейчас'}</li>)}
+      {timing && <Section title="Время рассмотрения" icon={<Clock3 size={18} />}>
+        <dl className="facts"><div><dt>Активное время</dt><dd>{Math.floor(timing.activeSeconds / 60)} мин</dd></div>
+          <div><dt>Ожидание автора</dt><dd>{Math.floor(timing.waitingSeconds / 60)} мин</dd></div></dl>
+        {timing.periods.length > 0 && <details><summary>Последние периоды</summary><ul>
+          {timing.periods.map(period => <li key={period.startedAt}>{period.phase === 'ACTIVE' ? 'Рассмотрение' : 'Ожидание автора'} · {date(period.startedAt, true)} — {period.endedAt ? date(period.endedAt, true) : 'сейчас'}</li>)}
         </ul></details>}
-      </Section>
+      </Section>}
       <Section title="История" icon={<Clock3 size={18} />}><Timeline items={record.events} /></Section>
     </div><aside className="detail-side">
       <Section title="Следующий шаг" icon={<ArrowRight size={18} />}>

@@ -59,7 +59,7 @@ export type Appeal = AppealRow & {
   description: string; proposedSolution: string | null; resolutionType: string | null; resolutionText: string | null; closedAt: string | null;
   assignee: { name: string } | null; queue: { name: string } | null; allowedActions: string[];
   comments: { id: string; author: { name: string }; body: string; internal: boolean; kind: string; createdAt: string }[];
-  timing: { activeSeconds: number; waitingSeconds: number; periods: { phase: string; startedAt: string; endedAt: string | null }[] };
+  timing?: { activeSeconds: number; waitingSeconds: number; periods: { phase: string; startedAt: string; endedAt: string | null }[] };
   events: EventRow[]; attachments: Attachment[]; problems: Reference[]; improvements: Reference[]; publications: { id: string; title: string; result: string }[]; links: LinkRow[];
   reviews: { id: string; kind: 'WITHDRAWAL' | 'RECONSIDERATION'; reason: string; decision?: string; approved?: boolean | null; decidedAt?: string }[];
 };

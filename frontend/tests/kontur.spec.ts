@@ -45,6 +45,24 @@ async function mutation(page: Page, name: string, fill?: (dialog: ReturnType<Pag
   await expect(dialog).toBeHidden();
 }
 
+test('opens an appeal when the API omits review timing', async ({ page }) => {
+  await login(page, 'employee');
+  await page.goto('/my/appeals');
+  const appeal = page.locator('.table-title').first();
+  const title = await appeal.locator('strong').innerText();
+  const href = (await appeal.getAttribute('href'))!;
+  await page.route(`**/api/v1${href}`, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.data.timing;
+    await route.fulfill({ response, json: body });
+  });
+  await appeal.click();
+  await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'История' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Время рассмотрения' })).toHaveCount(0);
+});
+
 test('E2E-01 creates a real appeal and shows it to its author and the queue', async ({ page, browser }) => {
   await login(page, 'employee');
   const title = 'Проверка подачи ' + randomUUID().slice(0, 8);
