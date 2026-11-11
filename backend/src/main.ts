@@ -51,12 +51,17 @@ class Errors implements ExceptionFilter {
       status = error.code === 'P2025' ? 404 : 409;
       code = error.code === 'P2025' ? 'NOT_FOUND' : 'DATA_CONFLICT';
       message = error.code === 'P2025' ? 'Запись не найдена.' : 'Проверьте связанные записи и уникальность значений.';
+    } else if (error instanceof Prisma.PrismaClientKnownRequestError && ['P2024', 'P2028'].includes(error.code)) {
+      status = 503;
+      code = 'DATABASE_BUSY';
+      message = 'База данных временно занята. Повторите запрос.';
+      console.warn('Database transaction unavailable', requestId, error.code);
     } else if (error instanceof HttpException) {
       status = error.getStatus();
       code = status === 404 ? 'NOT_FOUND' : 'REQUEST_ERROR';
       message = status === 404 ? 'Страница не найдена.' : status === 413 ? 'Превышен размер запроса.' : 'Проверьте параметры запроса.';
     } else {
-      console.error('Unhandled request failure', requestId, error instanceof Error ? error.name : typeof error);
+      console.error('Unhandled request failure', requestId, error instanceof Prisma.PrismaClientKnownRequestError ? error.code : error instanceof Error ? error.name : typeof error);
     }
     response.status(status).json({ requestId, error: { code, message, details } });
   }

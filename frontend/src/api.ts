@@ -59,15 +59,16 @@ export type Appeal = AppealRow & {
   description: string; proposedSolution: string | null; resolutionType: string | null; resolutionText: string | null; closedAt: string | null;
   assignee: { name: string } | null; queue: { name: string } | null; allowedActions: string[];
   comments: { id: string; author: { name: string }; body: string; internal: boolean; kind: string; createdAt: string }[];
+  timing: { activeSeconds: number; waitingSeconds: number; periods: { phase: string; startedAt: string; endedAt: string | null }[] };
   events: EventRow[]; attachments: Attachment[]; problems: Reference[]; improvements: Reference[]; publications: { id: string; title: string; result: string }[]; links: LinkRow[];
-  reviews: { id: string; reason: string; decision?: string; decidedAt?: string }[];
+  reviews: { id: string; kind: 'WITHDRAWAL' | 'RECONSIDERATION'; reason: string; decision?: string; approved?: boolean | null; decidedAt?: string }[];
 };
 export type Change = { id: string; title: string; problem: string; change: string; method: string; result: string; limitations: string; publishedAt: string | null;
   isSynthetic: boolean; state?: string; version?: number; authorId?: string; audienceId?: string | null; reviewNote?: string | null };
 export type CaseRow = Reference & { status: string; owner: Entity | null; scope?: string; createdAt: string; updatedAt: string; isSynthetic: boolean; verification?: { outcome: string } | null };
 export type Problem = CaseRow & { symptoms: string; hypothesis: string | null; conclusion: string | null; version: number; canEdit: boolean;
   allowedActions: string[]; people: Entity[]; sources: Reference[]; improvements: Reference[]; events: EventRow[]; findings: { id: string; body: string; source: string; createdAt: string }[] };
-export type Plan = { version: number; method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; protocol?: string;
+export type Plan = { version: number; method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; protocol?: string; minimumSampleSize: number | null; requireSameSource: boolean; maxPeriodDifferencePercent: number | null;
   observations: { id: string; phase: string; value: number | null; source: string; sourceType: string; periodStart: string; periodEnd: string; sampleSize?: number; isSynthetic: boolean; evidence: Attachment[] }[] };
 export type Feedback = { id: string; choice?: string; comment?: string; submittedAt?: string; version: number };
 export type Improvement = CaseRow & {

@@ -1,8 +1,11 @@
 import { Body, Controller, Get, Inject, Param, Patch, Post, Req } from '@nestjs/common';
+import { JsonBody } from './openapi';
 import { AuthRequest } from './auth';
 import { Database, missing, parse } from './common';
 
 import { z } from 'zod';
+
+const preferencesInput = z.strictObject({ notifyRegistration: z.boolean() });
 
 @Controller()
 export class NotificationsController {
@@ -18,8 +21,8 @@ export class NotificationsController {
   @Get('notification-preferences') preferences(@Req() req: AuthRequest) {
     return this.db.user.findUniqueOrThrow({ where: { id: req.user.id }, select: { notifyRegistration: true } });
   }
-  @Patch('notification-preferences') updatePreferences(@Req() req: AuthRequest, @Body() raw: unknown) {
-    const data = parse(z.strictObject({ notifyRegistration: z.boolean() }), raw);
+  @Patch('notification-preferences') @JsonBody(preferencesInput) updatePreferences(@Req() req: AuthRequest, @Body() raw: unknown) {
+    const data = parse(preferencesInput, raw);
     return this.db.user.update({ where: { id: req.user.id }, data, select: { notifyRegistration: true } });
   }
   @Post('notifications/read-all') async readAll(@Req() req: AuthRequest) {

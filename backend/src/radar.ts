@@ -1,12 +1,35 @@
 import { Body, Controller, Delete, Get, Inject, Injectable, Param, Post, Query, Req, Res } from '@nestjs/common';
+import { JsonBody, JsonResponse, QueryFields } from './openapi';
 import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 import { z } from 'zod';
-import { relations } from './contracts';
+import { outcomes, relations } from './contracts';
 import { Appeals, appealListInput, appealQueueFilters } from './appeals';
 import { AuthRequest } from './auth';
 import { atomic, audit, bodyText, checked, Database, expectedVersion, forbidden, id, invalid, invalidState, missing, pagination, parse } from './common';
 import { Policy, Principal } from './policy';
+
+const linkListInput = z.strictObject({ ...pagination, state: z.enum(['SUGGESTED', 'CONFIRMED', 'REJECTED']).optional() });
+const linkInput = z.strictObject({ fromId: id, toId: id, relation: z.enum(relations), explanation: bodyText });
+const linkDecisionInput = z.strictObject({ expectedVersion, sameIssue: z.boolean().optional(), reason: bodyText.optional() });
+
+const outcomeInput = appealListInput.safeExtend({ outcome: z.enum(outcomes).optional(), verifiedOnly: z.enum(['true']).optional() });
+
+const groupsResponse = z.array(z.object({ key: z.string(), count: z.number().int() }));
+const pageResponse = z.object({ page: z.number().int(), limit: z.number().int(), total: z.number().int() });
+const referenceResponse = z.object({ id, number: z.string(), title: z.string() });
+const appealAnalyticsResponse = z.object({ total: z.number().int(), closed: z.number().int(), documented: z.number().int(),
+  types: groupsResponse, statuses: groupsResponse });
+const slaAnalyticsResponse = z.object({ overdue: z.number().int(), stale: z.number().int(), waiting: z.number().int(),
+  firstResponse: z.object({ count: z.number().int(), hours: z.number().nullable() }) });
+const outcomeResponse = pageResponse.extend({
+  items: z.array(referenceResponse.extend({ status: z.string(), verification: z.object({ outcome: z.enum(outcomes) }).nullable() })),
+  improved: z.number().int(), verified: z.number().int(), verifiedSuccess: z.number().int(), verifiedDeterminate: z.number().int(), outcomes: groupsResponse,
+});
+const recurrenceResponse = pageResponse.extend({ items: z.array(z.object({
+  id, from: referenceResponse, to: referenceResponse, relation: z.literal('POSSIBLE_RECURRENCE'),
+  state: z.enum(['SUGGESTED', 'CONFIRMED']), explanation: z.string(), proposedBy: z.string(), version: z.number().int(),
+})) });
 
 @Injectable()
 export class Radar {
@@ -19,7 +42,7 @@ export class Radar {
 
   async links(user: Principal, raw: unknown) {
     if (!this.policy.isStaff(user)) throw forbidden();
-    const { page, limit, state } = parse(z.strictObject({ ...pagination, state: z.enum(['SUGGESTED', 'CONFIRMED', 'REJECTED']).optional() }), raw);
+    const { page, limit, state } = parse(linkListInput, raw);
     const where = { ...this.linksWhere(user), state: state ?? { not: 'REJECTED' as const } };
     const select = { id: true, number: true, title: true };
     const [items, total] = await this.db.$transaction([
@@ -32,7 +55,7 @@ export class Radar {
 
   async createLink(user: Principal, raw: unknown) {
     if (!this.policy.has(user, 'PROBLEM_OWNER')) throw forbidden();
-    const input = parse(z.strictObject({ fromId: id, toId: id, relation: z.enum(relations), explanation: bodyText }), raw);
+    const input = parse(linkInput, raw);
     if (input.fromId === input.toId || input.relation === 'CONFIRMED_SAME_ISSUE') throw invalid('Выберите два разных обращения и предложите тип связи.');
     const [fromId, toId] = [input.fromId, input.toId].sort();
     return atomic(this.db, async tx => {
@@ -49,7 +72,7 @@ export class Radar {
 
   async decideLink(user: Principal, item: string, raw: unknown, confirm: boolean) {
     if (!this.policy.has(user, 'PROBLEM_OWNER')) throw forbidden();
-    const { expectedVersion: version, sameIssue, reason } = parse(z.strictObject({ expectedVersion, sameIssue: z.boolean().optional(), reason: bodyText.optional() }), raw);
+    const { expectedVersion: version, sameIssue, reason } = parse(linkDecisionInput, raw);
     return atomic(this.db, async tx => {
       const link = await tx.appealLink.findFirst({ where: { ...this.linksWhere(user), id: item } });
       if (!link) throw missing();
@@ -82,19 +105,83 @@ export class Radar {
         words.some(word => row.title.toLowerCase().includes(word)) ? 'Общие слова в заголовке' : ''].filter(Boolean).join('. ') }));
   }
 
-  async overview(user: Principal, raw: unknown) {
+  private analyticsScope(user: Principal, filters: z.output<typeof appealListInput>, now: Date) {
     if (!this.policy.isStaff(user)) throw forbidden();
-    const filters = parse(appealListInput, raw);
-    const now = new Date();
     const where: Prisma.AppealWhereInput = { AND: [this.appeals.where(user, filters, true, now), { visibility: 'NORMAL_INTERNAL' }] };
     const tabs = appealQueueFilters(user, now);
-    const overdueWhere: Prisma.AppealWhereInput = { AND: [where, tabs.overdue] };
-    const staleWhere: Prisma.AppealWhereInput = { AND: [where, tabs.stale] };
     const improvementWhere: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), { visibility: 'NORMAL_INTERNAL',
       ...(filters.from || filters.to ? { createdAt: { gte: filters.from, lt: filters.to } } : {}),
       processId: filters.processId, departmentId: filters.departmentId }] };
     const implementedWhere: Prisma.ImprovementWhereInput = { AND: [improvementWhere, { status: { in: ['IMPLEMENTED', 'VERIFYING', 'COMPLETED'] } }] };
-    const linkWhere: Prisma.AppealLinkWhereInput = { AND: [this.linksWhere(user), { from: where, to: where }, { state: { not: 'REJECTED' } }] };
+    const recurrenceScope: Prisma.AppealLinkWhereInput = {
+      OR: [{ from: where }, { to: where }], relation: 'POSSIBLE_RECURRENCE',
+    };
+    const visibleLinks: Prisma.AppealLinkWhereInput = { ...this.linksWhere(user), state: { not: 'REJECTED' } };
+    const linkWhere: Prisma.AppealLinkWhereInput = { AND: [visibleLinks, { OR: [{ from: where, to: where }, recurrenceScope] }] };
+    const recurrenceWhere: Prisma.AppealLinkWhereInput = { AND: [visibleLinks, recurrenceScope] };
+    const overdueWhere: Prisma.AppealWhereInput = { AND: [where, tabs.overdue] };
+    const staleWhere: Prisma.AppealWhereInput = { AND: [where, tabs.stale] };
+    return { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere };
+  }
+
+  async appealAnalytics(user: Principal, raw: unknown) {
+    const { where } = this.analyticsScope(user, parse(appealListInput, raw), new Date());
+    const [total, closed, documented, types, statuses] = await this.db.$transaction(tx => Promise.all([
+      tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, { status: 'CLOSED' }] } }),
+      tx.appeal.count({ where: { AND: [where, { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } }] } }),
+      tx.appeal.groupBy({ by: ['type'], orderBy: { type: 'asc' }, where, _count: { _all: true } }),
+      tx.appeal.groupBy({ by: ['status'], orderBy: { status: 'asc' }, where, _count: { _all: true } }),
+    ]), { isolationLevel: 'RepeatableRead' });
+    return { total, closed, documented, types: types.map(row => ({ key: row.type, count: row._count._all })),
+      statuses: statuses.map(row => ({ key: row.status, count: row._count._all })) };
+  }
+
+  async slaAnalytics(user: Principal, raw: unknown) {
+    const now = new Date();
+    const { where, overdueWhere, staleWhere } = this.analyticsScope(user, parse(appealListInput, raw), now);
+    const [overdue, stale, waiting, response] = await this.db.$transaction([
+      this.db.appeal.count({ where: overdueWhere }), this.db.appeal.count({ where: staleWhere }),
+      this.db.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
+      this.db.appeal.aggregate({ where, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
+    ], { isolationLevel: 'RepeatableRead' });
+    return { overdue, stale, waiting, firstResponse: {
+      count: response._count.firstResponseSeconds, hours: response._avg.firstResponseSeconds === null ? null : response._avg.firstResponseSeconds / 3600,
+    } };
+  }
+
+  async improvementOutcomes(user: Principal, raw: unknown) {
+    const { outcome, verifiedOnly, ...filters } = parse(outcomeInput, raw);
+    const { page, limit } = filters;
+    const { implementedWhere } = this.analyticsScope(user, filters, new Date());
+    const where: Prisma.ImprovementWhereInput = { AND: [implementedWhere,
+      outcome ? { verification: { outcome } } : verifiedOnly ? { verification: { isNot: null } } : {}] };
+    const [items, total, improved, groups] = await this.db.$transaction(tx => Promise.all([
+      tx.improvement.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        select: { id: true, title: true, number: true, status: true, verification: { select: { outcome: true } } } }),
+      tx.improvement.count({ where }), tx.improvement.count({ where: implementedWhere }),
+      tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere }, _count: { _all: true } }),
+    ]), { isolationLevel: 'RepeatableRead' });
+    const count = (outcome: string) => groups.find(row => row.outcome === outcome)?._count._all ?? 0;
+    const verified = groups.reduce((sum, row) => sum + row._count._all, 0);
+    return { items, total, page, limit, improved, verified, verifiedSuccess: count('VERIFIED'), verifiedDeterminate: verified - count('INCONCLUSIVE'),
+      outcomes: groups.map(row => ({ key: row.outcome, count: row._count._all })) };
+  }
+
+  async recurrences(user: Principal, raw: unknown) {
+    const filters = parse(appealListInput, raw);
+    const { page, limit } = filters;
+    const { recurrenceWhere: where } = this.analyticsScope(user, filters, new Date());
+    const select = { id: true, number: true, title: true };
+    const [items, total] = await this.db.$transaction([
+      this.db.appealLink.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        include: { from: { select }, to: { select } } }), this.db.appealLink.count({ where }),
+    ], { isolationLevel: 'RepeatableRead' });
+    return { items, total, page, limit };
+  }
+
+  async overview(user: Principal, raw: unknown) {
+    const filters = parse(appealListInput, raw);
+    const { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere } = this.analyticsScope(user, filters, new Date());
     const totals = await this.db.$transaction(async tx => {
       const [total, closed, documented, response, overdue, stale, waiting, types, statuses, processGroups, categoryGroups, improved, verified, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
         tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, { status: 'CLOSED' }] } }),
@@ -102,15 +189,15 @@ export class Radar {
         tx.appeal.aggregate({ where, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
         tx.appeal.count({ where: overdueWhere }), tx.appeal.count({ where: staleWhere }),
         tx.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
-        tx.appeal.groupBy({ by: ['type'], where, _count: { _all: true } }),
-        tx.appeal.groupBy({ by: ['status'], where, _count: { _all: true } }),
+        tx.appeal.groupBy({ by: ['type'], orderBy: { type: 'asc' }, where, _count: { _all: true } }),
+        tx.appeal.groupBy({ by: ['status'], orderBy: { status: 'asc' }, where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['processId'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['categoryId'], where, _count: { _all: true } }),
         tx.improvement.count({ where: implementedWhere }),
         tx.improvement.count({ where: { AND: [implementedWhere, { verification: { isNot: null } }] } }),
-        tx.verification.groupBy({ by: ['outcome'], where: { improvement: implementedWhere }, _count: { _all: true } }),
+        tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere }, _count: { _all: true } }),
         tx.appealLink.count({ where: linkWhere }),
-        tx.appealLink.count({ where: { AND: [linkWhere, { relation: 'POSSIBLE_RECURRENCE' }] } }),
+        tx.appealLink.count({ where: recurrenceWhere }),
       ]);
       const min = Math.max(2, Number(process.env.RADAR_MIN_GROUP || 2) || 2);
       const processes = processGroups.filter(row => row._count._all >= min);
@@ -154,18 +241,23 @@ export class Radar {
 @Controller()
 export class RadarController {
   constructor(@Inject(Radar) private readonly radar: Radar, @Inject(Appeals) private readonly appeals: Appeals) {}
-  @Get(['radar/overview', 'radar/topics', 'radar/processes', 'radar/attention', 'radar/improvements', 'radar/outcomes', 'analytics/appeals', 'analytics/sla', 'analytics/improvement-outcomes'])
+  @Get(['radar/overview', 'radar/topics', 'radar/processes', 'radar/attention', 'radar/improvements', 'radar/outcomes'])
+  @QueryFields(appealListInput)
   overview(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.overview(req.user, q); }
-  @Get('search') search(@Req() req: AuthRequest, @Query() q: unknown) { return this.appeals.list(req.user, q); }
-  @Get('analytics/export') async export(@Req() req: AuthRequest, @Query() q: unknown, @Res() res: Response) {
+  @Get('analytics/appeals') @JsonResponse(appealAnalyticsResponse) @QueryFields(appealListInput) appealAnalytics(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.appealAnalytics(req.user, q); }
+  @Get('analytics/sla') @JsonResponse(slaAnalyticsResponse) @QueryFields(appealListInput) slaAnalytics(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.slaAnalytics(req.user, q); }
+  @Get('analytics/improvement-outcomes') @JsonResponse(outcomeResponse) @QueryFields(outcomeInput) outcomes(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.improvementOutcomes(req.user, q); }
+  @Get('radar/recurrences') @JsonResponse(recurrenceResponse) @QueryFields(appealListInput) recurrences(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.recurrences(req.user, q); }
+  @Get('search') @QueryFields(appealListInput) search(@Req() req: AuthRequest, @Query() q: unknown) { return this.appeals.list(req.user, q); }
+  @Get('analytics/export') @QueryFields(appealListInput) async export(@Req() req: AuthRequest, @Query() q: unknown, @Res() res: Response) {
     const csv = await this.radar.export(req.user, q);
     res.setHeader('Content-Disposition', 'attachment; filename="appeals.csv"');
     res.type('text/csv').send(csv);
   }
-  @Get('object-links') links(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.links(req.user, q); }
+  @Get('object-links') @QueryFields(linkListInput) links(@Req() req: AuthRequest, @Query() q: unknown) { return this.radar.links(req.user, q); }
   @Get('object-links/similar/:id') similar(@Req() req: AuthRequest, @Param('id') item: string) { return this.radar.similarities(req.user, item); }
-  @Post('object-links/suggest-or-create') create(@Req() req: AuthRequest, @Body() raw: unknown) { return this.radar.createLink(req.user, raw); }
-  @Post('object-links/:id/confirm') confirm(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, true); }
-  @Post('object-links/:id/reject') reject(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, false); }
-  @Delete('object-links/:id') remove(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, false); }
+  @Post('object-links/suggest-or-create') @JsonBody(linkInput) create(@Req() req: AuthRequest, @Body() raw: unknown) { return this.radar.createLink(req.user, raw); }
+  @Post('object-links/:id/confirm') @JsonBody(linkDecisionInput) confirm(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, true); }
+  @Post('object-links/:id/reject') @JsonBody(linkDecisionInput) reject(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, false); }
+  @Delete('object-links/:id') @JsonBody(linkDecisionInput) remove(@Req() req: AuthRequest, @Param('id') item: string, @Body() raw: unknown) { return this.radar.decideLink(req.user, item, raw, false); }
 }

@@ -70,9 +70,11 @@ export function Home() {
 export function AppealList({ staff = false }: { staff?: boolean }) {
   const [params, setParams] = useSearchParams();
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
+  const assignees = useQuery({ queryKey: ['appeal-assignees'], enabled: staff,
+    queryFn: () => api<{ id: string; name: string }[]>('/work-queue/assignees') });
   const tab = params.get('tab') ?? 'all';
   const page = Number(params.get('page')) || 1;
-  const filter = Object.fromEntries(['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to', 'normalOnly'].map(key => [key, params.get(key) ?? undefined]));
+  const filter = Object.fromEntries(['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to', 'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric'].map(key => [key, params.get(key) ?? undefined]));
   const endpoint = (staff ? '/work-queue' : '/appeals') + queryString({ ...filter, tab: staff ? tab : undefined, own: staff ? undefined : 'true', page, limit: 15 });
   const rows = useQuery({ queryKey: ['appeals', endpoint], queryFn: ({ signal }) => api<Page<AppealRow>>(endpoint, { signal }), placeholderData: keepPreviousData });
   const apply = (key: string, value: string) => {
@@ -93,9 +95,18 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
       {staff && <><select aria-label="Подразделение" value={filter.departmentId ?? ''} onChange={event => apply('departmentId', event.target.value)}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все подразделения" /></select>
         <select aria-label="Процесс" value={filter.processId ?? ''} onChange={event => apply('processId', event.target.value)}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select>
         <select aria-label="Приоритет" value={filter.priority ?? ''} onChange={event => apply('priority', event.target.value)}><Options items={priorities} blank="Все приоритеты" /></select></>}
+      {staff && <>
+        <select aria-label="Исполнитель" value={filter.assigneeId ?? ''} onChange={event => apply('assigneeId', event.target.value)}>
+          <EntityOptions rows={assignees.data ?? []} blank="Все исполнители" />
+        </select>
+        <Field label="Срок с (UTC)"><input type="datetime-local" value={filter.dueFrom?.slice(0, 16) ?? ''}
+          onChange={event => apply('dueFrom', event.target.value && new Date(event.target.value + 'Z').toISOString())} /></Field>
+        <Field label="Срок до (UTC)"><input type="datetime-local" value={filter.dueTo?.slice(0, 16) ?? ''}
+          onChange={event => apply('dueTo', event.target.value && new Date(event.target.value + 'Z').toISOString())} /></Field>
+      </>}
       <select aria-label="Сортировка" value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select>
     </div>
-    <ErrorBox error={rows.error || catalog.error} retry={() => { void rows.refetch(); void catalog.refetch(); }} />{rows.isPending && <Loading />}
+    <ErrorBox error={rows.error || catalog.error || assignees.error} retry={() => { void rows.refetch(); void catalog.refetch(); if (staff) void assignees.refetch(); }} />{rows.isPending && <Loading />}
     {rows.data && <div className="surface">
       <div className="list-meta" aria-live="polite">{rows.isFetching ? 'Обновляем…' : `Найдено: ${rows.data.total}`}</div>
       {rows.data.items.length ? <AppealTable rows={rows.data.items} staff={staff} /> :
@@ -441,6 +452,13 @@ export function AppealDetail() {
         </form>}
       </Section>
       {staff && record.visibility === 'NORMAL_INTERNAL' && <RelatedAppeals record={record} reload={() => void query.refetch()} />}
+      <Section title="Время рассмотрения" icon={<Clock3 size={18} />}>
+        <dl className="facts"><div><dt>Активное время</dt><dd>{Math.floor(record.timing.activeSeconds / 60)} мин</dd></div>
+          <div><dt>Ожидание автора</dt><dd>{Math.floor(record.timing.waitingSeconds / 60)} мин</dd></div></dl>
+        {record.timing.periods.length > 0 && <details><summary>Последние периоды</summary><ul>
+          {record.timing.periods.map(period => <li key={period.startedAt}>{period.phase === 'ACTIVE' ? 'Рассмотрение' : 'Ожидание автора'} · {date(period.startedAt, true)} — {period.endedAt ? date(period.endedAt, true) : 'сейчас'}</li>)}
+        </ul></details>}
+      </Section>
       <Section title="История" icon={<Clock3 size={18} />}><Timeline items={record.events} /></Section>
     </div><aside className="detail-side">
       <Section title="Следующий шаг" icon={<ArrowRight size={18} />}>
@@ -463,7 +481,7 @@ export function AppealDetail() {
           <p className="preserve">{item.result}</p>
         </article>)}
       </Section>}
-      {record.reviews.length > 0 && <Section title="Запросы на пересмотр">{record.reviews.map(item => <div className="review-row" key={item.id}><p>{item.reason}</p><small>{item.decision ?? 'Ожидает рассмотрения'}</small></div>)}</Section>}
+      {record.reviews.length > 0 && <Section title="Запросы на отзыв и пересмотр">{record.reviews.map(item => <div className="review-row" key={item.id}><strong>{item.kind === 'WITHDRAWAL' ? 'Отзыв' : 'Пересмотр'}</strong><p>{item.reason}</p><small>{item.approved === true ? 'Одобрен. ' : item.approved === false ? 'Отклонён. ' : ''}{item.decision ?? 'Ожидает рассмотрения'}</small></div>)}</Section>}
     </aside></div>
     {action && <Modal title={actionNames[action]} close={() => setAction(null)}>
       <ActionForm pending={update.isPending || reroute.isPending || (action === 'REROUTE' && !catalog.data)} error={update.error || reroute.error || catalog.error} reload={() => void refreshAction()} submit={plain ? 'Подтвердить' : 'Сохранить'} onSubmit={data => {

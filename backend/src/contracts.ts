@@ -33,7 +33,7 @@ export const labels: Record<string, string> = {
   QUANTITATIVE: 'Количественная', QUALITATIVE: 'Качественная', MIXED: 'Смешанная',
   DECREASE: 'Снижение', INCREASE: 'Рост', TARGET: 'Целевое значение',
   BEFORE: 'До внедрения', AFTER: 'После внедрения',
-  CREATED: 'Запись создана', REGISTRATION_CONFIRMED: 'Обращение зарегистрировано', UPDATED: 'Данные обновлены', ASSIGNED: 'Ответственный назначен', TRANSFER_RECEIVED: 'Получено переданное обращение', REROUTED: 'Маршрут обращения изменён', PUBLICATION_CHANGES_REQUESTED: 'Запрошены правки публикации',
+  CREATED: 'Запись создана', EDITED: 'Редакция изменена', CHANGES_REQUESTED: 'Запрошены правки', REGISTRATION_CONFIRMED: 'Обращение зарегистрировано', UPDATED: 'Данные обновлены', ASSIGNED: 'Ответственный назначен', TRANSFER_RECEIVED: 'Получено переданное обращение', REROUTED: 'Маршрут обращения изменён', PUBLICATION_CHANGES_REQUESTED: 'Запрошены правки публикации',
   ROUTING_FALLBACK: 'Направлено в резервную очередь', CLARIFICATION: 'Запрошено уточнение',
   AUTHOR_RESPONSE: 'Автор ответил', COMMENT: 'Новое сообщение', INTERNAL_NOTE: 'Служебная заметка',
   RESOLVED_EVENT: 'Зафиксировано решение', REVIEW_REQUEST: 'Запрошен пересмотр', REVIEW_DECISION: 'Решение о пересмотре',

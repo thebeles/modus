@@ -1,15 +1,22 @@
 import { Controller, Get, Inject, Injectable, Param, Post, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
+import { ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Response } from 'express';
+import { scanUpload } from './attachment-scan';
 import { AuthRequest } from './auth';
-import { AppError, Database, forbidden, invalid, missing, throttle, Tx } from './common';
+import { AppError, atomic, Database, forbidden, invalid, missing, throttle, Tx } from './common';
 import { Policy, Principal } from './policy';
 
 export const maxFileBytes = () => Math.min(5_242_880, Math.max(1024, Number(process.env.ATTACHMENT_MAX_BYTES) || 5_242_880));
+function quotaBytes(name: string, fallback: number) {
+  const limit = Number(process.env[name]);
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : fallback;
+}
+
 const unavailable = () => new AppError('STORAGE_UNAVAILABLE', 'Хранилище временно недоступно.', 503);
 const types: Record<string, string> = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', txt: 'text/plain' };
 
@@ -103,14 +110,26 @@ export class Files {
     const mediaType = fileType(name, file.buffer);
     if (!mediaType) throw invalid('Формат файла не разрешён или содержимое не соответствует расширению.');
     const storageKey = randomUUID();
-    const row = await this.db.attachment.create({ data: { name, mediaType, bytes: file.size, storageKey, uploaderId: user.id },
-      select: attachmentSummary });
+    const row = await atomic(this.db, async tx => {
+      const scope = { uploaderId: user.id, purgeAt: null };
+      const [total, pending] = await Promise.all([
+        tx.attachment.aggregate({ where: scope, _sum: { bytes: true } }),
+        tx.attachment.aggregate({ where: { ...scope, ...unclaimedAttachment }, _sum: { bytes: true } }),
+      ]);
+      if ((total._sum.bytes ?? 0) + file.size > quotaBytes('ATTACHMENT_USER_QUOTA_BYTES', 1024 ** 3) ||
+        (pending._sum.bytes ?? 0) + file.size > quotaBytes('ATTACHMENT_PENDING_QUOTA_BYTES', 50 * 1024 ** 2)) {
+        throw new AppError('ATTACHMENT_QUOTA', 'Превышена квота вложений.', 413);
+      }
+      return tx.attachment.create({ data: { name, mediaType, bytes: file.size, storageKey, uploaderId: user.id }, select: attachmentSummary });
+    });
     try {
+      await scanUpload(file.buffer);
       await this.storage.write(storageKey, file.buffer);
       await this.db.attachment.update({ where: { id: row.id, purgeAt: null }, data: { readyAt: new Date() } });
       return row;
-    } catch {
+    } catch (error) {
       await this.db.attachment.updateMany({ where: { id: row.id, purgeAt: null }, data: { purgeAt: new Date() } }).catch(() => undefined);
+      if (error instanceof AppError) throw error;
       throw unavailable();
     }
   }
@@ -130,6 +149,8 @@ export class Files {
 export class FileController {
   constructor(@Inject(Files) private readonly files: Files) {}
   @Post(['init', 'complete'])
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5_242_880, files: 1, parts: 2 } }))
   upload(@Req() req: AuthRequest, @UploadedFile() file?: Express.Multer.File) { return this.files.upload(req.user, file); }
   @Get(':id/download') async download(@Req() req: AuthRequest, @Param('id') item: string, @Res() res: Response) {

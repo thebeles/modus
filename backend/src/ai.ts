@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Inject, Injectable, Param, Post, Req } from '@nestjs/common';
+import { JsonBody } from './openapi';
 import { z } from 'zod';
 import { appealTypes } from './contracts';
 import { AuthRequest } from './auth';
@@ -31,6 +32,10 @@ export interface AiProvider {
 }
 
 const strictModels = new Set(['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']);
+
+const adviceInput = z.strictObject({ consent: z.literal(true), id: id.optional(), text: bodyText.optional(),
+      visibility: z.enum(['NORMAL_INTERNAL', 'RESTRICTED', 'SPECIAL']).optional(), categoryId: id.optional() });
+const decisionInput = z.strictObject({ decision: z.enum(['APPLIED', 'DISMISSED']) });
 
 @Injectable()
 export class Groq implements AiProvider {
@@ -128,8 +133,7 @@ export class Ai {
 
   async advise(user: Principal, feature: keyof typeof scopes, raw: unknown) {
     if (user.role === 'ADMIN') throw forbidden();
-    const base = parse(z.strictObject({ consent: z.literal(true), id: id.optional(), text: bodyText.optional(),
-      visibility: z.enum(['NORMAL_INTERNAL', 'RESTRICTED', 'SPECIAL']).optional(), categoryId: id.optional() }), raw);
+    const base = parse(adviceInput, raw);
     await throttle(this.db, `ai:${user.id}`, 12, 3600);
     let context: Record<string, unknown>;
     let schema: z.ZodType;
@@ -207,7 +211,7 @@ export class Ai {
   }
 
   async decide(user: Principal, usageId: string, raw: unknown) {
-    const { decision } = parse(z.strictObject({ decision: z.enum(['APPLIED', 'DISMISSED']) }), raw);
+    const { decision } = parse(decisionInput, raw);
     return atomic(this.db, async tx => {
       const usage = await tx.aiUsage.findFirst({ where: { id: usageId, userId: user.id } });
       if (!usage) throw missing();
@@ -224,10 +228,10 @@ export class Ai {
 export class AiController {
   constructor(@Inject(Ai) private readonly ai: Ai) {}
   @Get('capabilities') capabilities() { return this.ai.capabilities(); }
-  @Post('usage/:id/decision') decide(@Req() req: AuthRequest, @Param('id') usageId: string, @Body() raw: unknown) {
+  @Post('usage/:id/decision') @JsonBody(decisionInput) decide(@Req() req: AuthRequest, @Param('id') usageId: string, @Body() raw: unknown) {
     return this.ai.decide(req.user, parse(id, usageId), raw);
   }
-  @Post(':feature') advise(@Req() req: AuthRequest, @Param('feature') feature: string, @Body() raw: unknown) {
+  @Post(':feature') @JsonBody(adviceInput) advise(@Req() req: AuthRequest, @Param('feature') feature: string, @Body() raw: unknown) {
     if (!Object.hasOwn(scopes, feature)) throw missing();
     return this.ai.advise(req.user, feature as keyof typeof scopes, raw);
   }

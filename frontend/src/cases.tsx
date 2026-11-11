@@ -180,6 +180,13 @@ function PlanForm({ plan }: { plan: Plan | null }) {
       <div className="two-fields"><Field label="Направление"><select name="direction" defaultValue={plan?.direction ?? 'DECREASE'}><Options items={['DECREASE', 'INCREASE', 'TARGET']} /></select></Field>
         <Field label="Целевое значение"><input name="targetValue" type="number" step="any" defaultValue={plan?.targetValue ?? ''} required /></Field></div></>}
     {method !== 'QUANTITATIVE' && textBox('Протокол качественной проверки', 'protocol', true, plan?.protocol)}
+    <fieldset><legend>Сопоставимость наблюдений</legend>
+      <div className="two-fields">
+        <Field label="Минимум наблюдений в выборке"><input name="minimumSampleSize" type="number" min={1} max={100000000} defaultValue={plan?.minimumSampleSize ?? ''} /></Field>
+        <Field label="Допустимая разница длительности, %"><input name="maxPeriodDifferencePercent" type="number" min={0} max={100} defaultValue={plan?.maxPeriodDifferencePercent ?? ''} /></Field>
+      </div>
+      <label className="checkbox-line"><input type="checkbox" name="requireSameSource" defaultChecked={plan?.requireSameSource} /> Один указанный вид источника</label>
+    </fieldset>
   </>;
 }
 
@@ -232,6 +239,21 @@ function PublicationPreview({ item }: { item: Change }) {
   ].map(([title, text]) => <div key={title}><h3>{title}</h3><p className="preserve">{text}</p></div>)}</div>;
 }
 
+function PublicationHistory({ id, version }: { id: string; version?: number }) {
+  const [page, setPage] = useState(1);
+  const history = useQuery({ queryKey: ['publication-revisions', id, version, page], queryFn: () =>
+    api<Page<{ version: number; action: string; recordedAt: string; snapshot: Change }>>(`/publications/${id}/revisions?page=${page}`) });
+  return <details><summary>Редакции публикации</summary>
+    {history.isPending && <Loading />}<ErrorBox error={history.error} retry={() => history.refetch()} />
+    {history.data?.items.map(item => <details key={item.version}>
+      <summary>Версия {item.version} · {item.action === 'BASELINE' ? 'Сохранённая редакция' : label(item.action)} · {date(item.recordedAt, true)}</summary>
+      <h3>{item.snapshot.title}</h3><PublicationPreview item={item.snapshot} />
+      {item.snapshot.reviewNote && <p>{item.snapshot.reviewNote}</p>}
+    </details>)}
+    {history.data && <Pagination {...history.data} onChange={setPage} />}
+  </details>;
+}
+
 export function ImprovementDetail() {
   const { id } = useParams();
   const { user } = useSession();
@@ -254,7 +276,9 @@ export function ImprovementDetail() {
   const plan = record.plan;
   const addPlan = () => edit.open({ title: plan ? 'Изменить план проверки' : 'Добавить план проверки', path: path + '/measurement-plan',
     fields: <PlanForm plan={plan} />, body: data => ({ method: field(data, 'method'), hypothesis: field(data, 'hypothesis'), criterion: field(data, 'criterion'),
-      metricName: optional(data, 'metricName'), unit: optional(data, 'unit'), direction: optional(data, 'direction'), targetValue: numeric(data, 'targetValue'), protocol: optional(data, 'protocol') }) });
+      metricName: optional(data, 'metricName'), unit: optional(data, 'unit'), direction: optional(data, 'direction'), targetValue: numeric(data, 'targetValue'), protocol: optional(data, 'protocol'),
+      minimumSampleSize: numeric(data, 'minimumSampleSize'), requireSameSource: data.has('requireSameSource'),
+      maxPeriodDifferencePercent: numeric(data, 'maxPeriodDifferencePercent') }) });
   const addTask = (task?: Improvement['actions'][number]) => edit.open({ title: task ? 'Редактировать задачу' : 'Добавить задачу',
     path: path + '/actions' + (task ? '/' + task.id : ''), method: task ? 'PATCH' : 'POST',
     fields: <><Field label="Название"><input name="title" defaultValue={task?.title} required minLength={3} /></Field>
@@ -302,7 +326,10 @@ export function ImprovementDetail() {
           </Section>
           <Section title="План проверки эффекта" icon={<Activity size={18} />} action={planEditable && <button className="button secondary" onClick={addPlan}>{plan ? 'Изменить' : 'Добавить план'}</button>}>
             {plan ? <dl className="facts"><div><dt>Метод</dt><dd>{label(plan.method)}</dd></div><div><dt>Гипотеза</dt><dd>{plan.hypothesis}</dd></div><div><dt>Критерий успеха</dt><dd>{plan.criterion}</dd></div>
-              {plan.metricName && <div><dt>Целевой показатель</dt><dd>{plan.metricName}: {plan.targetValue} {plan.unit}</dd></div>}{plan.protocol && <div><dt>Протокол</dt><dd>{plan.protocol}</dd></div>}</dl> :
+              {plan.metricName && <div><dt>Целевой показатель</dt><dd>{plan.metricName}: {plan.targetValue} {plan.unit}</dd></div>}{plan.protocol && <div><dt>Протокол</dt><dd>{plan.protocol}</dd></div>}
+              {plan.minimumSampleSize != null && <div><dt>Минимальная выборка</dt><dd>{plan.minimumSampleSize}</dd></div>}
+              {plan.requireSameSource && <div><dt>Источник</dt><dd>Одинаковый указанный вид</dd></div>}
+              {plan.maxPeriodDifferencePercent != null && <div><dt>Допуск длительности</dt><dd>{plan.maxPeriodDifferencePercent}%</dd></div>}</dl> :
               <Empty title="План проверки пока не задан" />}
           </Section>
         </Tabs.Content>
@@ -366,7 +393,7 @@ export function ImprovementDetail() {
     </aside></div>{edit.modal}
     {publication && <Modal title={publication.title} close={() => setPublication(null)}>
       <div className="inline-chips"><Synthetic show={publication.isSynthetic} /><span className="chip tone-muted">{publication.audienceId ? 'Подразделение' : 'Все сотрудники'}</span></div>
-      <PublicationPreview item={publication} /><ErrorBox error={pub.error} />
+      <PublicationPreview item={publication} /><PublicationHistory key={publication.id} id={publication.id} version={publication.version} /><ErrorBox error={pub.error} />
       {publication.reviewNote && <div className="info-box">{publication.reviewNote}</div>}
       {record.canDraftPublication && publication.authorId === user.id && ['DRAFT', 'APPROVED'].includes(publication.state ?? '') &&
         <button className="button secondary" onClick={() => {

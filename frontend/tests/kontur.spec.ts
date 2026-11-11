@@ -81,6 +81,8 @@ test('E2E-02 author receives clarification, replies, and restores the previous s
   await handler.page.reload();
   await expect(handler.page.getByText('Использовали тестовый образец заявки на оборудование.', { exact: true })).toBeVisible();
   await expect(handler.page.locator('.heading-line').getByText('В работе', { exact: true })).toBeVisible();
+  await handler.page.getByText('Последние периоды', { exact: true }).click();
+  await expect(handler.page.getByText(/^Ожидание автора ·/)).toBeVisible();
   await handler.close();
 });
 
@@ -230,6 +232,10 @@ test('E2E-07 draft is private until approval and publishing, and employee reads 
     await manager.page.getByRole('dialog').getByRole('button', { name: operation, exact: true }).click();
     await expect(manager.page.getByRole('dialog')).toBeHidden();
   }
+  await manager.page.getByRole('button', { name: title, exact: true }).click();
+  await manager.page.getByText('Редакции публикации', { exact: true }).click();
+  await expect(manager.page.getByText(/^Версия 3 ·/)).toBeVisible();
+  await expect(manager.page.getByText(/^Версия 1 ·/)).toBeVisible();
   await employee.page.goto('/changes');
   await employee.page.getByRole('textbox', { name: 'Поиск публикаций' }).fill(title);
   await employee.page.getByRole('link', { name: title, exact: true }).click();

@@ -140,6 +140,10 @@ test('appeal transaction covers routing, deduplication, internal visibility, cla
   current = success(await change(employee, current.version, 'REVIEW_REQUEST', { text: 'Уточните сроки согласования новых полей.' }));
   current = success(await change(manager, current.version, 'REVIEW_DECISION', { text: 'Запрос принят, нужен новый срок.', approve: true }));
   assert.equal(current.status, 'REVIEW');
+  const periods = await db.appealWorkPeriod.findMany({ where: { appealId: id }, orderBy: { startedAt: 'asc' } });
+  assert.deepEqual(periods.map(period => period.phase), ['ACTIVE', 'WAITING_AUTHOR', 'ACTIVE', 'ACTIVE']);
+  assert.equal(periods.filter(period => !period.endedAt).length, 1);
+  assert.ok(periods[2].endedAt! <= periods[3].startedAt);
   await deadlines(db);
   await Promise.all([deliver(db), deliver(db)]);
   assert.equal(await db.notification.count({ where: { href: path, kind: { in: ['CREATED', 'REGISTRATION_CONFIRMED'] } } }), 2);
@@ -189,7 +193,7 @@ test('workflow verifies a linked improvement before separate publication approva
   assert.equal((await request(path + '/transition', { session: handler, body: { expectedVersion: current.version, target: 'UNDER_REVIEW' } })).response.status, 409);
   await step('/actions', { title: 'Подготовить шаблон и проверить поля' });
   await step('/measurement-plan', { method: 'QUANTITATIVE', hypothesis: 'Доля уточнений уменьшится после изменения.', criterion: 'Доля ниже 25 процентов.',
-    metricName: 'Уточнения', unit: '%', direction: 'DECREASE', targetValue: 25 });
+    metricName: 'Уточнения', unit: '%', direction: 'DECREASE', targetValue: 25, minimumSampleSize: 20, requireSameSource: true });
   await step('/transition', { target: 'UNDER_REVIEW' });
   assert.equal((await request(path + '/approve', { session: handler, body: { expectedVersion: current.version, text: 'Подтверждаю предложение.' } })).response.status, 403);
   await step('/approve', { text: 'Согласован синтетический пилот.' }, manager);
@@ -213,8 +217,14 @@ test('workflow verifies a linked improvement before separate publication approva
   const verification = { outcome: 'VERIFIED', summary: 'Достигнут целевой показатель.', limitations: 'Только синтетическая выборка.' };
   assert.equal((await request(path + '/verification', { session: manager, body: { expectedVersion: current.version, ...verification } })).response.status, 409);
   const implemented = await db.improvement.findUniqueOrThrow({ where: { id: item.id } });
-  await step('/measurements', { phase: 'AFTER', value: 20, periodStart: implemented.implementedAt!.toISOString(),
-    periodEnd: new Date().toISOString(), sampleSize: 20, source: 'Синтетическая выборка после изменения.' });
+  const after = { phase: 'AFTER', value: 20, periodStart: implemented.implementedAt!.toISOString(),
+    periodEnd: new Date().toISOString(), source: 'Синтетическая выборка после изменения.' };
+  await step('/measurements', { ...after, sampleSize: 10, sourceType: 'OTHER' });
+  const attempt = () => request(path + '/verification', { session: manager, body: { expectedVersion: current.version, ...verification } });
+  assert.equal((await attempt()).response.status, 409);
+  await step('/measurements', { ...after, periodEnd: new Date().toISOString(), sampleSize: 20, sourceType: 'OTHER' });
+  assert.equal((await attempt()).response.status, 409);
+  await step('/measurements', { ...after, periodEnd: new Date().toISOString(), sampleSize: 20, sourceType: 'MANUAL_SAMPLE' });
   await step('/verification', verification, manager);
   const recorded = await db.verification.findUniqueOrThrow({ where: { improvementId: item.id } });
   assert.equal(recorded.measurementIds.length, 2);
@@ -240,6 +250,11 @@ test('workflow verifies a linked improvement before separate publication approva
   success(await request(publicationPath + '/publish', { session: manager, body: { expectedVersion: 6 } }));
   const publication = success(await request<Record<string, unknown>>('/publications/' + draft.id, { session: employee }));
   assert.ok(!('improvementId' in publication));
+  assert.equal((await request(publicationPath + '/revisions', { session: employee })).response.status, 404);
+  const revisions = success(await request<{ items: { version: number; snapshot: { limitations: string } }[] }>(publicationPath + '/revisions', { session: manager }));
+  assert.deepEqual(revisions.items.map(row => row.version), [7, 6, 5, 4, 3, 2, 1]);
+  assert.equal(revisions.items[0].snapshot.limitations, 'Только синтетический пилот.');
+  assert.equal(revisions.items[6].snapshot.limitations, content.limitations);
   await step('/feedback-invitations', {});
   const invite = await db.feedback.findFirstOrThrow({ where: { improvementId: item.id } });
   success(await request(`/feedback/${invite.id}/respond`, { session: employee, body: { expectedVersion: 1, choice: 'PARTLY', comment: 'Помогло частично.' } }));
@@ -457,4 +472,108 @@ test('an administrator can resubmit a dead letter without duplicating its notifi
   await db.workerHeartbeat.upsert({ where: { id: 'outbox' }, create: { id: 'outbox', checkedAt: now }, update: { checkedAt: now } });
   const monitor = success(await request<{ healthy: boolean }>('/admin/worker-status', { session: admin }));
   assert.equal(monitor.healthy, true);
+});
+
+test('confidential withdrawal requires a decision and the delegated reviewer can restore it', async () => {
+  const employee = await login('employee');
+  const handler = await login('sensitive-handler');
+  const manager = await login('manager');
+  const result = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(),
+    body: { type: 'PROBLEM', description: 'Синтетическая проверка защищённого отзыва.', visibility: 'RESTRICTED' } }));
+  const path = '/appeals/' + result.id;
+  const transition = (session: Session, row: { version: number }, action: string, data = {}) => request<Row>(path + '/transition', {
+    session, body: { expectedVersion: row.version, action, ...data },
+  });
+  let current = success(await transition(handler, { version: 1 }, 'REVIEW'));
+  current = success(await transition(employee, current, 'WITHDRAW', { text: 'Прошу отозвать тестовую запись.' }));
+  assert.equal(current.status, 'REVIEW');
+  assert.equal((await transition(handler, current, 'RESOLVE', { resolutionType: 'RESOLVED', text: 'Попытка закрыть до решения.' })).response.status, 409);
+  assert.equal((await transition(manager, current, 'REVIEW_DECISION', { approve: true, text: 'Тестовый запрос.' })).response.status, 404);
+  current = success(await transition(handler, current, 'REVIEW_DECISION', { approve: true, text: 'Основания для отзыва подтверждены.' }));
+  assert.equal(current.status, 'WITHDRAWN');
+  current = success(await transition(employee, current, 'REVIEW_REQUEST', { text: 'Поступила новая информация.' }));
+  current = success(await transition(handler, current, 'REVIEW_DECISION', { approve: true, text: 'Уточнение принято к рассмотрению.' }));
+  assert.equal(current.status, 'REVIEW');
+  const decisions = await db.reviewRequest.findMany({ where: { appealId: result.id }, orderBy: { createdAt: 'asc' } });
+  assert.deepEqual(decisions.map(row => [row.kind, row.approved, !!row.decidedBy]), [
+    ['WITHDRAWAL', true, true], ['RECONSIDERATION', true, true],
+  ]);
+});
+
+test('queue, radar and OpenAPI expose scoped filters and separate analytics responses', async () => {
+  const manager = await login('manager');
+  const handler = await db.user.findUniqueOrThrow({ where: { email: 'handler@demo.local' } });
+  const assignees = success(await request<{ id: string }[]>('/work-queue/assignees', { session: manager }));
+  assert.ok(assignees.some(row => row.id === handler.id));
+  const from = new Date(Date.now() - 3600000).toISOString();
+  const to = new Date(Date.now() + 7200000).toISOString();
+  const filters = new URLSearchParams({ dueFrom: from, dueTo: to, assigneeId: handler.id, normalOnly: 'true' });
+  const queue = success(await request<{ total: number }>('/work-queue?' + filters, { session: manager }));
+  const analytics = success(await request<{ total: number; overdue?: number }>('/analytics/appeals?' + filters, { session: manager }));
+  assert.equal(analytics.total, queue.total);
+  assert.equal(analytics.overdue, undefined);
+  const sla = success(await request<{ overdue: number; total?: number }>('/analytics/sla?' + filters, { session: manager }));
+  assert.equal(sla.total, undefined);
+  assert.equal(typeof sla.overdue, 'number');
+  const outcomes = success(await request<{ items: unknown[]; total: number; verifiedSuccess: number }>('/analytics/improvement-outcomes?outcome=VERIFIED&limit=100', { session: manager }));
+  assert.equal(outcomes.items.length, outcomes.verifiedSuccess);
+  const overview = success(await request<{ recurrenceCandidates: number }>('/radar/overview', { session: manager }));
+  assert.equal(success(await request<{ total: number }>('/radar/recurrences', { session: manager })).total, overview.recurrenceCandidates);
+  const doc = await (await fetch(base + '/openapi.json')).json() as { paths: Record<string, Record<string, { requestBody?: unknown; parameters?: { name: string }[] }>> };
+  assert.ok(doc.paths['/api/v1/improvements/{id}/measurement-plan'].post.requestBody);
+  assert.ok(doc.paths['/api/v1/publications/{id}/revisions'].get);
+  assert.ok(doc.paths['/api/v1/work-queue'].get.parameters?.some(parameter => parameter.name === 'dueFrom'));
+});
+
+test('revoking private queue membership removes file, relation and AI access', async () => {
+  const employee = await login('employee');
+  const sensitive = await login('sensitive-handler');
+  const admin = await login('admin');
+  const handler = await db.user.findUniqueOrThrow({ where: { email: 'sensitive-handler@demo.local' } });
+  const coordinator = await db.user.create({ data: {
+    name: 'Тестовый координатор', email: randomUUID() + '@demo.local', passwordHash: 'unused',
+    role: 'HANDLER', permissions: ['SENSITIVE_CASE_HANDLER'], demo: true,
+  } });
+  const queue = await db.workQueue.create({ data: { name: randomUUID(), visibility: 'RESTRICTED', coordinatorId: coordinator.id,
+    members: { create: { userId: handler.id } } } });
+  const form = new FormData();
+  form.set('file', new Blob(['Контроль отзыва прав.'], { type: 'text/plain' }), 'revocation.txt');
+  const file = success(await request<{ id: string }>('/attachments/complete', { session: employee, body: form }));
+  const create = (attachmentIds: string[]) => request<{ id: string }>('/appeals', { session: employee, key: randomUUID(),
+    body: { type: 'PROBLEM', description: 'Синтетический закрытый сигнал.', visibility: 'RESTRICTED', attachmentIds } }).then(success);
+  const source = await create([]);
+  const target = await create([file.id]);
+  await db.appeal.update({ where: { id: target.id }, data: { queueId: queue.id, assigneeId: handler.id } });
+  const [fromId, toId] = [source.id, target.id].sort();
+  await db.appealLink.create({ data: { fromId, toId, relation: 'RELATED_CONTEXT', explanation: 'Синтетическая связь.' } });
+  const related = () => request<{ links: unknown[] }>('/appeals/' + source.id + '/related', { session: sensitive }).then(success);
+  assert.equal((await related()).links.length, 1);
+  assert.equal((await request('/attachments/' + file.id + '/download', { session: sensitive })).response.status, 200);
+  success(await request('/admin/work-queues/' + queue.id, { session: admin, method: 'PATCH', body: {
+    name: queue.name, visibility: queue.visibility, coordinatorId: coordinator.id, memberIds: [],
+  } }));
+  assert.equal((await related()).links.length, 0);
+  assert.equal((await request('/appeals/' + target.id, { session: sensitive })).response.status, 404);
+  assert.equal((await request('/attachments/' + file.id + '/download', { session: sensitive })).response.status, 404);
+  assert.equal((await request('/ai/handler-summary', { session: sensitive, body: { id: target.id, consent: true } })).response.status, 404);
+  assert.equal((await request('/attachments/' + file.id + '/download', { session: employee })).response.status, 200);
+});
+
+test('parallel uploads reserve quota without exceeding the pending limit', async () => {
+  const session = await login('other-employee');
+  const previous = process.env.ATTACHMENT_PENDING_QUOTA_BYTES;
+  process.env.ATTACHMENT_PENDING_QUOTA_BYTES = '12';
+  const upload = () => {
+    const form = new FormData();
+    form.set('file', new Blob(['8 bytes!'], { type: 'text/plain' }), 'quota.txt');
+    return request('/attachments/complete', { session, body: form });
+  };
+  try {
+    const results = await Promise.all([upload(), upload()]);
+    assert.deepEqual(results.map(item => item.response.status).sort(), [201, 413]);
+    assert.ok(results.some(item => item.error?.code === 'ATTACHMENT_QUOTA'));
+  } finally {
+    if (previous === undefined) delete process.env.ATTACHMENT_PENDING_QUOTA_BYTES;
+    else process.env.ATTACHMENT_PENDING_QUOTA_BYTES = previous;
+  }
 });

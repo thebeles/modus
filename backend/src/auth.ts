@@ -1,4 +1,5 @@
 import { CanActivate, Controller, ExecutionContext, Get, Inject, Injectable, Post, Body, Req, Res, SetMetadata } from '@nestjs/common';
+import { JsonBody } from './openapi';
 import { Reflector } from '@nestjs/core';
 import { compare, hash } from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
@@ -17,6 +18,8 @@ const lifetime = 8 * 60 * 60 * 1000;
 const writeMethods = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 const sessionCookie = { httpOnly: true, sameSite: 'strict' as const, path: '/' };
 const token = () => randomBytes(32).toString('base64url');
+
+const demoInput = z.strictObject({ profile: z.enum(['employee', 'handler', 'manager', 'admin', 'other-employee', 'sensitive-handler']) });
 
 @Injectable()
 export class SessionGuard implements CanActivate {
@@ -64,7 +67,7 @@ export class AuthService {
 
   async demo(input: unknown, ip: string, res: Response) {
     if (!demoMode()) throw forbidden();
-    const { profile } = parse(z.strictObject({ profile: z.enum(['employee', 'handler', 'manager', 'admin', 'other-employee', 'sensitive-handler']) }), input);
+    const { profile } = parse(demoInput, input);
     await throttle(this.db, `demo-login:${ip}`, 120, 300);
     const user = await this.db.user.findFirst({ where: { email: `${profile}@demo.local`, demo: true, active: true }, select: principalSelect });
     if (!user) throw new AppError('INVALID_CREDENTIALS', 'Демонстрационная учётная запись недоступна.', 401);
@@ -129,16 +132,16 @@ export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
 
   @Public() @Get('capabilities') capabilities() { return { demoMode: demoMode() }; }
-  @Public() @Post('login') login(@Body() input: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  @Public() @Post('login') @JsonBody(loginInput) login(@Body() input: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     return this.auth.login(input, req.ip ?? 'unknown', res);
   }
-  @Public() @Post('demo') demo(@Body() input: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  @Public() @Post('demo') @JsonBody(demoInput) demo(@Body() input: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     return this.auth.demo(input, req.ip ?? 'unknown', res);
   }
   @Get('me') me(@Req() req: AuthRequest) { return { user: req.user, demoMode: demoMode() }; }
   @Post('refresh') refresh(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response) { return this.auth.renew(req, res); }
   @Post('logout') logout(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response) { return this.auth.logout(req, res); }
-  @Post('change-password') change(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response, @Body() input: unknown) {
+  @Post('change-password') @JsonBody(passwordInput) change(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response, @Body() input: unknown) {
     return this.auth.change(req, res, input);
   }
 }

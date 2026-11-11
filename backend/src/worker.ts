@@ -87,35 +87,39 @@ export async function deliver(client: PrismaClient, now = new Date()) {
 export async function deadlines(client: PrismaClient, now = new Date()) {
   const soon = new Date(now.getTime() + hour);
   const waitingCutoff = new Date(now.getTime() - 24 * hour);
-  const records = await client.appeal.findMany({
-    where: { status: { notIn: ['CLOSED', 'WITHDRAWN'] }, OR: [
-      { status: 'WAITING_AUTHOR', waitingSince: { lte: waitingCutoff } },
-      { status: { not: 'WAITING_AUTHOR' }, slaVersion: { not: null }, OR: [
-        { dueAt: { lte: soon } }, { firstResponseDueAt: { lte: soon }, firstHumanResponseAt: null },
+  let after: string | undefined;
+  for (;;) {
+    const records: { id: string }[] = await client.appeal.findMany({
+      where: { id: { gt: after }, OR: [
+        { status: 'WAITING_AUTHOR', waitingSince: { lte: waitingCutoff } },
+        { controlDueAt: { lte: soon } },
       ] },
-    ] }, select: { id: true },
-  });
-  for (const { id } of records) {
-    await atomic(client, async tx => {
-      const item = await tx.appeal.findUnique({ where: { id }, include: { queue: { select: { coordinatorId: true } } } });
-      if (!item || !activeAppeal(item.status)) return;
-      const href = `/appeals/${item.id}`;
-      if (item.status === 'WAITING_AUTHOR' && item.waitingSince && item.waitingSince <= waitingCutoff) {
-        const key = clarificationKey(item.id, item.waitingSince);
-        const inserted = await tx.outboxJob.createMany({ data: { key, userId: item.authorId, kind: 'CLARIFICATION_REMINDER', href }, skipDuplicates: true });
-        if (inserted.count) await audit(tx, 'appeal', item.id, 'CLARIFICATION_REMINDER', undefined, true);
-        return;
-      }
-      const owner = item.assigneeId ?? item.queue.coordinatorId;
-      const recipient = await tx.user.findFirst({ where: { id: owner, active: true }, select: principalSelect });
-      if (!recipient || !await policy.handles(tx, recipient, id)) return;
-      for (const name of ['SLA', 'FIRST_RESPONSE']) {
-        const dueAt = slaDeadline(item, name + '_DUE');
-        if (!dueAt || dueAt > soon) continue;
-        const kind = `${name}_${dueAt < now ? 'OVERDUE' : 'DUE'}`;
-        await notify(tx, `${item.id}:${kind}:${dueAt.toISOString()}`, [owner], kind, href);
-      }
+      orderBy: { id: 'asc' }, take: 100, select: { id: true },
     });
+    if (!records.length) return;
+    for (const { id } of records) {
+      await atomic(client, async tx => {
+        const item = await tx.appeal.findUnique({ where: { id }, include: { queue: { select: { coordinatorId: true } } } });
+        if (!item || !activeAppeal(item.status)) return;
+        const href = `/appeals/${item.id}`;
+        if (item.status === 'WAITING_AUTHOR' && item.waitingSince && item.waitingSince <= waitingCutoff) {
+          const key = clarificationKey(item.id, item.waitingSince);
+          const inserted = await tx.outboxJob.createMany({ data: { key, userId: item.authorId, kind: 'CLARIFICATION_REMINDER', href }, skipDuplicates: true });
+          if (inserted.count) await audit(tx, 'appeal', item.id, 'CLARIFICATION_REMINDER', undefined, true);
+          return;
+        }
+        const owner = item.assigneeId ?? item.queue.coordinatorId;
+        const recipient = await tx.user.findFirst({ where: { id: owner, active: true }, select: principalSelect });
+        if (!recipient || !await policy.handles(tx, recipient, id)) return;
+        for (const name of ['SLA', 'FIRST_RESPONSE']) {
+          const dueAt = slaDeadline(item, name + '_DUE');
+          if (!dueAt || dueAt > soon) continue;
+          const kind = `${name}_${dueAt < now ? 'OVERDUE' : 'DUE'}`;
+          await notify(tx, `${item.id}:${kind}:${dueAt.toISOString()}`, [owner], kind, href);
+        }
+      });
+    }
+    after = records.at(-1)!.id;
   }
 }
 

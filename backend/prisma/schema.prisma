@@ -309,6 +309,21 @@ model Appeal {
   @@index([categoryId])
   @@index([priority])
   @@index([processId])
+  workPeriods AppealWorkPeriod[]
+}
+
+enum AppealWorkPhase {
+  ACTIVE
+  WAITING_AUTHOR
+}
+
+model AppealWorkPeriod {
+  appealId String
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  startedAt DateTime
+  endedAt DateTime?
+  phase AppealWorkPhase
+  @@id([appealId, startedAt])
 }
 
 model Comment {
@@ -358,6 +373,8 @@ model ReviewRequest {
   reason String
   kind ReviewRequestKind @default(RECONSIDERATION)
   decision String?
+  approved Boolean?
+  decidedBy String?
   decidedAt DateTime?
   createdAt DateTime @default(now())
   @@index([appealId])
@@ -511,6 +528,9 @@ model MeasurementPlan {
   direction String?
   targetValue Float?
   protocol String?
+  minimumSampleSize Int?
+  requireSameSource Boolean @default(false)
+  maxPeriodDifferencePercent Int?
   observations Measurement[]
 }
 
@@ -582,6 +602,18 @@ model Publication {
   isSynthetic Boolean @default(false)
   version Int @default(1)
   @@index([state, audienceId])
+  revisions PublicationRevision[]
+}
+
+model PublicationRevision {
+  publicationId String
+  publication Publication @relation(fields: [publicationId], references: [id], onDelete: Restrict)
+  version Int
+  recordedAt DateTime @default(now())
+  actorId String?
+  action String
+  snapshot Json
+  @@id([publicationId, version])
 }
 
 model AuditEvent {

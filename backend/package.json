@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/domain.test.ts",
+    "test:load": "tsx --env-file-if-exists=../.env tests/load.ts",
     "test:integration": "tsx --env-file-if-exists=../.env --test tests/integration.test.ts",
     "db:migrate": "node --env-file-if-exists=../.env ./node_modules/prisma/build/index.js migrate deploy",
     "db:seed": "tsx --env-file-if-exists=../.env prisma/seed.ts",

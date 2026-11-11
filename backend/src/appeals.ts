@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Headers, Inject, Injectable, Param, Patch, Post, Query, Req } from '@nestjs/common';
-import { ApiBody, ApiTags } from '@nestjs/swagger';
+import { JsonBody, QueryFields } from './openapi';
+import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { Appeal, Prisma, ReviewRequestKind } from '@prisma/client';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, priorities, resolutions, visibilities } from './contracts';
@@ -16,8 +17,10 @@ export const appealListInput = z.strictObject({
   departmentId: id.optional(), processId: id.optional(), assigneeId: id.optional(),
   tab: z.enum(['mine', 'new', 'waiting', 'risk', 'overdue', 'stale', 'all']).optional(),
   own: z.enum(['true', 'false']).optional(), normalOnly: z.enum(['true']).optional(), sort: z.enum(['recent', 'oldest', 'due']).default('recent'),
-  from: dateTime.optional(), to: dateTime.optional(),
-});
+  from: dateTime.optional(), to: dateTime.optional(), dueFrom: dateTime.optional(), dueTo: dateTime.optional(),
+  metric: z.enum(['documented', 'responded']).optional(),
+}).refine(({ from, to }) => !from || !to || from < to, { path: ['to'], message: 'Конец периода должен быть позже начала.' })
+  .refine(({ dueFrom, dueTo }) => !dueFrom || !dueTo || dueFrom < dueTo, { path: ['dueTo'], message: 'Конец интервала должен быть позже начала.' });
 const createInput = z.strictObject({
   type: z.enum(appealTypes), title: title.optional(), description: bodyText,
   proposedSolution: bodyText.optional(), categoryId: id.optional(), processId: id.optional(),
@@ -66,13 +69,16 @@ const summary = {
   closedAt: true, isSynthetic: true, seedOrigin: true, version: true,
 } satisfies Prisma.AppealSelect;
 
+const rerouteInput = z.strictObject({ expectedVersion, text: bodyText,
+      categoryId: id.nullable().optional(), processId: id.nullable().optional() });
+
 @Injectable()
 export class Appeals {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Policy) private readonly policy: Policy,
     @Inject(Routing) private readonly routing: Routing) {}
 
   where(user: Principal, filters: z.output<typeof appealListInput>, staff = false, now = new Date()): Prisma.AppealWhereInput {
-    const { status, type, priority, categoryId, departmentId, processId, assigneeId, q, own, normalOnly, tab, from, to } = filters;
+    const { status, type, priority, categoryId, departmentId, processId, assigneeId, q, own, normalOnly, tab, from, to, dueFrom, dueTo, metric } = filters;
     const tabs = appealQueueFilters(user, now);
     return { AND: [
       staff ? this.policy.staffAppeals(user) : this.policy.appeals(user),
@@ -80,6 +86,9 @@ export class Appeals {
       own === 'true' ? { authorId: user.id } : {},
       normalOnly === 'true' ? { visibility: 'NORMAL_INTERNAL' } : {},
       tab ? tabs[tab] : {},
+      dueFrom || dueTo ? { controlDueAt: { gte: dueFrom, lt: dueTo } } : {},
+      metric === 'documented' ? { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } } : {},
+      metric === 'responded' ? { firstResponseSeconds: { not: null } } : {},
       q ? { OR: ['title', 'description', 'number'].map(field => ({ [field]: { contains: q, mode: 'insensitive' } })) } : {},
     ] };
   }
@@ -97,6 +106,12 @@ export class Appeals {
     ], { isolationLevel: 'RepeatableRead' });
     return { items: items.map(row => row.authorId === user.id && row.visibility !== 'NORMAL_INTERNAL' ? { ...row, assigneeId: null } : row),
       total, page, limit };
+  }
+
+  async assignees(user: Principal) {
+    if (!this.policy.isStaff(user)) throw forbidden();
+    return this.db.user.findMany({ where: { assigned: { some: this.policy.staffAppeals(user) } },
+      select: { id: true, name: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }] });
   }
 
   private actions(user: Principal, record: Pick<Appeal, 'authorId' | 'status' | 'visibility' | 'resumeState'>, staff: boolean, pending?: ReviewRequestKind) {
@@ -125,7 +140,8 @@ export class Appeals {
         }
         actions.push(({ CLOSED: 'RESOLVE', WAITING_AUTHOR: 'CLARIFICATION' } as Record<string, string>)[step] ?? step);
       }
-    } else if ((pending === 'RECONSIDERATION' && user.role === 'MANAGER') ||
+    } else if ((pending === 'RECONSIDERATION' &&
+      (record.visibility === 'NORMAL_INTERNAL' ? user.role === 'MANAGER' : this.policy.has(user, 'SENSITIVE_CASE_HANDLER'))) ||
       (pending === 'WITHDRAWAL' && this.policy.has(user, 'SENSITIVE_CASE_HANDLER'))) actions.push('REVIEW_DECISION');
     return actions;
   }
@@ -142,13 +158,13 @@ export class Appeals {
       const staff = await this.policy.handles(tx, user, appealId);
       const internal = record.authorId !== user.id && this.policy.isStaff(user);
       const hideAssignment = !internal && record.visibility !== 'NORMAL_INTERNAL';
-      const [comments, events, attachments, reviews, problems, improvements, links, publications] = await Promise.all([
+      const [comments, events, attachments, reviews, problems, improvements, links, publications, periods, elapsed] = await Promise.all([
         tx.comment.findMany({ where: { appealId, ...(internal ? {} : { internal: false }) }, orderBy: { createdAt: 'asc' },
           select: { id: true, internal: true, kind: true, body: true, createdAt: true, author: { select: { name: true } } } }),
         tx.auditEvent.findMany({ where: { entity: 'appeal', entityId: appealId, ...(internal ? {} : { authorVisible: true }) },
           orderBy: { createdAt: 'desc' }, take: 200, select: { id: true, action: true, createdAt: true, ...(internal ? { details: true } : {}) } }),
         tx.attachment.findMany({ where: { appealId }, select: attachmentSummary }),
-        tx.reviewRequest.findMany({ where: { appealId }, orderBy: { createdAt: 'desc' }, select: { id: true, reason: true, kind: true, decision: true, decidedAt: true, createdAt: true } }),
+        tx.reviewRequest.findMany({ where: { appealId }, orderBy: { createdAt: 'desc' }, select: { id: true, reason: true, kind: true, decision: true, approved: true, decidedAt: true, createdAt: true } }),
         tx.problem.findMany({ where: { AND: [{ appeals: { some: { appealId } } }, this.policy.problems(user)] }, select: { id: true, title: true, number: true } }),
         tx.improvement.findMany({ where: { AND: [{ appeals: { some: { appealId } } }, this.policy.improvements(user)] }, select: { id: true, title: true, number: true } }),
         tx.appealLink.findMany({ where: { state: { not: 'REJECTED' }, AND: [
@@ -158,11 +174,18 @@ export class Appeals {
         record.visibility === 'NORMAL_INTERNAL' ? tx.publication.findMany({ where: { AND: [this.policy.publications(user), { improvement: { OR: [
           { appeals: { some: { appealId } } }, { problem: { appeals: { some: { appealId } } } },
         ] } }] }, select: { id: true, title: true, result: true }, orderBy: { publishedAt: 'desc' }, take: 10 }) : [],
+        tx.appealWorkPeriod.findMany({ where: { appealId }, select: { phase: true, startedAt: true, endedAt: true },
+          orderBy: { startedAt: 'desc' }, take: 30 }),
+        tx.$queryRaw<{ phase: string; seconds: number }[]>`
+          SELECT phase, SUM(GREATEST(0, EXTRACT(EPOCH FROM (COALESCE("endedAt", ${new Date()}) - "startedAt"))))::float8 AS seconds
+          FROM "AppealWorkPeriod" WHERE "appealId" = ${appealId} GROUP BY phase`,
       ]);
       const allowedActions = this.actions(user, record, staff, reviews.find(review => !review.decidedAt)?.kind);
       return { ...record, assignee: hideAssignment ? null : record.assignee, queue: hideAssignment ? null : record.queue,
         assigneeId: hideAssignment ? null : record.assigneeId,
         queueId: internal ? record.queueId : undefined, resumeState: undefined, comments, events, attachments, reviews,
+        timing: { periods, activeSeconds: elapsed.find(row => row.phase === 'ACTIVE')?.seconds ?? 0,
+          waitingSeconds: elapsed.find(row => row.phase === 'WAITING_AUTHOR')?.seconds ?? 0 },
         problems, improvements, publications, links: internal ? links : [], allowedActions };
     }, { isolationLevel: 'RepeatableRead' });
   }
@@ -350,7 +373,7 @@ export class Appeals {
           const withdrawal = pending.kind === 'WITHDRAWAL';
           if (withdrawal && !this.policy.has(user, 'SENSITIVE_CASE_HANDLER')) throw forbidden();
           if (input.approve && withdrawal !== activeAppeal(record.status)) throw invalidState('Состояние обращения изменилось. Отклоните запрос с обоснованием.');
-          await tx.reviewRequest.update({ where: { id: pending.id }, data: { decision: input.text, decidedAt: now } });
+          await tx.reviewRequest.update({ where: { id: pending.id }, data: { decision: input.text, approved: input.approve, decidedBy: user.id, decidedAt: now } });
           if (input.approve && withdrawal) {
             Object.assign(data, { status: 'WITHDRAWN', withdrawnAt: now, waitingSince: null, resumeState: null });
           } else if (input.approve) {
@@ -389,8 +412,7 @@ export class Appeals {
   }
 
   async reroute(user: Principal, appealId: string, raw: unknown) {
-    const input = parse(z.strictObject({ expectedVersion, text: bodyText,
-      categoryId: id.nullable().optional(), processId: id.nullable().optional() }), raw);
+    const input = parse(rerouteInput, raw);
     return atomic(this.db, async tx => {
       const record = await this.policy.appeal(tx, user, appealId);
       if (!this.policy.has(user, 'ROUTING_COORDINATOR') || !await this.policy.handles(tx, user, appealId)) throw forbidden();
@@ -433,16 +455,17 @@ export class Appeals {
 export class AppealsController {
   constructor(@Inject(Appeals) private readonly service: Appeals) {}
   @Get('catalog') catalog(@Req() req: AuthRequest, @Query('appealId') appealId?: string) { return this.service.dictionaries(req.user, appealId); }
-  @Get('appeals') list(@Req() req: AuthRequest, @Query() query: unknown) { return this.service.list(req.user, query); }
-  @Get('work-queue') queue(@Req() req: AuthRequest, @Query() query: unknown) { return this.service.list(req.user, query, true); }
-  @Post('appeals')
-  @ApiBody({ schema: { example: { type: 'PROPOSAL', title: 'Обновить шаблон', description: 'Добавить в шаблон поле для ожидаемого срока.' } } })
+  @Get('appeals') @QueryFields(appealListInput) list(@Req() req: AuthRequest, @Query() query: unknown) { return this.service.list(req.user, query); }
+  @Get('work-queue/assignees') assignees(@Req() req: AuthRequest) { return this.service.assignees(req.user); }
+  @Get('work-queue') @QueryFields(appealListInput) queue(@Req() req: AuthRequest, @Query() query: unknown) { return this.service.list(req.user, query, true); }
+  @Post('appeals') @JsonBody(createInput, { type: 'PROPOSAL', description: 'Добавить поле для ожидаемого срока.' })
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
   create(@Req() req: AuthRequest, @Body() input: unknown, @Headers('idempotency-key') key?: string) { return this.service.create(req.user, input, key); }
   @Get('appeals/:id') detail(@Req() req: AuthRequest, @Param('id') item: string) { return this.service.detail(req.user, item); }
-  @Patch('appeals/:id') edit(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.edit(req.user, item, input); }
-  @Post('appeals/:id/transition') mutate(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.mutate(req.user, item, input); }
-  @Post('appeals/:id/reroute') reroute(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.reroute(req.user, item, input); }
-  @Post('appeals/:id/:operation') operation(@Req() req: AuthRequest, @Param('id') item: string, @Param('operation') operation: string, @Body() input: unknown) {
+  @Patch('appeals/:id') @JsonBody(editInput) edit(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.edit(req.user, item, input); }
+  @Post('appeals/:id/transition') @JsonBody(mutationInput) mutate(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.mutate(req.user, item, input); }
+  @Post('appeals/:id/reroute') @JsonBody(rerouteInput) reroute(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.reroute(req.user, item, input); }
+  @Post('appeals/:id/:operation') @JsonBody(mutationInput.omit({ action: true })) operation(@Req() req: AuthRequest, @Param('id') item: string, @Param('operation') operation: string, @Body() input: unknown) {
     const actions: Record<string, Mutation['action']> = {
       assign: 'ASSIGN', 'request-clarification': 'CLARIFICATION', 'respond-clarification': 'AUTHOR_RESPONSE',
       resolve: 'RESOLVE', withdraw: 'WITHDRAW', 'review-request': 'REVIEW_REQUEST', 'review-decision': 'REVIEW_DECISION', comments: 'COMMENT',

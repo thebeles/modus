@@ -39,17 +39,27 @@ export function RadarPage() {
   const scope = { ...filters, from: dateBoundary(filters.from), to: dateBoundary(filters.to, true) };
   const query = queryString(scope);
   const data = useQuery({ queryKey: ['radar', query], queryFn: ({ signal }) => api<RadarData>('/radar/overview' + query, { signal }) });
+  const [showRecurrences, setShowRecurrences] = useState(false);
+  const [recurrencePage, setRecurrencePage] = useState(1);
+  const [outcome, setOutcome] = useState('');
+  const [outcomePage, setOutcomePage] = useState(1);
+  const [tab, setTab] = useState('attention');
+  const recurrences = useQuery({ queryKey: ['radar', 'recurrences', query, recurrencePage], enabled: tab === 'topics' && showRecurrences,
+    queryFn: () => api<Page<LinkRow>>('/radar/recurrences' + queryString({ ...scope, page: recurrencePage })) });
+  const outcomeRows = useQuery({ queryKey: ['radar', 'outcomes', query, outcome, outcomePage], enabled: tab === 'outcomes',
+    queryFn: () => api<Page<Pick<CaseRow, 'id' | 'title' | 'status' | 'verification'>>>('/analytics/improvement-outcomes' + queryString({ ...scope, outcome, page: outcomePage })) });
+  const updateFilters = (next: typeof filters) => { setFilters(next); setOutcomePage(1); setRecurrencePage(1); };
   const values = data.data;
   const toQueue = (extra: Record<string, string> = {}) => '/work-queue' + queryString({ ...scope, normalOnly: 'true', ...extra });
   return <><PageHeading title="Радар процессов" subtitle="Сигналы, сроки и результаты изменений по доступным вам записям."
     action={user.permissions.includes('EXPORT_DATA') && <a className="button secondary" href={'/api/v1/analytics/export' + query}><Download size={17} />Выгрузить CSV</a>} />
     {demoMode && <div className="info-box"><Activity size={18} /> В деморежиме примеры и результаты измерений синтетические.</div>}
     <div className="surface filter-bar">
-      <Field label="Подразделение"><select value={filters.departmentId} onChange={event => setFilters({ ...filters, departmentId: event.target.value })}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все доступные" /></select></Field>
-      <Field label="Процесс"><select value={filters.processId} onChange={event => setFilters({ ...filters, processId: event.target.value })}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select></Field>
-      <Field label="Создано с"><input type="date" value={filters.from} max={filters.to || undefined} onChange={event => setFilters({ ...filters, from: event.target.value })} /></Field>
-      <Field label="Создано по"><input type="date" value={filters.to} min={filters.from || undefined} onChange={event => setFilters({ ...filters, to: event.target.value })} /></Field>
-      {Object.values(filters).some(Boolean) && <button type="button" className="button subtle" onClick={() => setFilters({ processId: '', departmentId: '', from: '', to: '' })}>Сбросить</button>}
+      <Field label="Подразделение"><select value={filters.departmentId} onChange={event => updateFilters({ ...filters, departmentId: event.target.value })}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все доступные" /></select></Field>
+      <Field label="Процесс"><select value={filters.processId} onChange={event => updateFilters({ ...filters, processId: event.target.value })}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select></Field>
+      <Field label="Создано с"><input type="date" value={filters.from} max={filters.to || undefined} onChange={event => updateFilters({ ...filters, from: event.target.value })} /></Field>
+      <Field label="Создано по"><input type="date" value={filters.to} min={filters.from || undefined} onChange={event => updateFilters({ ...filters, to: event.target.value })} /></Field>
+      {Object.values(filters).some(Boolean) && <button type="button" className="button subtle" onClick={() => updateFilters({ processId: '', departmentId: '', from: '', to: '' })}>Сбросить</button>}
     </div>
     <ErrorBox error={data.error || catalog.error} retry={() => { void data.refetch(); void catalog.refetch(); }} />{data.isPending && <Loading />}
     {values && <>
@@ -59,7 +69,7 @@ export function RadarPage() {
         <Metric label="Без активности" value={values.stale} detail="Три суток без действий или нет ответственного" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
         <Metric label="Тематические связи" value={values.topics} detail="Связи, включая возможные повторы" icon={<GitPullRequest size={19} />} />
       </div>
-      <Tabs.Root defaultValue="attention">
+      <Tabs.Root value={tab} onValueChange={setTab}>
         <Tabs.List className="tab-strip radix-tabs" aria-label="Представления радара">{[
           ['attention', 'Требует внимания'], ['topics', 'Темы'], ['processes', 'Процессы'], ['improvements', 'Улучшения'], ['outcomes', 'Результаты'],
         ].map(([key, title]) => <Tabs.Trigger key={key} value={key}>{title}</Tabs.Trigger>)}</Tabs.List>
@@ -70,8 +80,8 @@ export function RadarPage() {
             </div>) : <Empty title="Нет обращений к проверке" />}</Section>
             <Section title="Рассмотрение" icon={<Activity size={19} />}><dl className="facts">
               <div><dt>Закрыты из созданных</dt><dd><Link to={toQueue({ status: 'CLOSED' })}>{ratio(values.closed, values.total)} · {values.closed} из {values.total}</Link></dd></div>
-              <div><dt>С итогом среди закрытых</dt><dd>{ratio(values.documented, values.closed)} · {values.documented} из {values.closed}</dd></div>
-              <div><dt>До первого ответа</dt><dd>{values.firstResponse.hours === null ? 'Нет данных' : `${number.format(values.firstResponse.hours)} ч · N = ${values.firstResponse.count}`}</dd></div>
+              <div><dt>С итогом среди закрытых</dt><dd><Link to={toQueue({ metric: 'documented' })}>{ratio(values.documented, values.closed)} · {values.documented} из {values.closed}</Link></dd></div>
+              <div><dt>До первого ответа</dt><dd>{values.firstResponse.hours === null ? 'Нет данных' : <Link to={toQueue({ metric: 'responded' })}>{number.format(values.firstResponse.hours)} ч · N = {values.firstResponse.count}</Link>}</dd></div>
               <div><dt>Ждут уточнения</dt><dd><Link to={toQueue({ tab: 'waiting' })}>{values.waiting}</Link></dd></div>
             </dl></Section>
           </div>
@@ -83,7 +93,11 @@ export function RadarPage() {
         </Tabs.Content>
         <Tabs.Content value="topics"><Section title="Тематические связи" icon={<GitPullRequest size={18} />}>
           <p className="subtle-text section-intro">Связи основаны на теме или возможном повторе. Возможные повторы после внедрения: {values.recurrenceCandidates}. Проверяйте первичные обращения перед подтверждением.</p>
-          <LinkCards items={values.topicItems} /></Section></Tabs.Content>
+          <button type="button" className="button secondary" aria-pressed={showRecurrences} onClick={() => setShowRecurrences(!showRecurrences)}>
+            {showRecurrences ? 'Все темы' : 'Показать возможные повторы'}</button>
+          {showRecurrences ? <>{recurrences.isPending && <Loading />}<ErrorBox error={recurrences.error} retry={() => recurrences.refetch()} />
+            {recurrences.data && <><LinkCards items={recurrences.data.items} /><Pagination {...recurrences.data} onChange={setRecurrencePage} /></>}</> :
+            <LinkCards items={values.topicItems} />}</Section></Tabs.Content>
         <Tabs.Content value="processes"><div className="two-fields">
           {[{ title: 'По процессам', field: 'processId', rows: values.processes }, { title: 'По категориям', field: 'categoryId', rows: values.categories }].map(group =>
             <Section title={group.title} key={group.title}>{group.rows.length ? <div className="inner-stack">{group.rows.map(item =>
@@ -98,8 +112,14 @@ export function RadarPage() {
           <Metric label="Внедрено" value={values.improved} detail="Внедрено, проверяется или завершено" icon={<Layers3 size={19} />} />
           <Metric label="Есть проверка" value={ratio(values.verified, values.improved)} detail={`${values.verified} из ${values.improved} внедрённых`} icon={<CheckCircle2 size={19} />} />
           <Metric label="Эффект подтверждён" value={ratio(values.verifiedSuccess, values.verifiedDeterminate)} detail={`${values.verifiedSuccess} из ${values.verifiedDeterminate} с определённым итогом`} icon={<Activity size={19} />} />
-        </div><Section title="Итоги проверки">{values.outcomes.length ? values.outcomes.map(row => <div className="task-row" key={row.key}><Chip value={row.key} /><strong>{row.count}</strong></div>) : <Empty title="Завершённых проверок пока нет" />}
-          {values.improvements.filter(item => item.verification).map(item => <div className="task-row" key={item.id}><Link to={`/improvements/${item.id}`}>{item.title}</Link><Chip value={item.verification!.outcome} /></div>)}
+        </div><Section title="Итоги проверки">
+          <Field label="Исход проверки"><select value={outcome} onChange={event => { setOutcome(event.target.value); setOutcomePage(1); }}>
+            <option value="">Все внедрённые</option>{values.outcomes.map(row => <option key={row.key} value={row.key}>{label(row.key)} · {row.count}</option>)}
+          </select></Field>
+          {outcomeRows.isPending && <Loading />}<ErrorBox error={outcomeRows.error} retry={() => outcomeRows.refetch()} />
+          {outcomeRows.data && <>{outcomeRows.data.items.length ? outcomeRows.data.items.map(item => <div className="task-row" key={item.id}>
+            <Link to={`/improvements/${item.id}`}>{item.title}</Link>{item.verification ? <Chip value={item.verification.outcome} /> : <small>Ожидает проверки</small>}
+          </div>) : <Empty title="Улучшения не найдены" />}<Pagination {...outcomeRows.data} onChange={setOutcomePage} /></>}
         </Section></Tabs.Content>
       </Tabs.Root>
     </>}

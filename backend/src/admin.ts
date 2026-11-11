@@ -1,3 +1,5 @@
+import { ApiParam } from '@nestjs/swagger';
+import { JsonBody, JsonBodyVariants } from './openapi';
 import type { Prisma } from '@prisma/client';
 import { Body, Controller, Get, Inject, Injectable, Param, Patch, Post, Req } from '@nestjs/common';
 import { hash } from 'bcryptjs';
@@ -14,8 +16,19 @@ const userInput = z.strictObject({ name, email: z.email().max(254), password: z.
 const ruleInput = z.strictObject({ name, categoryId: id, departmentId: id.nullable().optional(), processId: id.nullable().optional(),
   queueId: id, assigneeId: id.nullable().optional(), rank: z.number().int().min(0).max(1000).default(100), active: z.boolean().default(true),
   effectiveFrom: dateTime.nullable().optional(), effectiveTo: dateTime.nullable().optional() });
+const unitInput = z.strictObject({ name, parentId: id.nullable().optional() });
+const categoryInput = z.strictObject({ name, parentId: id.nullable().optional(), sensitive: z.boolean().default(false) });
+const processInput = z.strictObject({ name });
+const queueInput = z.strictObject({ name, visibility: z.enum(visibilities), fallback: z.boolean().default(false), coordinatorId: id, memberIds: z.array(id).max(100).default([]) });
+const slaInput = z.strictObject({ expectedVersion: expectedVersion.optional(), priority: z.enum(priorities),
+            firstResponseHours: z.number().int().min(1).max(240), nextActionHours: z.number().int().min(1).max(480), active: z.boolean().default(true) });
+const previewInput = z.strictObject({ categoryId: id.optional(), departmentId: id.optional(), processId: id.optional(),
+      visibility: z.enum(visibilities).default('NORMAL_INTERNAL') });
 const resources = ['users', 'organization-units', 'categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies', 'audit', 'outbox-failures'] as const;
 type Resource = typeof resources[number];
+
+const writableResources = ['users', 'organization-units', 'categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies'] as const;
+const configInputs = [unitInput, categoryInput, processInput, queueInput, ruleInput, slaInput];
 
 @Injectable()
 export class Admin {
@@ -146,24 +159,24 @@ export class Admin {
           break;
         }
         case 'organization-units': {
-          const data = parse(z.strictObject({ name, parentId: id.nullable().optional() }), raw);
+          const data = parse(unitInput, raw);
           await this.tree(tx, data.parentId, item, resource);
           result = item ? await tx.organizationUnit.update({ where: { id: item }, data }) : await tx.organizationUnit.create({ data });
           break;
         }
         case 'categories': {
-          const data = parse(z.strictObject({ name, parentId: id.nullable().optional(), sensitive: z.boolean().default(false) }), raw);
+          const data = parse(categoryInput, raw);
           await this.tree(tx, data.parentId, item, resource);
           result = item ? await tx.category.update({ where: { id: item }, data }) : await tx.category.create({ data });
           break;
         }
         case 'processes': {
-          const data = parse(z.strictObject({ name }), raw);
+          const data = parse(processInput, raw);
           result = item ? await tx.businessProcess.update({ where: { id: item }, data }) : await tx.businessProcess.create({ data });
           break;
         }
         case 'work-queues': {
-          const { memberIds, ...data } = parse(z.strictObject({ name, visibility: z.enum(visibilities), fallback: z.boolean().default(false), coordinatorId: id, memberIds: z.array(id).max(100).default([]) }), raw);
+          const { memberIds, ...data } = parse(queueInput, raw);
           const members = [...new Set([data.coordinatorId, ...memberIds])];
           const valid = await tx.user.count({ where: { id: { in: members }, ...eligibleStaff(data.visibility) } });
           if (valid !== members.length) throw invalid('Участникам нужны действующие полномочия для этой очереди.');
@@ -204,8 +217,7 @@ export class Admin {
           break;
         }
         case 'sla-policies': {
-          const { expectedVersion: version, ...data } = parse(z.strictObject({ expectedVersion: expectedVersion.optional(), priority: z.enum(priorities),
-            firstResponseHours: z.number().int().min(1).max(240), nextActionHours: z.number().int().min(1).max(480), active: z.boolean().default(true) }), raw);
+          const { expectedVersion: version, ...data } = parse(slaInput, raw);
           if (item) {
             if (!version) throw invalid('Укажите версию политики.');
             await checked(tx.slaPolicy.updateMany({ where: { id: item, version }, data: { ...data, version: { increment: 1 } } }));
@@ -221,8 +233,7 @@ export class Admin {
 
   async preview(user: Principal, raw: unknown) {
     this.check(user);
-    const input = parse(z.strictObject({ categoryId: id.optional(), departmentId: id.optional(), processId: id.optional(),
-      visibility: z.enum(visibilities).default('NORMAL_INTERNAL') }), raw);
+    const input = parse(previewInput, raw);
     return this.db.$transaction(tx => this.routing.route(tx, input));
   }
 }
@@ -234,12 +245,16 @@ export class AdminController {
   @Post('outbox-failures/:id/retry') retry(@Req() req: AuthRequest, @Param('id') item: string) {
     return this.admin.retryNotification(req.user, parse(id, item));
   }
-  @Post('routing-rules/preview') preview(@Req() req: AuthRequest, @Body() raw: unknown) { return this.admin.preview(req.user, raw); }
+  @Post('routing-rules/preview') @JsonBody(previewInput) preview(@Req() req: AuthRequest, @Body() raw: unknown) { return this.admin.preview(req.user, raw); }
   @Get(':resource') list(@Req() req: AuthRequest, @Param('resource') resource: string) { return this.admin.list(req.user, parse(z.enum(resources), resource)); }
-  @Post(':resource') create(@Req() req: AuthRequest, @Param('resource') resource: string, @Body() raw: unknown) {
+  @Post(':resource') @ApiParam({ name: 'resource', enum: writableResources })
+  @JsonBodyVariants([userInput, ...configInputs])
+  create(@Req() req: AuthRequest, @Param('resource') resource: string, @Body() raw: unknown) {
     return this.admin.write(req.user, parse(z.enum(resources), resource), raw);
   }
-  @Patch(':resource/:id') edit(@Req() req: AuthRequest, @Param('resource') resource: string, @Param('id') item: string, @Body() raw: unknown) {
+  @Patch(':resource/:id') @ApiParam({ name: 'resource', enum: writableResources })
+  @JsonBodyVariants([userInput.omit({ password: true }), ...configInputs])
+  edit(@Req() req: AuthRequest, @Param('resource') resource: string, @Param('id') item: string, @Body() raw: unknown) {
     return this.admin.write(req.user, parse(z.enum(resources), resource), raw, item);
   }
 }

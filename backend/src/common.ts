@@ -5,6 +5,8 @@ import { z } from 'zod';
 
 @Injectable()
 export class Database extends PrismaClient implements OnModuleDestroy {
+  constructor() { super({ transactionOptions: { maxWait: 5000, timeout: 15000 } }); }
+
   async onModuleDestroy() {
     await this.$disconnect();
   }
@@ -65,7 +67,7 @@ export async function allocate(tx: Tx, prefix: 'A' | 'P' | 'I') {
 export async function atomic<T>(db: PrismaClient, fn: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await db.$transaction(fn, { isolationLevel: 'Serializable', timeout: 15000 });
+      return await db.$transaction(fn, { isolationLevel: 'Serializable', maxWait: 5000, timeout: 15000 });
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError)) throw error;
       const retryable = error.code === 'P2034' ||

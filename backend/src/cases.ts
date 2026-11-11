@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Inject, Injectable, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { JsonBody, QueryFields } from './openapi';
 import { Improvement, ImprovementStatus, Prisma, Problem } from '@prisma/client';
 import { z } from 'zod';
 import { actionStatuses, feedbackChoices, improvementStatuses, outcomes, problemStatuses } from './contracts';
@@ -16,6 +17,8 @@ const taskInput = z.strictObject({ expectedVersion, title, dueAt: dateTime.nulla
 const planInput = z.strictObject({ expectedVersion, method: z.enum(['QUANTITATIVE', 'QUALITATIVE', 'MIXED']),
   hypothesis: bodyText, criterion: bodyText, metricName: shortText.optional(), unit: shortText.optional(), direction: z.enum(['DECREASE', 'INCREASE', 'TARGET']).optional(),
   targetValue: z.number().optional(), protocol: bodyText.optional(),
+  minimumSampleSize: z.number().int().min(1).max(100000000).optional(), requireSameSource: z.boolean().default(false),
+  maxPeriodDifferencePercent: z.number().int().min(0).max(100).optional(),
 }).superRefine((plan, ctx) => {
   if (plan.method !== 'QUALITATIVE' && (!plan.metricName || !plan.unit || !plan.direction || plan.targetValue === undefined)) {
     ctx.addIssue({ code: 'custom', path: ['metricName'], message: 'Укажите показатель, единицу, направление и целевое значение.' });
@@ -30,6 +33,19 @@ const observationInput = z.strictObject({ expectedVersion, phase: z.enum(['BEFOR
 const restrictedSources = { visibility: 'NORMAL_INTERNAL' } as const;
 const editable = new Set<ImprovementStatus>(['DRAFT', 'DEFERRED', 'APPROVED', 'IN_PROGRESS']);
 const decision = new Set<ImprovementStatus>(['APPROVED', 'REJECTED', 'DEFERRED', 'DRAFT']);
+
+const problemEditInput = z.strictObject({ expectedVersion, title: title.optional(),
+      symptoms: bodyText.optional(), hypothesis: bodyText.optional(), ownerId: id.optional() });
+const problemMutationInput = z.strictObject({ expectedVersion, target: z.enum(problemStatuses).optional(),
+      text: bodyText, source: shortText.optional() });
+const problemSourceInput = z.strictObject({ expectedVersion, appealId: id, explanation: bodyText });
+const improvementEditInput = z.strictObject({ expectedVersion, title: title.optional(), rationale: bodyText.optional(),
+      goal: bodyText.optional(), scope: shortText.optional(), risks: bodyText.optional(), ownerId: id.optional(), processId: id.nullable().optional() });
+const improvementTransitionInput = z.strictObject({ expectedVersion, target: z.enum(improvementStatuses), text: bodyText.optional() });
+const taskTransitionInput = z.strictObject({ expectedVersion, target: z.enum(actionStatuses), text: bodyText.optional() });
+const verificationInput = z.strictObject({ expectedVersion, outcome: z.enum(outcomes), summary: bodyText, limitations: bodyText, evidenceIds });
+const invitationInput = z.strictObject({ expectedVersion });
+const feedbackInput = z.strictObject({ expectedVersion, choice: z.enum(feedbackChoices), comment: bodyText.optional() });
 
 @Injectable()
 export class Cases {
@@ -131,8 +147,7 @@ export class Cases {
   }
 
   async editProblem(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ownerId, ...data } = parse(z.strictObject({ expectedVersion, title: title.optional(),
-      symptoms: bodyText.optional(), hypothesis: bodyText.optional(), ownerId: id.optional() }), raw);
+    const { expectedVersion: version, ownerId, ...data } = parse(problemEditInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.problem(tx, user, item);
       assertVersion(record.version, version);
@@ -151,8 +166,7 @@ export class Cases {
   }
 
   async problemMutation(user: Principal, item: string, raw: unknown, finding: boolean) {
-    const input = parse(z.strictObject({ expectedVersion, target: z.enum(problemStatuses).optional(),
-      text: bodyText, source: shortText.optional() }), raw);
+    const input = parse(problemMutationInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.problem(tx, user, item);
       assertVersion(record.version, input.expectedVersion);
@@ -175,7 +189,7 @@ export class Cases {
   }
 
   async attachProblemSource(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, appealId, explanation } = parse(z.strictObject({ expectedVersion, appealId: id, explanation: bodyText }), raw);
+    const { expectedVersion: version, appealId, explanation } = parse(problemSourceInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.problem(tx, user, item);
       assertVersion(record.version, version);
@@ -253,8 +267,7 @@ export class Cases {
   }
 
   async editImprovement(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ownerId, ...updates } = parse(z.strictObject({ expectedVersion, title: title.optional(), rationale: bodyText.optional(),
-      goal: bodyText.optional(), scope: shortText.optional(), risks: bodyText.optional(), ownerId: id.optional(), processId: id.nullable().optional() }), raw);
+    const { expectedVersion: version, ownerId, ...updates } = parse(improvementEditInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
@@ -269,7 +282,7 @@ export class Cases {
   }
 
   async transition(user: Principal, item: string, raw: unknown, fixed?: ImprovementStatus) {
-    const input = parse(z.strictObject({ expectedVersion, target: z.enum(improvementStatuses), text: bodyText.optional() }),
+    const input = parse(improvementTransitionInput,
       fixed && raw && typeof raw === 'object' ? { ...raw, target: fixed } : raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
@@ -342,7 +355,7 @@ export class Cases {
   }
 
   async taskTransition(user: Principal, item: string, taskId: string, raw: unknown) {
-    const input = parse(z.strictObject({ expectedVersion, target: z.enum(actionStatuses), text: bodyText.optional() }), raw);
+    const input = parse(taskTransitionInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, input.expectedVersion);
@@ -369,7 +382,8 @@ export class Cases {
       if (!this.manages(user, record) || !['DRAFT', 'DEFERRED'].includes(record.status)) throw forbidden();
       if (await tx.measurement.count({ where: { improvementId: item } })) throw invalidState('Есть наблюдения по текущему плану.');
       const plan = { ...data, metricName: data.metricName ?? null, unit: data.unit ?? null,
-        direction: data.direction ?? null, targetValue: data.targetValue ?? null, protocol: data.protocol ?? null };
+        direction: data.direction ?? null, targetValue: data.targetValue ?? null, protocol: data.protocol ?? null,
+        minimumSampleSize: data.minimumSampleSize ?? null, maxPeriodDifferencePercent: data.maxPeriodDifferencePercent ?? null };
       await tx.measurementPlan.upsert({ where: { improvementId: item }, create: { improvementId: item, ...plan }, update: { ...plan, version: { increment: 1 } } });
       await this.bump(tx, record);
       await audit(tx, 'improvement', item, 'MEASUREMENT_PLAN', user.id);
@@ -402,7 +416,7 @@ export class Cases {
   }
 
   async verify(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ...input } = parse(z.strictObject({ expectedVersion, outcome: z.enum(outcomes), summary: bodyText, limitations: bodyText, evidenceIds }), raw);
+    const { expectedVersion: version, ...input } = parse(verificationInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
@@ -412,20 +426,35 @@ export class Cases {
       if (!plan) throw invalidState('Сначала задайте план проверки.');
       const observations = await tx.measurement.findMany({
         where: { improvementId: item, supersededAt: null, planVersion: plan.version },
-        select: { id: true, phase: true, value: true }, orderBy: [{ periodEnd: 'desc' }, { id: 'asc' }],
+        select: { id: true, phase: true, value: true, sampleSize: true, sourceType: true, periodStart: true, periodEnd: true }, orderBy: [{ periodEnd: 'desc' }, { id: 'asc' }],
       });
-      if (input.outcome !== 'INCONCLUSIVE' && !['BEFORE', 'AFTER'].every(phase => observations.some(row => row.phase === phase))) {
-        throw invalidState('Для вывода об эффекте нужны наблюдения до и после внедрения.');
+      const before = observations.find(row => row.phase === 'BEFORE');
+      const afterObservation = observations.find(row => row.phase === 'AFTER');
+      if (input.outcome !== 'INCONCLUSIVE') {
+        if (!before || !afterObservation) throw invalidState('Для вывода об эффекте нужны наблюдения до и после внедрения.');
+        if (plan.minimumSampleSize && [before, afterObservation].some(row => (row.sampleSize ?? 0) < plan.minimumSampleSize!)) {
+          throw invalidState('Выборки меньше минимума, заданного планом. Добавьте наблюдения либо укажите недостаточность данных.');
+        }
+        if (plan.requireSameSource && (before.sourceType === 'OTHER' || before.sourceType !== afterObservation.sourceType)) {
+          throw invalidState('В плане требуется один указанный вид источника до и после внедрения.');
+        }
+        if (plan.maxPeriodDifferencePercent !== null) {
+          const base = before.periodEnd.getTime() - before.periodStart.getTime();
+          const comparison = afterObservation.periodEnd.getTime() - afterObservation.periodStart.getTime();
+          if (base <= 0 || Math.abs(comparison - base) * 100 > base * plan.maxPeriodDifferencePercent) {
+            throw invalidState('Длительность периодов различается сильнее, чем допускает план.');
+          }
+        }
       }
       if (input.outcome === 'VERIFIED' && plan.method !== 'QUALITATIVE') {
-        const after = observations.find(row => row.phase === 'AFTER')?.value;
+        const after = afterObservation?.value;
         const goal = plan.targetValue;
         const meetsTarget = after != null && goal != null &&
           (plan.direction === 'DECREASE' ? after <= goal : plan.direction === 'INCREASE' ? after >= goal : after === goal);
         if (!meetsTarget) throw invalidState('Последнее измерение не достигло целевого значения. Укажите подходящий итог.');
       }
       await claimAttachments(tx, user.id, input.evidenceIds, { improvementId: item });
-      await tx.verification.create({ data: { ...input, planVersion: plan.version, measurementIds: observations.map(row => row.id),
+      await tx.verification.create({ data: { ...input, planVersion: plan.version, measurementIds: [before?.id, afterObservation?.id].filter((value): value is string => !!value),
         improvementId: item, verifierId: user.id, isSynthetic: record.isSynthetic } });
       await this.bump(tx, record);
       const event = await audit(tx, 'improvement', item, 'VERIFICATION', user.id, false, { outcome: input.outcome });
@@ -435,7 +464,7 @@ export class Cases {
   }
 
   async invite(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version } = parse(z.strictObject({ expectedVersion }), raw);
+    const { expectedVersion: version } = parse(invitationInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
@@ -465,7 +494,7 @@ export class Cases {
   }
 
   async respond(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ...data } = parse(z.strictObject({ expectedVersion, choice: z.enum(feedbackChoices), comment: bodyText.optional() }), raw);
+    const { expectedVersion: version, ...data } = parse(feedbackInput, raw);
     await atomic(this.db, async tx => {
       const invite = await tx.feedback.findFirst({ where: { id: item, userId: user.id, improvement: { implementedAt: { not: null } } },
         include: { improvement: { select: { ownerId: true } } } });
@@ -482,34 +511,34 @@ export class Cases {
 export class CasesController {
   constructor(@Inject(Cases) private readonly cases: Cases) {}
 
-  @Get('problems') problems(@Req() req: AuthRequest, @Query() q: unknown) { return this.cases.list(req.user, q, 'problem'); }
-  @Post('problems') createProblem(@Req() req: AuthRequest, @Body() data: unknown) { return this.cases.createProblem(req.user, data); }
+  @Get('problems') @QueryFields(listInput) problems(@Req() req: AuthRequest, @Query() q: unknown) { return this.cases.list(req.user, q, 'problem'); }
+  @Post('problems') @JsonBody(problemInput) createProblem(@Req() req: AuthRequest, @Body() data: unknown) { return this.cases.createProblem(req.user, data); }
   @Get('problems/:id') problem(@Req() req: AuthRequest, @Param('id') id: string) { return this.cases.problemDetail(req.user, id); }
-  @Patch('problems/:id') editProblem(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.editProblem(req.user, id, data); }
-  @Post('problems/:id/transition') problemTransition(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.problemMutation(req.user, id, data, false); }
-  @Post('problems/:id/findings') finding(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.problemMutation(req.user, id, data, true); }
-  @Post('problems/:id/sources') problemSource(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.attachProblemSource(req.user, id, data); }
-  @Get('improvements') improvements(@Req() req: AuthRequest, @Query() q: unknown) { return this.cases.list(req.user, q, 'improvement'); }
-  @Post('improvements') create(@Req() req: AuthRequest, @Body() data: unknown) { return this.cases.createImprovement(req.user, data); }
+  @Patch('problems/:id') @JsonBody(problemEditInput) editProblem(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.editProblem(req.user, id, data); }
+  @Post('problems/:id/transition') @JsonBody(problemMutationInput.required({ target: true })) problemTransition(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.problemMutation(req.user, id, data, false); }
+  @Post('problems/:id/findings') @JsonBody(problemMutationInput.required({ source: true })) finding(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.problemMutation(req.user, id, data, true); }
+  @Post('problems/:id/sources') @JsonBody(problemSourceInput) problemSource(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.attachProblemSource(req.user, id, data); }
+  @Get('improvements') @QueryFields(listInput) improvements(@Req() req: AuthRequest, @Query() q: unknown) { return this.cases.list(req.user, q, 'improvement'); }
+  @Post('improvements') @JsonBody(improvementInput) create(@Req() req: AuthRequest, @Body() data: unknown) { return this.cases.createImprovement(req.user, data); }
   @Get('improvements/:id') detail(@Req() req: AuthRequest, @Param('id') id: string) { return this.cases.improvementDetail(req.user, id); }
-  @Patch('improvements/:id') edit(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.editImprovement(req.user, id, data); }
-  @Post('improvements/:id/transition') transition(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data); }
-  @Post('improvements/:id/approve') approve(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'APPROVED'); }
-  @Post('improvements/:id/defer') defer(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'DEFERRED'); }
-  @Post('improvements/:id/reject') reject(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'REJECTED'); }
+  @Patch('improvements/:id') @JsonBody(improvementEditInput) edit(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.editImprovement(req.user, id, data); }
+  @Post('improvements/:id/transition') @JsonBody(improvementTransitionInput) transition(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data); }
+  @Post('improvements/:id/approve') @JsonBody(improvementTransitionInput.omit({ target: true }).required({ text: true })) approve(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'APPROVED'); }
+  @Post('improvements/:id/defer') @JsonBody(improvementTransitionInput.omit({ target: true }).required({ text: true })) defer(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'DEFERRED'); }
+  @Post('improvements/:id/reject') @JsonBody(improvementTransitionInput.omit({ target: true }).required({ text: true })) reject(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'REJECTED'); }
   @Get('improvements/:id/actions') async actions(@Req() req: AuthRequest, @Param('id') id: string) { return (await this.cases.improvementDetail(req.user, id)).actions; }
-  @Post('improvements/:id/actions') task(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.saveTask(req.user, id, data); }
-  @Patch('improvements/:id/actions/:taskId') editTask(@Req() req: AuthRequest, @Param('id') id: string, @Param('taskId') taskId: string, @Body() data: unknown) { return this.cases.saveTask(req.user, id, data, taskId); }
-  @Post('improvements/:id/actions/:taskId/transition') taskTransition(@Req() req: AuthRequest, @Param('id') id: string, @Param('taskId') taskId: string, @Body() data: unknown) { return this.cases.taskTransition(req.user, id, taskId, data); }
+  @Post('improvements/:id/actions') @JsonBody(taskInput) task(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.saveTask(req.user, id, data); }
+  @Patch('improvements/:id/actions/:taskId') @JsonBody(taskInput) editTask(@Req() req: AuthRequest, @Param('id') id: string, @Param('taskId') taskId: string, @Body() data: unknown) { return this.cases.saveTask(req.user, id, data, taskId); }
+  @Post('improvements/:id/actions/:taskId/transition') @JsonBody(taskTransitionInput) taskTransition(@Req() req: AuthRequest, @Param('id') id: string, @Param('taskId') taskId: string, @Body() data: unknown) { return this.cases.taskTransition(req.user, id, taskId, data); }
   @Get('improvements/:id/measurement-plan') async plan(@Req() req: AuthRequest, @Param('id') id: string) { return (await this.cases.improvementDetail(req.user, id)).plan; }
-  @Post('improvements/:id/measurement-plan') savePlan(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.savePlan(req.user, id, data); }
-  @Post('improvements/:id/measurements') measure(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.measure(req.user, id, data); }
-  @Post('improvements/:id/verification') verify(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.verify(req.user, id, data); }
+  @Post('improvements/:id/measurement-plan') @JsonBody(planInput) savePlan(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.savePlan(req.user, id, data); }
+  @Post('improvements/:id/measurements') @JsonBody(observationInput) measure(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.measure(req.user, id, data); }
+  @Post('improvements/:id/verification') @JsonBody(verificationInput) verify(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.verify(req.user, id, data); }
   @Get('improvements/:id/result') async result(@Req() req: AuthRequest, @Param('id') id: string) {
     const { verification, plan, implementedAt } = await this.cases.improvementDetail(req.user, id);
     return { verification, plan, implementedAt };
   }
-  @Post('improvements/:id/feedback-invitations') invite(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.invite(req.user, id, data); }
+  @Post('improvements/:id/feedback-invitations') @JsonBody(invitationInput) invite(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.invite(req.user, id, data); }
   @Get('feedback/:id') feedback(@Req() req: AuthRequest, @Param('id') id: string) { return this.cases.feedback(req.user, id); }
-  @Post('feedback/:id/respond') respond(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.respond(req.user, id, data); }
+  @Post('feedback/:id/respond') @JsonBody(feedbackInput) respond(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.respond(req.user, id, data); }
 }

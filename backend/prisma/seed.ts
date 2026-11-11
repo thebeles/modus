@@ -191,7 +191,7 @@ async function seed() {
         id: `seed-${number}`, entity: 'improvement', entityId: improvement.id, actorId: handler.id, action: status, createdAt: date(24), details: { seedOrigin: 'DEMO_SYNTHETIC' },
       } });
       if (index === 1) {
-        await tx.publication.upsert({ where: { id: 'a0200000-1aaa-4ccc-8aaa-000000000001' }, update: {}, create: {
+        const publication = await tx.publication.upsert({ where: { id: 'a0200000-1aaa-4ccc-8aaa-000000000001' }, update: {}, create: {
           id: 'a0200000-1aaa-4ccc-8aaa-000000000001', improvementId: improvement.id, state: 'PUBLISHED',
           title: 'Новый шаблон заявки на закупку', problem: 'В тестовых заявках часто требовались уточнения по характеристикам оборудования.',
           change: 'В шаблон добавили обязательные поля для назначения изделия и требуемых параметров.',
@@ -200,6 +200,8 @@ async function seed() {
           limitations: 'Это демонстрационный пример. Причинность и реальный эффект компании не оценивались.',
           authorId: handler.id, approvedBy: manager.id, publishedAt: date(24), isSynthetic: true,
         } });
+        await tx.publicationRevision.createMany({ data: [{ publicationId: publication.id, version: publication.version,
+          action: 'BASELINE', snapshot: { ...publication, publishedAt: publication.publishedAt?.toISOString() ?? null } }], skipDuplicates: true });
         const invite = await tx.feedback.upsert({ where: { improvementId_userId: { improvementId: improvement.id, userId: employee.id } },
           update: {}, create: { improvementId: improvement.id, userId: employee.id } });
         await tx.notification.upsert({ where: { key: 'seed-feedback' }, update: {}, create: {

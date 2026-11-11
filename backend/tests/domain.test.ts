@@ -1,4 +1,6 @@
 import { strict as assert } from 'node:assert';
+import { createServer, type AddressInfo } from 'node:net';
+import { scanUpload } from '../src/attachment-scan';
 import { test } from 'node:test';
 import { appealTransitions, businessDeadline, improvementTransitions, problemTransitions } from '../src/workflow';
 import { Policy, type Principal } from '../src/policy';
@@ -78,4 +80,33 @@ test('Groq validates the configured mode and retries a transient rate limit', as
   });
   assert.deepEqual(await provider.complete('test', 'test', '{}', z.strictObject({ ok: z.literal(true) })), { ok: true });
   assert.equal(request.mock.callCount(), 2);
+});
+
+test('attachment quarantine accepts a clean framed response and rejects an infected file', async t => {
+  const body = Buffer.from('synthetic content');
+  let count = 0;
+  const server = createServer(socket => {
+    let received = Buffer.alloc(0);
+    socket.on('data', part => {
+      received = Buffer.concat([received, part]);
+      if (received.length < 18 + body.length) return;
+      assert.equal(received.subarray(0, 10).toString(), 'zINSTREAM\0');
+      assert.equal(received.readUInt32BE(10), body.length);
+      assert.deepEqual(received.subarray(14, -4), body);
+      assert.equal(received.readUInt32BE(received.length - 4), 0);
+      socket.end(count++ === 0 ? 'stream: OK\0' : 'stream: TestSignature FOUND\0');
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  const settings = { ATTACHMENT_SCAN_MODE: 'required', CLAMD_SOCKET: '', CLAMD_HOST: '127.0.0.1', CLAMD_PORT: String((server.address() as AddressInfo).port) };
+  for (const [key, value] of Object.entries(settings)) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  await scanUpload(body);
+  await assert.rejects(scanUpload(body), { code: 'ATTACHMENT_REJECTED' });
+  process.env.CLAMD_HOST = '';
+  await assert.rejects(scanUpload(body), { code: 'SCANNER_UNAVAILABLE' });
 });
