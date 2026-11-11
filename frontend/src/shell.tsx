@@ -86,6 +86,7 @@ function Layout() {
   const password = useMutation({ mutationFn: (data: { current: string; password: string }) => api('/auth/change-password', { method: 'POST', body: data }),
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
   const nav = navigation[user.role];
+  const isHome = user.role === 'EMPLOYEE' && location.pathname === '/';
   const current = [...nav, { to: '/appeals/new', text: 'Новое обращение' }, { to: '/notifications', text: 'Уведомления' }]
     .find(item => item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to));
   function sideContent() {
@@ -100,10 +101,10 @@ function Layout() {
           <span><strong>{user.name}</strong><small>{label(user.role)}</small></span><ChevronDown size={15} /></button>
       </div></>;
   }
-  return <div className="app-shell">
+  return <div className={isHome ? 'app-shell home-shell' : 'app-shell'}>
     <a href="#content" className="skip">К содержанию</a>
     <aside className="sidebar">{sideContent()}</aside>
-    {mobile && <Modal title="Навигация" close={() => setMobile(false)}><div className="mobile-nav">{sideContent()}</div></Modal>}
+    {mobile && <Modal title="Навигация" className={isHome ? 'home-dialog' : undefined} close={() => setMobile(false)}><div className="mobile-nav">{sideContent()}</div></Modal>}
     <div className="main-shell"><header className="topbar"><div className="breadcrumbs">
       <button className="icon-button mobile-menu" type="button" aria-label="Открыть навигацию" onClick={() => setMobile(true)}><Menu size={21} /></button>
       <Link to={landing[user.role]} className="crumb-home" aria-label="Рабочая главная"><House size={16} aria-hidden="true" /></Link><ChevronRight size={14} className="crumb-separator" />
@@ -114,7 +115,7 @@ function Layout() {
       </div></header>
       <main className="content" id="content" tabIndex={-1}><Suspense fallback={<Loading />}><Outlet /></Suspense></main>
     </div>
-    {profile && <Modal title="Профиль" close={() => setProfile(false)}>
+    {profile && <Modal title="Профиль" className={isHome ? 'home-dialog' : undefined} close={() => setProfile(false)}>
       <div className="profile-box"><span className="avatar">{initials(user.name)}</span><div><strong>{user.name}</strong><p>{user.email} · {label(user.role)}</p></div></div>
       {!user.demo && <ActionForm pending={password.isPending} error={password.error} submit="Сменить пароль" onSubmit={data => password.mutate({ current: field(data, 'current'), password: field(data, 'password') })}>
         <Field label="Текущий пароль"><input name="current" type="password" required autoComplete="current-password" /></Field>

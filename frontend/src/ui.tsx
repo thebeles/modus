@@ -79,9 +79,9 @@ export function Pagination({ total, limit, page, onChange }: { total: number; li
     <button type="button" className="button subtle" aria-label="Следующая страница" disabled={page * limit >= total} onClick={() => onChange(page + 1)}><ArrowRight size={16} /></button></div> : null;
 }
 
-export function Modal({ title, description, close, children }: { title: string; description?: string; close: () => void; children: ReactNode }) {
+export function Modal({ title, description, close, children, className }: { title: string; description?: string; close: () => void; children: ReactNode; className?: string }) {
   return <Dialog.Root open onOpenChange={open => { if (!open) close(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" />
-    <Dialog.Content className="dialog-content" aria-describedby={description ? undefined : 'dialog-description'}>
+    <Dialog.Content className={className ? `dialog-content ${className}` : 'dialog-content'} aria-describedby={description ? undefined : 'dialog-description'}>
       <div className="dialog-header"><Dialog.Title>{title}</Dialog.Title><Dialog.Close asChild><button className="icon-button" aria-label="Закрыть"><X size={19} /></button></Dialog.Close></div>
       <Dialog.Description id="dialog-description" className={description ? 'subtle-text' : 'sr-only'}>{description ?? title}</Dialog.Description>{children}
     </Dialog.Content></Dialog.Portal></Dialog.Root>;

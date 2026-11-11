@@ -37,11 +37,6 @@ export function Home() {
   const changes = useQuery({ queryKey: ['changes', 'home'], queryFn: () => api<Page<Change>>('/publications?limit=2') });
   return <div className="home-page">
     <section className="home-hero">
-      <svg className="hero-waves" viewBox="0 0 900 250" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-        <path d="M0 250C320 224 305 119 476 94C647 69 746 192 900 172V251H0Z" />
-        <path d="M270 250C420 247 481 136 654 51C753 2 824 2 900 32V251H270Z" />
-        <path d="M510 250C635 179 767 125 900 151V251H510Z" />
-      </svg>
       <div className="hero-content"><div className="hero-meta"><span className="hero-kicker"><span />ОБРАТНАЯ СВЯЗЬ</span><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p></div>
         <h1>Сделаем работу удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
         <Link className="button primary hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
