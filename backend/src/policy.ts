@@ -15,7 +15,7 @@ export class Policy {
     return this.isStaff(user) && user.permissions.includes(permission);
   }
 
-  staffAppeals(user: Principal): Prisma.AppealWhereInput {
+  staffAppeals(user: Principal, delegatedOnly = false): Prisma.AppealWhereInput {
     if (!this.isStaff(user)) return { id: { in: [] } };
     const membership: Prisma.AppealWhereInput[] = [
       { assigneeId: user.id },
@@ -23,7 +23,7 @@ export class Policy {
       { queue: { members: { some: { userId: user.id } } } },
     ];
     const normal = [...membership];
-    if (user.role === 'MANAGER' && user.departmentId) normal.push({ departmentId: user.departmentId });
+    if (!delegatedOnly && user.role === 'MANAGER' && user.departmentId) normal.push({ departmentId: user.departmentId });
     const access: Prisma.AppealWhereInput[] = [{ visibility: 'NORMAL_INTERNAL', OR: normal }];
     if (this.has(user, 'SENSITIVE_CASE_HANDLER')) {
       access.push({ visibility: { in: ['RESTRICTED', 'SPECIAL'] }, OR: membership });
@@ -43,7 +43,7 @@ export class Policy {
 
   async handles(tx: Tx, user: Principal, id: string) {
     return !!await tx.appeal.findFirst({
-      where: { AND: [{ id, authorId: { not: user.id } }, this.staffAppeals(user)] }, select: { id: true },
+      where: { AND: [{ id, authorId: { not: user.id } }, this.staffAppeals(user, true)] }, select: { id: true },
     });
   }
 

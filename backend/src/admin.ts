@@ -1,14 +1,15 @@
+import type { Prisma } from '@prisma/client';
 import { Body, Controller, Get, Inject, Injectable, Param, Patch, Post, Req } from '@nestjs/common';
 import { hash } from 'bcryptjs';
 import { z } from 'zod';
 import { permissions, priorities, roles, visibilities } from './contracts';
 import { AuthRequest } from './auth';
-import { atomic, audit, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, missing, parse, shortText, Tx } from './common';
+import { atomic, audit, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, missing, notify, parse, shortText, Tx } from './common';
 import { Principal, principalSelect } from './policy';
-import { Routing } from './routing';
+import { eligibleStaff, queueStaff, Routing } from './routing';
 
 const name = shortText;
-const userInput = z.strictObject({ name, email: z.email().max(254), password: z.string().min(12).max(72),
+const userInput = z.strictObject({ name, email: z.email().max(254), password: z.string().min(12).refine(value => Buffer.byteLength(value, 'utf8') <= 72, 'Пароль должен занимать не более 72 байт.'),
   role: z.enum(roles), departmentId: id.nullable().optional(), permissions: z.array(z.enum(permissions)).max(8).default([]), active: z.boolean().default(true) });
 const ruleInput = z.strictObject({ name, categoryId: id, departmentId: id.nullable().optional(), processId: id.nullable().optional(),
   queueId: id, assigneeId: id.nullable().optional(), rank: z.number().int().min(0).max(1000).default(100), active: z.boolean().default(true),
@@ -21,6 +22,31 @@ export class Admin {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Routing) private readonly routing: Routing) {}
 
   private check(user: Principal) { if (user.role !== 'ADMIN') throw forbidden(); }
+
+  async workerStatus(user: Principal) {
+    this.check(user);
+    const pending = { deliveredAt: null, discardedAt: null, deadAt: null };
+    const [heartbeat, oldest, pendingCount, deadCount] = await this.db.$transaction([
+      this.db.workerHeartbeat.findUnique({ where: { id: 'outbox' } }),
+      this.db.outboxJob.findFirst({ where: pending, orderBy: { availableAt: 'asc' }, select: { availableAt: true } }),
+      this.db.outboxJob.count({ where: pending }),
+      this.db.outboxJob.count({ where: { deadAt: { not: null } } }),
+    ]);
+    return { lastCheckAt: heartbeat?.checkedAt ?? null, healthy: !!heartbeat && Date.now() - heartbeat.checkedAt.getTime() < 90000,
+      oldestAvailableAt: oldest?.availableAt ?? null, pendingCount, deadCount };
+  }
+
+  async retryNotification(user: Principal, item: string) {
+    this.check(user);
+    return atomic(this.db, async tx => {
+      const row = await tx.outboxJob.findUnique({ where: { id: item }, select: { deadAt: true, attempts: true } });
+      if (!row?.deadAt) throw missing();
+      await checked(tx.outboxJob.updateMany({ where: { id: item, deadAt: row.deadAt, deliveredAt: null, discardedAt: null },
+        data: { attempts: 0, deadAt: null, availableAt: new Date() } }));
+      await audit(tx, 'outbox-failures', item, 'RETRY_REQUESTED', user.id, false, { previousAttempts: row.attempts });
+      return { id: item };
+    });
+  }
 
   async list(user: Principal, resource: Resource) {
     this.check(user);
@@ -50,6 +76,29 @@ export class Admin {
     }
   }
 
+  private async releaseAssignments(tx: Tx, actor: Principal, scope: Prisma.AppealWhereInput, reason: string) {
+    const assignments = await tx.appeal.findMany({ where: { AND: [scope, { assigneeId: { not: null } }] },
+      select: { id: true, authorId: true, assigneeId: true, status: true, visibility: true, queueId: true,
+        queue: { select: { coordinatorId: true } } } });
+    for (const row of assignments) {
+      const active = row.status !== 'CLOSED' && row.status !== 'WITHDRAWN';
+      const route = active && row.queue.coordinatorId === row.authorId ?
+        await this.routing.route(tx, { visibility: row.visibility, authorId: row.authorId }) : null;
+      await tx.appeal.update({ where: { id: row.id }, data: {
+        queueId: route?.queueId ?? row.queueId, assigneeId: route?.assigneeId ?? null, version: { increment: 1 },
+      } });
+      const event = await audit(tx, 'appeal', row.id, 'ASSIGNED', actor.id, true, { reason, previousAssigneeId: row.assigneeId });
+      if (active) await notify(tx, event.id, [route?.assigneeId ?? route?.coordinatorId ?? row.queue.coordinatorId], 'ASSIGNED', `/appeals/${row.id}`);
+    }
+  }
+
+  private async releaseRules(tx: Tx, actor: Principal, where: Prisma.RoutingRuleWhereInput) {
+    const rules = await tx.routingRule.findMany({ where, select: { id: true } });
+    if (!rules.length) return;
+    await tx.routingRule.updateMany({ where: { id: { in: rules.map(row => row.id) } }, data: { assigneeId: null } });
+    for (const rule of rules) await audit(tx, 'routing-rules', rule.id, 'ASSIGNEE_REMOVED', actor.id);
+  }
+
   async write(user: Principal, resource: Resource, raw: unknown, item?: string) {
     this.check(user);
     if (resource === 'audit' || resource === 'outbox-failures') throw forbidden();
@@ -72,7 +121,22 @@ export class Admin {
                 throw invalid('Сначала передайте координацию очереди другому сотруднику.');
               }
             }
+            const staff = data.active && ['HANDLER', 'MANAGER'].includes(data.role);
+            if (!staff) {
+              const [problems, improvements, tasks] = await Promise.all([
+                tx.problem.count({ where: { ownerId: item, status: { not: 'CLOSED' } } }),
+                tx.improvement.count({ where: { ownerId: item, status: { notIn: ['COMPLETED', 'REJECTED', 'CANCELED'] } } }),
+                tx.actionItem.count({ where: { ownerId: item, status: { notIn: ['DONE', 'CANCELED'] },
+                  improvement: { status: { notIn: ['COMPLETED', 'REJECTED', 'CANCELED'] } } } }),
+              ]);
+              if (problems || improvements || tasks) throw invalid('Сначала передайте открытые проблемы, улучшения и задачи другому сотруднику.');
+            }
             result = await tx.user.update({ where: { id: item }, data, select: { id: true } });
+            if (!staff || !data.permissions.includes('SENSITIVE_CASE_HANDLER')) {
+              await this.releaseAssignments(tx, user, { assigneeId: item, ...(staff ? { visibility: { not: 'NORMAL_INTERNAL' } } : {}) }, 'ASSIGNEE_ACCESS_REVOKED');
+              await tx.queueMember.deleteMany({ where: { userId: item, ...(staff ? { queue: { visibility: { not: 'NORMAL_INTERNAL' } } } : {}) } });
+            }
+            if (!staff) await this.releaseRules(tx, user, { assigneeId: item });
             await tx.session.deleteMany({ where: { userId: item } });
           } else {
             if (user.demo && !data.email.endsWith('@demo.local')) throw invalid('В деморежиме используйте адрес @demo.local.');
@@ -101,8 +165,7 @@ export class Admin {
         case 'work-queues': {
           const { memberIds, ...data } = parse(z.strictObject({ name, visibility: z.enum(visibilities), fallback: z.boolean().default(false), coordinatorId: id, memberIds: z.array(id).max(100).default([]) }), raw);
           const members = [...new Set([data.coordinatorId, ...memberIds])];
-          const valid = await tx.user.count({ where: { id: { in: members }, active: true, role: { in: ['HANDLER', 'MANAGER'] },
-            ...(data.visibility === 'NORMAL_INTERNAL' ? {} : { permissions: { has: 'SENSITIVE_CASE_HANDLER' } }) } });
+          const valid = await tx.user.count({ where: { id: { in: members }, ...eligibleStaff(data.visibility) } });
           if (valid !== members.length) throw invalid('Участникам нужны действующие полномочия для этой очереди.');
           if (item) {
             const existing = await tx.workQueue.findUnique({ where: { id: item } });
@@ -111,8 +174,22 @@ export class Admin {
             if (existing.visibility !== data.visibility) throw invalid('Класс доступа существующей очереди изменить нельзя.');
             result = await tx.workQueue.update({ where: { id: item }, data });
             await tx.queueMember.deleteMany({ where: { queueId: item } });
+            if (existing.coordinatorId !== data.coordinatorId) {
+              const cases = await tx.appeal.findMany({ where: { queueId: item, assigneeId: null, status: { notIn: ['CLOSED', 'WITHDRAWN'] } }, select: { id: true } });
+              if (await tx.appeal.count({ where: { queueId: item, authorId: data.coordinatorId, assigneeId: null, status: { notIn: ['CLOSED', 'WITHDRAWN'] } } })) {
+                throw invalid('Сначала назначьте обработчика для открытых обращений нового координатора.');
+              }
+              for (const row of cases) {
+                const event = await audit(tx, 'appeal', row.id, 'QUEUE_COORDINATOR_CHANGED', user.id);
+                await notify(tx, event.id, [data.coordinatorId], 'ASSIGNED', `/appeals/${row.id}`);
+              }
+            }
           } else result = await tx.workQueue.create({ data });
           await tx.queueMember.createMany({ data: members.map(userId => ({ queueId: result.id, userId })) });
+          if (item) {
+            await this.releaseAssignments(tx, user, { queueId: item, assigneeId: { notIn: members } }, 'QUEUE_MEMBERSHIP_REVOKED');
+            await this.releaseRules(tx, user, { queueId: item, assigneeId: { notIn: members } });
+          }
           break;
         }
         case 'routing-rules': {
@@ -120,8 +197,9 @@ export class Admin {
           if (data.effectiveFrom && data.effectiveTo && data.effectiveFrom >= data.effectiveTo) throw invalid('Проверьте даты действия правила.');
           const queue = await tx.workQueue.findUnique({ where: { id: data.queueId } });
           if (!queue || queue.visibility !== 'NORMAL_INTERNAL') throw invalid('Для обычного правила выберите обычную очередь.');
-          if (data.assigneeId && !await tx.queueMember.findUnique({ where: { userId_queueId: { queueId: data.queueId, userId: data.assigneeId } } }) &&
-            queue.coordinatorId !== data.assigneeId) throw invalid('Назначенный сотрудник должен состоять в очереди.');
+          if (data.assigneeId && !await tx.user.findFirst({ where: { id: data.assigneeId, ...eligibleStaff(queue.visibility), ...queueStaff(queue.id) }, select: { id: true } })) {
+            throw invalid('Назначенный сотрудник должен иметь действующие полномочия в очереди.');
+          }
           result = item ? await tx.routingRule.update({ where: { id: item }, data }) : await tx.routingRule.create({ data });
           break;
         }
@@ -152,6 +230,10 @@ export class Admin {
 @Controller('admin')
 export class AdminController {
   constructor(@Inject(Admin) private readonly admin: Admin) {}
+  @Get('worker-status') workerStatus(@Req() req: AuthRequest) { return this.admin.workerStatus(req.user); }
+  @Post('outbox-failures/:id/retry') retry(@Req() req: AuthRequest, @Param('id') item: string) {
+    return this.admin.retryNotification(req.user, parse(id, item));
+  }
   @Post('routing-rules/preview') preview(@Req() req: AuthRequest, @Body() raw: unknown) { return this.admin.preview(req.user, raw); }
   @Get(':resource') list(@Req() req: AuthRequest, @Param('resource') resource: string) { return this.admin.list(req.user, parse(z.enum(resources), resource)); }
   @Post(':resource') create(@Req() req: AuthRequest, @Param('resource') resource: string, @Body() raw: unknown) {

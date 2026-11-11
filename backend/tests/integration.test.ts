@@ -13,6 +13,7 @@ import { Ai, type AiProvider } from '../src/ai';
 import { Policy, principalSelect } from '../src/policy';
 import { Radar } from '../src/radar';
 import { Cases } from '../src/cases';
+import { LocalStorage, purgeUploads } from '../src/files';
 import { deadlines, deliver } from '../src/worker';
 
 const origin = 'http://localhost:5173';
@@ -197,7 +198,16 @@ test('workflow verifies a linked improvement before separate publication approva
   assert.equal((await request(path + '/transition', { session: handler, body: { expectedVersion: current.version, target: 'IMPLEMENTED', text: 'Выпущен новый шаблон.' } })).response.status, 409);
   await step(`/actions/${task.id}/transition`, { target: 'DONE', text: 'Шаблон подготовлен и проверен.' });
   const ago = (hours: number) => new Date(Date.now() - hours * 3600000).toISOString();
-  await step('/measurements', { phase: 'BEFORE', value: 40, periodStart: ago(48), periodEnd: ago(24), sampleSize: 20, source: 'Синтетическая исходная выборка.' });
+  const form = new FormData();
+  form.set('file', new Blob(['Синтетические исходные данные.'], { type: 'text/plain' }), 'evidence.txt');
+  const evidence = success(await request<{ id: string }>('/attachments/complete', { session: handler, body: form }));
+  await step('/measurements', { phase: 'BEFORE', value: 40, periodStart: ago(48), periodEnd: ago(24), sampleSize: 20,
+    source: 'Синтетическая исходная выборка.', sourceType: 'MANUAL_SAMPLE', evidenceIds: [evidence.id] });
+  assert.equal((await request(`/attachments/${evidence.id}/download`, { session: employee })).response.status, 404);
+  assert.equal((await request(`/attachments/${evidence.id}/download`, { session: manager })).response.status, 200);
+  assert.equal((await request('/appeals', { session: handler, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Проверка повторного использования файла.', attachmentIds: [evidence.id],
+  } })).response.status, 400);
   await step('/transition', { target: 'IMPLEMENTED', text: 'Внедрён демонстрационный шаблон.' });
   await step('/transition', { target: 'VERIFYING' });
   const verification = { outcome: 'VERIFIED', summary: 'Достигнут целевой показатель.', limitations: 'Только синтетическая выборка.' };
@@ -206,15 +216,28 @@ test('workflow verifies a linked improvement before separate publication approva
   await step('/measurements', { phase: 'AFTER', value: 20, periodStart: implemented.implementedAt!.toISOString(),
     periodEnd: new Date().toISOString(), sampleSize: 20, source: 'Синтетическая выборка после изменения.' });
   await step('/verification', verification, manager);
+  const recorded = await db.verification.findUniqueOrThrow({ where: { improvementId: item.id } });
+  assert.equal(recorded.measurementIds.length, 2);
+  assert.equal(recorded.planVersion, 1);
   await step('/transition', { target: 'COMPLETED' });
   assert.equal((await db.appeal.findUniqueOrThrow({ where: { id: source.id } })).status, source.status);
-  const draft = success(await request<{ id: string }>('/publications/drafts', { session: handler, body: { improvementId: item.id,
-    title: 'Результат обновления шаблона', problem: 'Уточнения задерживали обработку.', change: 'Добавили обязательные поля.', method: 'Сравнили синтетические выборки.',
-    result: 'В учебной выборке доля уточнений снизилась.', limitations: 'Результат учебного пилота.', audience: 'INTERNAL' } }));
+  const content = {
+    title: 'Результат обновления шаблона', problem: 'Уточнения задерживали обработку.', change: 'Добавили обязательные поля.',
+    method: 'Сравнили синтетические выборки.', result: 'В учебной выборке доля уточнений снизилась.',
+    limitations: 'Результат учебного пилота.', audience: 'INTERNAL',
+  };
+  const draft = success(await request<{ id: string }>('/publications/drafts', { session: handler, body: { improvementId: item.id, ...content } }));
+  const publicationPath = '/publications/' + draft.id;
   assert.equal((await request(path, { session: employee })).response.status, 404);
-  assert.equal((await request('/publications/' + draft.id, { session: employee })).response.status, 404);
-  success(await request('/publications/' + draft.id + '/approve', { session: manager, body: { expectedVersion: 1 } }));
-  success(await request('/publications/' + draft.id + '/publish', { session: manager, body: { expectedVersion: 2 } }));
+  assert.equal((await request(publicationPath, { session: employee })).response.status, 404);
+  success(await request(publicationPath + '/request-changes', { session: manager, body: { expectedVersion: 1, reason: 'Уточните источник выборки.' } }));
+  assert.equal((await request(publicationPath + '/approve', { session: manager, body: { expectedVersion: 2 } })).response.status, 409);
+  success(await request(publicationPath, { session: handler, method: 'PATCH', body: { ...content, expectedVersion: 2 } }));
+  success(await request(publicationPath + '/approve', { session: manager, body: { expectedVersion: 3 } }));
+  success(await request(publicationPath, { session: handler, method: 'PATCH', body: { ...content, expectedVersion: 4, limitations: 'Только синтетический пилот.' } }));
+  assert.equal((await request(publicationPath + '/publish', { session: manager, body: { expectedVersion: 5 } })).response.status, 409);
+  success(await request(publicationPath + '/approve', { session: manager, body: { expectedVersion: 5 } }));
+  success(await request(publicationPath + '/publish', { session: manager, body: { expectedVersion: 6 } }));
   const publication = success(await request<Record<string, unknown>>('/publications/' + draft.id, { session: employee }));
   assert.ok(!('improvementId' in publication));
   await step('/feedback-invitations', {});
@@ -242,4 +265,196 @@ test('AI mock rejects invalid output and prevents confidential payloads reaching
   const source = await db.appeal.findUniqueOrThrow({ where: { number: 'A-001' } });
   const fallback = success(await request<{ mode: string }>('/ai/similar-appeals', { session: handler, body: { id: source.id, consent: true } }));
   assert.equal(fallback.mode, 'RULE');
+  const valid: AiProvider = { available: () => true, complete: async (_feature, _instructions, input) => {
+    const context = JSON.parse(input) as { categories: { id: string; name: string }[] };
+    assert.ok(context.categories.length);
+    return { title: 'Безопасная учебная подсказка', type: 'PROBLEM', categoryId: context.categories[0].id,
+      followUpQuestions: ['Какой процесс затронут?'], rephrasedDescription: 'Синтетическое обращение.' };
+  } };
+  const trusted = new Ai(db, app.get(Policy), valid, app.get(Radar), app.get(Cases));
+  const suggested = await trusted.advise(user, 'appeal-assist', { ...body, visibility: 'NORMAL_INTERNAL' });
+  assert.ok(suggested.usageId);
+  await trusted.decide(user, suggested.usageId, { decision: 'APPLIED' });
+  await trusted.decide(user, suggested.usageId, { decision: 'APPLIED' });
+  assert.equal(await db.auditEvent.count({ where: { entityId: suggested.usageId, action: 'APPLIED' } }), 1);
+
+});
+
+test('department read does not grant handling, and a matched route works without fallback', async () => {
+  const employee = await login('employee');
+  const manager = await login('manager');
+  const author = await db.user.findUniqueOrThrow({ where: { email: 'employee@demo.local' } });
+  const handler = await db.user.findUniqueOrThrow({ where: { email: 'handler@demo.local' } });
+  const queue = await db.workQueue.create({ data: { name: randomUUID(), visibility: 'NORMAL_INTERNAL', coordinatorId: handler.id } });
+  const category = await db.category.create({ data: { name: randomUUID() } });
+  await db.routingRule.create({ data: { name: randomUUID(), categoryId: category.id, queueId: queue.id, rank: 1 } });
+  const fallback = await db.workQueue.findFirstOrThrow({ where: { fallback: true, visibility: 'NORMAL_INTERNAL' } });
+  await db.workQueue.update({ where: { id: fallback.id }, data: { fallback: false } });
+  let item: { id: string };
+  try {
+    item = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+      type: 'PROBLEM', description: 'Проверка маршрута без резервной очереди.', categoryId: category.id,
+    } }));
+  } finally {
+    await db.workQueue.update({ where: { id: fallback.id }, data: { fallback: true } });
+  }
+  const record = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
+  assert.equal(record.departmentId, author.departmentId);
+  assert.equal(record.queueId, queue.id);
+  const path = '/appeals/' + item.id;
+  const view = success(await request<Row>(path, { session: manager }));
+  assert.deepEqual(view.allowedActions, []);
+  assert.equal((await request(path + '/transition', { session: manager, body: { expectedVersion: view.version, action: 'REVIEW' } })).response.status, 409);
+  const handlerSession = await login('handler');
+  assert.equal(success(await request<Row>(path + '/transition', { session: handlerSession, body: { expectedVersion: view.version, action: 'REVIEW' } })).status, 'REVIEW');
+});
+
+test('removing a queue member releases assigned work and suppresses their pending notifications', async () => {
+  const employee = await login('employee');
+  const admin = await login('admin');
+  const manager = await db.user.findUniqueOrThrow({ where: { email: 'manager@demo.local' } });
+  const handler = await db.user.findUniqueOrThrow({ where: { email: 'handler@demo.local' } });
+  const queue = await db.workQueue.create({ data: { name: randomUUID(), visibility: 'NORMAL_INTERNAL', coordinatorId: handler.id,
+    members: { create: { userId: manager.id } } } });
+  const category = await db.category.create({ data: { name: randomUUID() } });
+  const rule = await db.routingRule.create({ data: { name: randomUUID(), categoryId: category.id, queueId: queue.id, assigneeId: manager.id, rank: 1 } });
+  const item = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Проверка отзыва назначения в очереди.', categoryId: category.id,
+  } }));
+  const href = '/appeals/' + item.id;
+  const before = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
+  assert.equal(before.assigneeId, manager.id);
+  success(await request('/admin/work-queues/' + queue.id, { session: admin, method: 'PATCH', body: {
+    name: queue.name, visibility: queue.visibility, coordinatorId: handler.id, memberIds: [],
+  } }));
+  const after = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
+  assert.equal(after.assigneeId, null);
+  assert.equal(after.version, before.version + 1);
+  assert.equal((await db.routingRule.findUniqueOrThrow({ where: { id: rule.id } })).assigneeId, null);
+  const now = new Date();
+  await db.appeal.update({ where: { id: item.id }, data: { dueAt: now } });
+  await deadlines(db, now);
+  await deliver(db, new Date(now.getTime() + 60000));
+  assert.ok(await db.outboxJob.count({ where: { href, userId: manager.id, discardedAt: { not: null } } }));
+  assert.equal(await db.notification.count({ where: { href, userId: manager.id } }), 0);
+  assert.equal(await db.notification.count({ where: { href, userId: handler.id, kind: 'ASSIGNED' } }), 1);
+  assert.equal(await db.notification.count({ where: { href, userId: handler.id, kind: 'SLA_DUE' } }), 1);
+});
+
+test('closing for missing information requires a delivered reminder for this waiting period', async () => {
+  const employee = await login('employee');
+  const manager = await login('manager');
+  const item = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Проверка срока ожидания ответа автора.',
+  } }));
+  const path = '/appeals/' + item.id;
+  const step = (expectedVersion: number, action: string, data = {}) => request<Row>(path + '/transition',
+    { session: manager, body: { expectedVersion, action, ...data } });
+  const reviewed = success(await step(1, 'REVIEW'));
+  const waiting = success(await step(reviewed.version, 'CLARIFICATION', { text: 'Какие входные данные использовались?' }));
+  await db.appeal.update({ where: { id: item.id }, data: { waitingSince: new Date(Date.now() - 73 * 3600000) } });
+  await deadlines(db);
+  const close = () => step(waiting.version, 'RESOLVE', { resolutionType: 'INSUFFICIENT_INFO', text: 'Уточнение и напоминание остались без ответа.' });
+  assert.equal((await close()).response.status, 409);
+  await deliver(db);
+  assert.equal(success(await close()).status, 'CLOSED');
+});
+
+test('radar uses the same deadline and meaningful activity filters as its queue drilldown', async () => {
+  const employee = await login('employee');
+  const manager = await login('manager');
+  const title = 'KPI ' + randomUUID();
+  const item = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', title, description: 'Контрольная запись для расчёта показателей.',
+  } }));
+  const now = Date.now();
+  await db.appeal.update({ where: { id: item.id }, data: {
+    dueAt: new Date(now + 4 * 3600000), firstResponseDueAt: new Date(now - 3600000),
+    lastMeaningfulActionAt: new Date(now - 4 * 86400000),
+  } });
+  const q = '?q=' + encodeURIComponent(title);
+  const overview = () => request<{ overdue: number; stale: number; firstResponse: { count: number; hours: number | null } }>('/radar/overview' + q, { session: manager }).then(success);
+  const queue = (tab: string) => request<{ total: number }>('/work-queue' + q + '&normalOnly=true&tab=' + tab, { session: manager }).then(success);
+  let values = await overview();
+  assert.equal(values.overdue, 1);
+  assert.equal(values.stale, 1);
+  assert.deepEqual(values.firstResponse, { count: 0, hours: null });
+  assert.equal((await queue('overdue')).total, values.overdue);
+  assert.equal((await queue('stale')).total, values.stale);
+  const record = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
+  await db.appeal.update({ where: { id: item.id }, data: { firstHumanResponseAt: new Date(record.createdAt.getTime() + 90 * 60000) } });
+  values = await overview();
+  assert.deepEqual(values.firstResponse, { count: 1, hours: 1.5 });
+  assert.equal(values.overdue, 0);
+  assert.equal(values.stale, 1);
+});
+
+test('a transfer requires an active target and informs its current recipient', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const create = () => request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Проверка принятия сигнала целевым маршрутом.',
+  } }).then(success);
+  const [source, closedTarget, activeTarget] = await Promise.all([create(), create(), create()]);
+  const step = (id: string, expectedVersion: number, action: string, data = {}) => request<Row>('/appeals/' + id + '/transition',
+    { session: handler, body: { expectedVersion, action, ...data } });
+  await step(source.id, 1, 'REVIEW').then(success);
+  await step(closedTarget.id, 1, 'REVIEW').then(success);
+  await step(closedTarget.id, 2, 'RESOLVE', { resolutionType: 'RESOLVED', text: 'Работа завершена с подтверждением.' }).then(success);
+  const transfer = (relatedId: string) => step(source.id, 2, 'RESOLVE',
+    { resolutionType: 'TRANSFERRED', relatedId, text: 'Дальнейшая работа идёт по целевому обращению.' });
+  assert.equal((await transfer(closedTarget.id)).response.status, 400);
+  assert.equal(success(await transfer(activeTarget.id)).status, 'CLOSED');
+  assert.equal(await db.outboxJob.count({ where: { href: '/appeals/' + activeTarget.id, kind: 'TRANSFER_RECEIVED' } }), 1);
+});
+
+test('expired detached uploads are removed from storage and cannot be reused', async () => {
+  const employee = await login('employee');
+  const form = new FormData();
+  form.set('file', new Blob(['Проверка очистки.'], { type: 'text/plain' }), 'expire.txt');
+  const file = success(await request<{ id: string }>('/attachments/complete', { session: employee, body: form }));
+  const row = await db.attachment.update({ where: { id: file.id }, data: { createdAt: new Date(Date.now() - 49 * 3600000) } });
+  const storage = new LocalStorage();
+  assert.ok((await storage.read(row.storageKey)).length);
+  await Promise.all([purgeUploads(db, storage), purgeUploads(db, storage)]);
+  assert.equal(await db.attachment.findUnique({ where: { id: file.id } }), null);
+  await assert.rejects(storage.read(row.storageKey), { code: 'ENOENT' });
+  assert.equal((await request(`/attachments/${file.id}/download`, { session: employee })).response.status, 404);
+});
+
+test('a coordinator can reroute an open case to its special queue without retaining access', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const sensitive = await login('sensitive-handler');
+  const category = await db.category.findFirstOrThrow({ where: { sensitive: true } });
+  const created = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Проверка контролируемой передачи в специальную очередь.',
+  } }));
+  const path = '/appeals/' + created.id;
+  const data = { expectedVersion: 1, categoryId: category.id, text: 'Категория требует специального маршрута.' };
+  assert.equal((await request(path + '/reroute', { session: employee, body: data })).response.status, 403);
+  const result = success(await request<{ readable: boolean }>(path + '/reroute', { session: handler, body: data }));
+  assert.equal(result.readable, false);
+  assert.equal((await request(path, { session: handler })).response.status, 404);
+  assert.equal(success(await request<Row>(path, { session: sensitive })).version, 2);
+  assert.equal((await db.appeal.findUniqueOrThrow({ where: { id: created.id } })).visibility, 'SPECIAL');
+  assert.equal(await db.auditEvent.count({ where: { entityId: created.id, action: 'REROUTED' } }), 1);
+});
+
+test('an administrator can resubmit a dead letter without duplicating its notification', async () => {
+  const employee = await login('employee');
+  const admin = await login('admin');
+  const recipient = await db.user.findUniqueOrThrow({ where: { email: 'employee@demo.local' } });
+  const job = await db.outboxJob.create({ data: { key: randomUUID(), userId: recipient.id, kind: 'COMMENT', attempts: 6, deadAt: new Date() } });
+  const path = '/admin/outbox-failures/' + job.id + '/retry';
+  assert.equal((await request(path, { session: employee, body: {} })).response.status, 403);
+  success(await request(path, { session: admin, body: {} }));
+  assert.equal((await request(path, { session: admin, body: {} })).response.status, 404);
+  await Promise.all([deliver(db), deliver(db)]);
+  assert.equal(await db.notification.count({ where: { key: job.key } }), 1);
+  assert.equal(await db.auditEvent.count({ where: { entityId: job.id, action: 'RETRY_REQUESTED' } }), 1);
+  const now = new Date();
+  await db.workerHeartbeat.upsert({ where: { id: 'outbox' }, create: { id: 'outbox', checkedAt: now }, update: { checkedAt: now } });
+  const monitor = success(await request<{ healthy: boolean }>('/admin/worker-status', { session: admin }));
+  assert.equal(monitor.healthy, true);
 });

@@ -4,7 +4,7 @@ import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullReq
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { improvementStatuses, label, outcomes, problemStatuses } from '@kontur/api/contracts';
-import { api, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
+import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
   PageHeading, Pagination, Section, Synthetic, Timeline, timestamp } from './ui';
@@ -85,19 +85,26 @@ type Editor = { title: string; path: string; body: (data: FormData) => Record<st
 const textBox = (label: string, name = 'text', required = true, value?: string) =>
   <Field label={label}><textarea name={name} defaultValue={value} rows={4} required={required} minLength={5} maxLength={10000} /></Field>;
 
-function useEditor(id: string | undefined, key: string, version?: number) {
+function useEditor(id: string | undefined, key: Kind, version?: number) {
   const client = useQueryClient();
+  const navigate = useNavigate();
   const [editor, setEditor] = useState<Editor | null>(null);
   const [saved, setSaved] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const update = useMutation({ mutationFn: (data: FormData) => {
     if (!editor) throw new Error('Откройте форму действия.');
-    return api(editor.path, { method: editor.method ?? 'POST', body: { expectedVersion: version, ...editor.body(data) } });
-  }, onSuccess: async () => {
+    return api<{ readable?: boolean }>(editor.path, { method: editor.method ?? 'POST', body: { expectedVersion: version, ...editor.body(data) } });
+  }, onSuccess: async result => {
+    if (result.readable === false) {
+      client.removeQueries({ queryKey: [key, id], exact: true });
+      navigate(config[key].path);
+      return;
+    }
     await Promise.all([client.invalidateQueries({ queryKey: [key, id] }), client.invalidateQueries({ queryKey: ['radar'] }), client.invalidateQueries({ queryKey: ['changes'] })]);
     setEditor(null); setSaved(true);
   } });
-  return { open: (next: Editor) => { update.reset(); setSaved(false); setEditor(next); }, saved,
-    modal: editor && <Modal title={editor.title} description={editor.description} close={() => setEditor(null)}><ActionForm pending={update.isPending} error={update.error}
+  return { open: (next: Editor) => { update.reset(); setSaved(false); setUploading(false); setEditor(next); }, saved, setUploading,
+    modal: editor && <Modal title={editor.title} description={editor.description} close={() => setEditor(null)}><ActionForm pending={update.isPending || uploading} error={update.error}
       reload={() => client.invalidateQueries({ queryKey: [key, id] })} onSubmit={data => update.mutate(data)}>{editor.fields}</ActionForm></Modal> };
 }
 
@@ -117,8 +124,9 @@ export function ProblemDetail() {
     <div className="detail-grid"><div className="detail-main">
       <Section title="Наблюдения и гипотеза" icon={<GitPullRequest size={18} />} action={record.canEdit && <button className="text-button" onClick={() => edit.open({
         title: 'Редактировать проблему', path, method: 'PATCH',
-        body: data => ({ title: field(data, 'title'), symptoms: field(data, 'symptoms'), hypothesis: optional(data, 'hypothesis') }),
+        body: data => ({ title: field(data, 'title'), symptoms: field(data, 'symptoms'), hypothesis: optional(data, 'hypothesis'), ownerId: optional(data, 'ownerId') }),
         fields: <><Field label="Название"><input name="title" defaultValue={record.title} required minLength={3} /></Field>
+          <Field label="Владелец проблемы"><select name="ownerId" defaultValue={record.owner?.id ?? ''}><EntityOptions rows={record.people} blank="Текущий владелец" /></select></Field>
           {textBox('Симптомы', 'symptoms', true, record.symptoms)}{textBox('Гипотеза', 'hypothesis', false, record.hypothesis ?? '')}</>,
       })}>Редактировать</button>}>
         <Synthetic show={record.isSynthetic} /><h3>Наблюдаемые симптомы</h3><p className="preserve">{record.symptoms}</p>
@@ -173,6 +181,49 @@ function PlanForm({ plan }: { plan: Plan | null }) {
         <Field label="Целевое значение"><input name="targetValue" type="number" step="any" defaultValue={plan?.targetValue ?? ''} required /></Field></div></>}
     {method !== 'QUANTITATIVE' && textBox('Протокол качественной проверки', 'protocol', true, plan?.protocol)}
   </>;
+}
+
+const sourceTypes = { SYSTEM_REPORT: 'Отчёт системы', MANUAL_SAMPLE: 'Ручная выборка', INTERVIEW: 'Интервью', OTHER: 'Другой источник' };
+
+function EvidencePicker({ onUploading }: { onUploading: (active: boolean) => void }) {
+  const [files, setFiles] = useState<Attachment[]>([]);
+  const upload = useMutation({ mutationFn: uploadAttachment, onMutate: () => onUploading(true),
+    onSuccess: file => setFiles(items => [...items, file]), onSettled: () => onUploading(false) });
+  return <>
+    <Field label="Подтверждающие файлы" hint="До 5 файлов. Вложения доступны участникам с доступом к улучшению.">
+      <input type="file" accept=".txt,.pdf,.png,.jpg,.jpeg" disabled={upload.isPending || files.length >= 5} onChange={event => {
+        const file = event.currentTarget.files?.[0];
+        if (file) upload.mutate(file);
+        event.currentTarget.value = '';
+      }} />
+    </Field>
+    {upload.isPending && <small role="status">Загружаем файл…</small>}
+    <ErrorBox error={upload.error} />
+    {files.map(file => <div className="file-line" key={file.id}>
+      <input type="hidden" name="evidenceIds" value={file.id} />
+      <span>{file.name}</span><button className="button subtle" type="button" onClick={() => setFiles(items => items.filter(item => item.id !== file.id))}>Убрать</button>
+    </div>)}
+  </>;
+}
+
+function EvidenceLinks({ files }: { files: Attachment[] }) {
+  return files.length ? <ul>{files.map(file => <li key={file.id}><a href={`/api/v1/attachments/${file.id}/download`}>{file.name}</a></li>)}</ul> : null;
+}
+
+function PublicationFields({ item }: { item?: Change }) {
+  return <>
+    <Field label="Название"><input name="title" required minLength={3} maxLength={180} defaultValue={item?.title} /></Field>
+    {textBox('Что решали', 'problem', true, item?.problem)}{textBox('Что изменили', 'change', true, item?.change)}
+    {textBox('Как проверили', 'method', true, item?.method)}{textBox('Результат', 'result', true, item?.result)}
+    {textBox('Ограничения', 'limitations', true, item?.limitations)}
+    <Field label="Аудитория"><select name="audience" defaultValue={item && !item.audienceId ? 'INTERNAL' : 'DEPARTMENT'}>
+      <option value="DEPARTMENT">Подразделение</option><option value="INTERNAL">Все сотрудники</option>
+    </select></Field>
+  </>;
+}
+
+function publicationBody(data: FormData) {
+  return Object.fromEntries(['title', 'problem', 'change', 'method', 'result', 'limitations', 'audience'].map(key => [key, field(data, key)]));
 }
 
 function PublicationPreview({ item }: { item: Change }) {
@@ -260,30 +311,31 @@ export function ImprovementDetail() {
             title: 'Добавить измерение', path: path + '/measurements', fields: <><Field label="Этап"><select name="phase"><Options items={record.implementedAt ? ['BEFORE', 'AFTER'] : ['BEFORE']} /></select></Field>
               <div className="two-fields"><Field label="Начало периода (UTC)"><input name="periodStart" type="datetime-local" step={1} required /></Field><Field label="Конец периода (UTC)"><input name="periodEnd" type="datetime-local" step={1} required /></Field></div>
               <div className="two-fields"><Field label="Значение"><input name="value" type="number" step="any" required={plan?.method !== 'QUALITATIVE'} /></Field>
-                <Field label="Размер выборки"><input name="sampleSize" type="number" min={1} /></Field></div>{textBox('Источник и способ сбора', 'source')}</>,
+                <Field label="Размер выборки"><input name="sampleSize" type="number" min={1} /></Field></div><Field label="Вид источника"><select name="sourceType" defaultValue="OTHER">
+                {Object.entries(sourceTypes).map(([code, title]) => <option key={code} value={code}>{title}</option>)}
+              </select></Field>{textBox('Источник и способ сбора', 'source')}<EvidencePicker onUploading={edit.setUploading} /></>,
             body: data => ({ phase: field(data, 'phase'), periodStart: timestamp(data, 'periodStart'), periodEnd: timestamp(data, 'periodEnd'),
-              value: numeric(data, 'value'), sampleSize: numeric(data, 'sampleSize'), source: field(data, 'source') }),
+              value: numeric(data, 'value'), sampleSize: numeric(data, 'sampleSize'), source: field(data, 'source'),
+              sourceType: field(data, 'sourceType'), evidenceIds: data.getAll('evidenceIds') }),
           })}><Plus size={16} />Измерение</button>}>
             {plan?.observations.length ? <div className="observations">{plan.observations.map(item => <article key={item.id}><small>{label(item.phase)}</small><strong>{item.value ?? '—'} {item.value != null && plan.unit}</strong>
-              <p>{item.source}</p><small>{date(item.periodStart)} — {date(item.periodEnd)}{item.sampleSize ? ` · N = ${item.sampleSize}` : ''}</small><Synthetic show={item.isSynthetic} /></article>)}</div> :
+              <small>{sourceTypes[item.sourceType as keyof typeof sourceTypes] ?? sourceTypes.OTHER}</small><p>{item.source}</p><EvidenceLinks files={item.evidence} /><small>{date(item.periodStart)} — {date(item.periodEnd)}{item.sampleSize ? ` · N = ${item.sampleSize}` : ''}</small><Synthetic show={item.isSynthetic} /></article>)}</div> :
               <Empty title="Измерений пока нет" />}
           </Section>
           <Section title="Проверка результата" icon={<CheckCircle2 size={18} />} action={record.canVerify && <button className="button primary" onClick={() => edit.open({
             title: 'Зафиксировать результат проверки', path: path + '/verification', fields: <><Field label="Итог"><select name="outcome"><Options items={outcomes} /></select></Field>
-              {textBox('Вывод', 'summary')}{textBox('Ограничения и доказательства', 'limitations')}</>,
-            body: data => ({ outcome: field(data, 'outcome'), summary: field(data, 'summary'), limitations: field(data, 'limitations') }),
+              {textBox('Вывод', 'summary')}{textBox('Ограничения и доказательства', 'limitations')}<EvidencePicker onUploading={edit.setUploading} /></>,
+            body: data => ({ outcome: field(data, 'outcome'), summary: field(data, 'summary'), limitations: field(data, 'limitations'), evidenceIds: data.getAll('evidenceIds') }),
           })}>Зафиксировать результат</button>}>
             {record.verification ? <div className="inner-stack"><div className="inline-chips"><Chip value={record.verification.outcome} /><Synthetic show={record.verification.isSynthetic} /></div>
-              <p className="preserve">{record.verification.summary}</p><div><h3>Ограничения</h3><p className="preserve">{record.verification.limitations}</p></div><small>{date(record.verification.verifiedAt)}</small></div> :
+              <p className="preserve">{record.verification.summary}</p><div><h3>Ограничения</h3><p className="preserve">{record.verification.limitations}</p></div><EvidenceLinks files={record.verification.evidence} />
+              <small>{date(record.verification.verifiedAt)} · План v{record.verification.planVersion} · Наблюдений: {record.verification.measurementIds.length}</small></div> :
               <Empty title="Результат ещё не проверен">{plan?.observations.length ? 'Есть предварительные наблюдения.' : 'Добавьте наблюдения и передайте результат на проверку.'}</Empty>}
           </Section>
           <Section title="Публикации" icon={<BookOpen size={18} />} action={record.canDraftPublication && <button className="button secondary" onClick={() => edit.open({
             title: 'Подготовить публикацию', path: '/publications/drafts', description: 'Подготовьте отдельное изложение для сотрудников. Уберите частные и коммерческие сведения.',
-            fields: <><Field label="Название"><input name="title" required minLength={3} /></Field>
-              {textBox('Что решали', 'problem')}{textBox('Что изменили', 'change')}{textBox('Как проверили', 'method')}
-              {textBox('Результат', 'result')}{textBox('Ограничения', 'limitations')}
-              <Field label="Аудитория"><select name="audience"><option value="DEPARTMENT">Подразделение</option><option value="INTERNAL">Все сотрудники</option></select></Field></>,
-            body: data => ({ expectedVersion: undefined, improvementId: id, ...Object.fromEntries(['title', 'problem', 'change', 'method', 'result', 'limitations', 'audience'].map(key => [key, field(data, key)])) }),
+            fields: <PublicationFields />,
+            body: data => ({ expectedVersion: undefined, improvementId: id, ...publicationBody(data) }),
           })}>Подготовить публикацию</button>}>
             {record.publications.length ? record.publications.map(item => <div className="task-row" key={item.id}>
               <button className="text-button" onClick={() => { pub.reset(); setPublication(item); }}>{item.title}</button>{item.state && <Chip value={item.state} />}
@@ -315,10 +367,24 @@ export function ImprovementDetail() {
     {publication && <Modal title={publication.title} close={() => setPublication(null)}>
       <div className="inline-chips"><Synthetic show={publication.isSynthetic} /><span className="chip tone-muted">{publication.audienceId ? 'Подразделение' : 'Все сотрудники'}</span></div>
       <PublicationPreview item={publication} /><ErrorBox error={pub.error} />
+      {publication.reviewNote && <div className="info-box">{publication.reviewNote}</div>}
+      {record.canDraftPublication && publication.authorId === user.id && ['DRAFT', 'APPROVED'].includes(publication.state ?? '') &&
+        <button className="button secondary" onClick={() => {
+          setPublication(null);
+          edit.open({ title: 'Редактировать публикацию', path: `/publications/${publication.id}`, method: 'PATCH',
+            fields: <PublicationFields item={publication} />, body: data => ({ ...publicationBody(data), expectedVersion: publication.version }) });
+        }}>Редактировать публикацию</button>}
       {record.canApprovePublication && publication.authorId !== user.id && publication.state && ['DRAFT', 'APPROVED', 'PUBLISHED'].includes(publication.state) &&
-        <button className="button primary" disabled={pub.isPending} onClick={() => pub.mutate(publication.state === 'DRAFT' ? 'approve' : publication.state === 'APPROVED' ? 'publish' : 'unpublish')}>
-          {publication.state === 'DRAFT' ? 'Согласовать публикацию' : publication.state === 'APPROVED' ? 'Опубликовать' : 'Отозвать публикацию'}
-        </button>}
+        <div className="button-row">
+          {!publication.reviewNote && <button className="button primary" disabled={pub.isPending} onClick={() => pub.mutate(publication.state === 'DRAFT' ? 'approve' : publication.state === 'APPROVED' ? 'publish' : 'unpublish')}>
+            {publication.state === 'DRAFT' ? 'Согласовать публикацию' : publication.state === 'APPROVED' ? 'Опубликовать' : 'Отозвать публикацию'}
+          </button>}
+          {publication.state !== 'PUBLISHED' && <button className="button secondary" disabled={pub.isPending} onClick={() => {
+            setPublication(null);
+            edit.open({ title: 'Запросить правки', path: `/publications/${publication.id}/request-changes`,
+              fields: textBox('Какие правки нужны', 'reason'), body: data => ({ expectedVersion: publication.version, reason: field(data, 'reason') }) });
+          }}>Запросить правки</button>}
+        </div>}
     </Modal>}
     {aiOpen && <Modal title="Анализ Groq" description="Цель и основание будут отправлены внешнему сервису после вашего согласия." close={() => setAiOpen(false)}>
       <ErrorBox error={suggestion.error} />{suggestion.data ? <div className="inner-stack">{suggestion.data.truncated && <p>Часть текста была сокращена.</p>}

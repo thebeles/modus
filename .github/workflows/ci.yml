@@ -39,6 +39,11 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: docker compose config --quiet
+      - run: docker compose -f docker-compose.production.yml config --quiet
+        env:
+          WEB_ORIGIN: https://kontur.example.invalid
+          DATABASE_URL: postgresql://runtime:validation@db.example.invalid/kontur
+          MIGRATION_DATABASE_URL: postgresql://migrator:validation@db.example.invalid/kontur
       - run: pnpm db:migrate && pnpm db:seed && pnpm db:seed
       - run: pnpm test:integration
       - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE kontur_e2e'

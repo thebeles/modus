@@ -1,0 +1,64 @@
+name: modus-kontur-production
+
+x-server: &server
+  image: modus-kontur-production-server
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  environment:
+    NODE_ENV: production
+    PORT: "4000"
+    DATABASE_URL: ${DATABASE_URL:?Set the application database URL}
+    WEB_ORIGIN: ${WEB_ORIGIN:?Set the public HTTPS origin}
+    DEMO_MODE: "false"
+    SEED_DEMO_USERS: "false"
+    COOKIE_SECURE: "true"
+    STORAGE_DIR: /app/.storage
+    APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
+    GROQ_AI_ENABLED: ${GROQ_AI_ENABLED:-false}
+    GROQ_API_KEY: ${GROQ_API_KEY:-}
+    GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
+    GROQ_OUTPUT_MODE: ${GROQ_OUTPUT_MODE:-json_schema}
+
+services:
+  migrate:
+    <<: *server
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set the migration database URL}
+    command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+  api:
+    <<: *server
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - storage:/app/.storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+  worker:
+    <<: *server
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "dist/src/worker.js"]
+    volumes:
+      - storage:/app/.storage
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5173}:80"
+
+volumes:
+  storage:

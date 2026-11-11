@@ -1,11 +1,12 @@
 import { Controller, Get, Inject, Injectable, Param, Post, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import type { PrismaClient } from '@prisma/client';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Response } from 'express';
 import { AuthRequest } from './auth';
-import { AppError, Database, forbidden, invalid, missing, throttle } from './common';
+import { AppError, Database, forbidden, invalid, missing, throttle, Tx } from './common';
 import { Policy, Principal } from './policy';
 
 export const maxFileBytes = () => Math.min(5_242_880, Math.max(1024, Number(process.env.ATTACHMENT_MAX_BYTES) || 5_242_880));
@@ -45,7 +46,46 @@ export class LocalStorage implements FileStorage {
     await writeFile(this.path(key), buffer, { flag: 'wx', mode: 0o600 });
   }
   read(key: string) { return readFile(this.path(key)); }
-  remove(key: string) { return unlink(this.path(key)); }
+  async remove(key: string) {
+    try { await unlink(this.path(key)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+}
+
+export const attachmentSummary = { id: true, name: true, mediaType: true, bytes: true } as const;
+const unclaimedAttachment = { appealId: null, improvementId: null } as const;
+
+export async function claimAttachments(tx: Tx, uploaderId: string, ids: string[], owner: { appealId: string } | { improvementId: string }) {
+  if (!ids.length) return;
+  const updated = await tx.attachment.updateMany({
+    where: { ...unclaimedAttachment, id: { in: ids }, uploaderId, readyAt: { not: null }, purgeAt: null },
+    data: owner,
+  });
+  if (updated.count !== new Set(ids).size) throw invalid('Некоторые вложения недоступны.');
+}
+
+export async function purgeUploads(db: PrismaClient, storage: FileStorage, now = new Date()) {
+  const expired = new Date(now.getTime() - 48 * 3600000);
+  const where = { ...unclaimedAttachment, OR: [
+    { purgeAt: null, createdAt: { lt: expired } },
+    { purgeAt: { lte: now } },
+  ] };
+  const candidates = await db.attachment.findMany({ where, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 50, select: { id: true } });
+  if (!candidates.length) return;
+  const retryAt = new Date(now.getTime() + 5 * 60000);
+  const claimed = await db.attachment.updateManyAndReturn({
+    where: { ...where, id: { in: candidates.map(row => row.id) } },
+    data: { purgeAt: retryAt }, select: { id: true, storageKey: true },
+  });
+  for (const row of claimed) {
+    try {
+      await storage.remove(row.storageKey);
+      await db.attachment.deleteMany({ where: { id: row.id, purgeAt: retryAt } });
+    } catch {
+      console.error('Upload cleanup will retry');
+    }
+  }
 }
 
 @Injectable()
@@ -63,19 +103,22 @@ export class Files {
     const mediaType = fileType(name, file.buffer);
     if (!mediaType) throw invalid('Формат файла не разрешён или содержимое не соответствует расширению.');
     const storageKey = randomUUID();
-    try { await this.storage.write(storageKey, file.buffer); } catch { throw unavailable(); }
+    const row = await this.db.attachment.create({ data: { name, mediaType, bytes: file.size, storageKey, uploaderId: user.id },
+      select: attachmentSummary });
     try {
-      return await this.db.attachment.create({ data: { name, mediaType, bytes: file.size, storageKey, uploaderId: user.id },
-        select: { id: true, name: true, mediaType: true, bytes: true } });
-    } catch (error) {
-      await this.storage.remove(storageKey).catch(() => undefined);
-      throw error;
+      await this.storage.write(storageKey, file.buffer);
+      await this.db.attachment.update({ where: { id: row.id, purgeAt: null }, data: { readyAt: new Date() } });
+      return row;
+    } catch {
+      await this.db.attachment.updateMany({ where: { id: row.id, purgeAt: null }, data: { purgeAt: new Date() } }).catch(() => undefined);
+      throw unavailable();
     }
   }
 
   async download(user: Principal, item: string) {
-    const record = await this.db.attachment.findFirst({ where: { id: item, OR: [
-      { appealId: null, uploaderId: user.id }, { appeal: { is: this.policy.appeals(user) } },
+    const record = await this.db.attachment.findFirst({ where: { id: item, readyAt: { not: null }, purgeAt: null, OR: [
+      { ...unclaimedAttachment, uploaderId: user.id }, { appeal: { is: this.policy.appeals(user) } },
+      { improvement: { is: this.policy.improvements(user) } },
     ] } });
     if (!record) throw missing();
     if (process.env.NODE_ENV === 'production' && record.mediaType === types.pdf) throw missing();

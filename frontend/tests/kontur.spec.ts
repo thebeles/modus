@@ -322,3 +322,41 @@ test('E2E-12 responsive home and keyboard-operable submission at 360 px', async 
   await expect(page.getByRole('heading', { name: /Проверка мобильной формы/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
 });
+
+test('a draft survives reload and reuses the submission after a lost response', async ({ page }) => {
+  await login(page, 'employee');
+  page.on('dialog', dialog => void dialog.accept());
+  await page.goto('/appeals/new');
+  const description = page.getByLabel('Что вы хотите сообщить?');
+  await description.fill('Три');
+  await page.reload();
+  await expect(description).toHaveValue('Три');
+  await description.fill('Проверка повторной подачи после потери ответа.');
+  await page.getByRole('button', { name: 'Продолжить' }).click();
+  const title = 'Повторная подача ' + randomUUID().slice(0, 8);
+  await page.getByLabel('Заголовок').fill(title);
+  await page.getByLabel('Вложения').setInputFiles({ name: 'sample.txt', mimeType: 'text/plain', buffer: Buffer.from('Контрольное вложение.') });
+  await expect(page.getByText('sample.txt', { exact: true })).toBeVisible();
+  let createdId: string | undefined;
+  await page.route('**/api/v1/appeals', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const response = await route.fetch();
+    expect(response.ok()).toBeTruthy();
+    createdId = (await response.json()).data.id;
+    await route.abort();
+  }, { times: 1 });
+  const submit = async () => {
+    await page.getByRole('button', { name: 'Проверить и отправить' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Отправить обращение' }).click();
+  };
+  await submit();
+  await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible();
+  expect(createdId).toBeTruthy();
+  await page.reload();
+  await expect(page.getByLabel('Заголовок')).toHaveValue(title);
+  await expect(page.getByText('sample.txt', { exact: true })).toBeVisible();
+  await submit();
+  await expect(page).toHaveURL(new RegExp('/appeals/' + createdId + '$'));
+  const rows = await get<{ total: number }>(page, '/appeals?own=true&q=' + encodeURIComponent(title));
+  expect(rows.total).toBe(1);
+});

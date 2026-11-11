@@ -14,6 +14,7 @@
     "test:integration": "tsx --env-file-if-exists=../.env --test tests/integration.test.ts",
     "db:migrate": "node --env-file-if-exists=../.env ./node_modules/prisma/build/index.js migrate deploy",
     "db:seed": "tsx --env-file-if-exists=../.env prisma/seed.ts",
+    "ai:check": "tsx --env-file-if-exists=../.env src/ai-check.ts",
     "db:admin": "tsx --env-file-if-exists=../.env prisma/bootstrap-admin.ts"
   },
   "dependencies": {

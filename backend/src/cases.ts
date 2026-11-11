@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { actionStatuses, feedbackChoices, improvementStatuses, outcomes, problemStatuses } from './contracts';
 import { AuthRequest } from './auth';
 import { allocate, assertVersion, atomic, audit, bodyText, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, invalidState, missing, notify, pagination, parse, shortText, title, Tx } from './common';
+import { attachmentSummary, claimAttachments } from './files';
 import { Policy, Principal } from './policy';
 import { improvementTransitions, problemTransitions } from './workflow';
 
@@ -21,8 +22,10 @@ const planInput = z.strictObject({ expectedVersion, method: z.enum(['QUANTITATIV
   }
   if (plan.method !== 'QUANTITATIVE' && !plan.protocol) ctx.addIssue({ code: 'custom', path: ['protocol'], message: 'Опишите протокол проверки.' });
 });
+const evidenceIds = z.array(id).max(5).transform(ids => [...new Set(ids)]).default([]);
 const observationInput = z.strictObject({ expectedVersion, phase: z.enum(['BEFORE', 'AFTER']), value: z.number().optional(),
   periodStart: dateTime, periodEnd: dateTime, sampleSize: z.number().int().min(1).max(100000000).optional(), source: bodyText,
+  sourceType: z.enum(['SYSTEM_REPORT', 'MANUAL_SAMPLE', 'INTERVIEW', 'OTHER']).default('OTHER'), evidenceIds,
 });
 const restrictedSources = { visibility: 'NORMAL_INTERNAL' } as const;
 const editable = new Set<ImprovementStatus>(['DRAFT', 'DEFERRED', 'APPROVED', 'IN_PROGRESS']);
@@ -103,7 +106,10 @@ export class Cases {
         this.history(tx, 'problem', item),
       ]);
       const canEdit = this.manages(user, record) && record.status !== 'CLOSED';
-      return { ...record, owner, findings, sources, improvements, events, canEdit,
+      const people = canEdit ? await tx.user.findMany({ where: { departmentId: record.departmentId, active: true, role: { in: ['HANDLER', 'MANAGER'] },
+        permissions: { hasEvery: record.visibility === 'NORMAL_INTERNAL' ? ['PROBLEM_OWNER'] : ['PROBLEM_OWNER', 'SENSITIVE_CASE_HANDLER'] } },
+        select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [];
+      return { ...record, owner, findings, sources, improvements, events, canEdit, people,
         allowedActions: this.manages(user, record) ? problemTransitions[record.status] : [] };
     }, { isolationLevel: 'RepeatableRead' });
   }
@@ -125,16 +131,23 @@ export class Cases {
   }
 
   async editProblem(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ...data } = parse(z.strictObject({ expectedVersion, title: title.optional(),
-      symptoms: bodyText.optional(), hypothesis: bodyText.optional() }), raw);
+    const { expectedVersion: version, ownerId, ...data } = parse(z.strictObject({ expectedVersion, title: title.optional(),
+      symptoms: bodyText.optional(), hypothesis: bodyText.optional(), ownerId: id.optional() }), raw);
     await atomic(this.db, async tx => {
       const record = await this.problem(tx, user, item);
       assertVersion(record.version, version);
       if (!this.manages(user, record) || record.status === 'CLOSED') throw forbidden();
-      await checked(tx.problem.updateMany({ where: { id: item, version }, data: { ...data, version: { increment: 1 } } }));
-      await audit(tx, 'problem', item, 'UPDATED', user.id);
+      if (ownerId && !await tx.user.findFirst({ where: { id: ownerId, active: true, departmentId: record.departmentId,
+        role: { in: ['HANDLER', 'MANAGER'] }, permissions: { hasEvery: record.visibility === 'NORMAL_INTERNAL' ?
+          ['PROBLEM_OWNER'] : ['PROBLEM_OWNER', 'SENSITIVE_CASE_HANDLER'] } }, select: { id: true } })) {
+        throw invalid('Выберите действующего владельца проблемы из её подразделения.');
+      }
+      await checked(tx.problem.updateMany({ where: { id: item, version }, data: { ...data, ownerId, version: { increment: 1 } } }));
+      await audit(tx, 'problem', item, 'UPDATED', user.id, false,
+        ownerId && ownerId !== record.ownerId ? { previousOwnerId: record.ownerId, ownerId } : undefined);
     });
-    return this.problemDetail(user, item);
+    const readable = await this.db.problem.count({ where: { AND: [{ id: item }, this.policy.problems(user)] } });
+    return readable ? this.problemDetail(user, item) : { id: item, readable: false };
   }
 
   async problemMutation(user: Principal, item: string, raw: unknown, finding: boolean) {
@@ -181,7 +194,7 @@ export class Cases {
     return this.db.$transaction(async tx => {
       const record = await this.improvement(tx, user, item);
       const manager = this.manages(user, record);
-      const [owner, actions, approvals, plan, verification, sources, problem, events, feedback, publications] = await Promise.all([
+      const [owner, actions, approvals, plan, verification, sources, problem, events, feedback, publications, attachments] = await Promise.all([
         tx.user.findUnique({ where: { id: record.ownerId }, select: { id: true, name: true } }),
         tx.actionItem.findMany({ where: { improvementId: item }, include: { owner: { select: { id: true, name: true } } }, orderBy: { id: 'asc' } }),
         tx.approvalDecision.findMany({ where: { improvementId: item }, orderBy: { createdAt: 'desc' } }),
@@ -192,11 +205,16 @@ export class Cases {
         this.history(tx, 'improvement', item),
         manager ? tx.feedback.findMany({ where: { improvementId: item }, orderBy: { submittedAt: 'desc' } }) : [],
         manager || this.approvalScope(user, record, 'PUBLICATION_APPROVER') ? tx.publication.findMany({ where: { improvementId: item } }) : [],
+        tx.attachment.findMany({ where: { improvementId: item, readyAt: { not: null }, purgeAt: null }, select: attachmentSummary }),
       ]);
       const people = manager ? await tx.user.findMany({ where: { active: true, departmentId: record.departmentId, role: { in: ['HANDLER', 'MANAGER'] } },
         select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [];
+      const byId = new Map(attachments.map(file => [file.id, file]));
+      const evidence = (ids: string[]) => ids.flatMap(id => byId.get(id) ?? []);
       return { ...record, problemId: problem?.id ?? null, owner, actions: actions.map(task => ({ ...task, canUpdate: editable.has(record.status) && (manager || task.ownerId === user.id) })),
-        approvals, plan, verification, sources, problem, events, feedback, publications, people,
+        approvals, plan: plan && { ...plan, observations: plan.observations.map(row => ({ ...row, evidence: evidence(row.evidenceIds) })) },
+        verification: verification && { ...verification, evidence: evidence(verification.evidenceIds) },
+        sources, problem, events, feedback, publications, people,
         canEdit: manager && editable.has(record.status), canMeasure: manager && ['IN_PROGRESS', 'IMPLEMENTED', 'VERIFYING'].includes(record.status) && !verification,
         canVerify: record.status === 'VERIFYING' && !verification && this.approvalScope(user, record, 'RESULT_VERIFIER'),
         canInvite: manager && !!record.implementedAt, canDraftPublication: manager && record.status === 'COMPLETED' && !!verification,
@@ -246,7 +264,8 @@ export class Cases {
       const event = await audit(tx, 'improvement', item, 'UPDATED', user.id);
       if (newOwner && newOwner !== record.ownerId) await notify(tx, event.id, [newOwner], 'ASSIGNED', `/improvements/${item}`);
     });
-    return this.improvementDetail(user, item);
+    const readable = await this.db.improvement.count({ where: { AND: [{ id: item }, this.policy.improvements(user)] } });
+    return readable ? this.improvementDetail(user, item) : { id: item, readable: false };
   }
 
   async transition(user: Principal, item: string, raw: unknown, fixed?: ImprovementStatus) {
@@ -351,7 +370,7 @@ export class Cases {
       if (await tx.measurement.count({ where: { improvementId: item } })) throw invalidState('Есть наблюдения по текущему плану.');
       const plan = { ...data, metricName: data.metricName ?? null, unit: data.unit ?? null,
         direction: data.direction ?? null, targetValue: data.targetValue ?? null, protocol: data.protocol ?? null };
-      await tx.measurementPlan.upsert({ where: { improvementId: item }, create: { improvementId: item, ...plan }, update: plan });
+      await tx.measurementPlan.upsert({ where: { improvementId: item }, create: { improvementId: item, ...plan }, update: { ...plan, version: { increment: 1 } } });
       await this.bump(tx, record);
       await audit(tx, 'improvement', item, 'MEASUREMENT_PLAN', user.id);
     });
@@ -374,7 +393,8 @@ export class Cases {
       if (data.phase === 'BEFORE' && record.implementedAt && data.periodEnd > record.implementedAt) {
         throw invalid('Исходный период должен закончиться до внедрения.');
       }
-      await tx.measurement.create({ data: { ...data, improvementId: item, recordedBy: user.id, isSynthetic: record.isSynthetic } });
+      await claimAttachments(tx, user.id, data.evidenceIds, { improvementId: item });
+      await tx.measurement.create({ data: { ...data, planVersion: plan.version, improvementId: item, recordedBy: user.id, isSynthetic: record.isSynthetic } });
       await this.bump(tx, record);
       await audit(tx, 'improvement', item, 'MEASUREMENT', user.id);
     });
@@ -382,25 +402,31 @@ export class Cases {
   }
 
   async verify(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ...input } = parse(z.strictObject({ expectedVersion, outcome: z.enum(outcomes), summary: bodyText, limitations: bodyText }), raw);
+    const { expectedVersion: version, ...input } = parse(z.strictObject({ expectedVersion, outcome: z.enum(outcomes), summary: bodyText, limitations: bodyText, evidenceIds }), raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
       if (!this.approvalScope(user, record, 'RESULT_VERIFIER')) throw forbidden();
       if (record.status !== 'VERIFYING' || await tx.verification.findUnique({ where: { improvementId: item } })) throw invalidState();
-      const observations = await tx.measurement.findMany({ where: { improvementId: item, supersededAt: null }, select: { phase: true, value: true }, orderBy: { periodEnd: 'desc' } });
+      const plan = await tx.measurementPlan.findUnique({ where: { improvementId: item } });
+      if (!plan) throw invalidState('Сначала задайте план проверки.');
+      const observations = await tx.measurement.findMany({
+        where: { improvementId: item, supersededAt: null, planVersion: plan.version },
+        select: { id: true, phase: true, value: true }, orderBy: [{ periodEnd: 'desc' }, { id: 'asc' }],
+      });
       if (input.outcome !== 'INCONCLUSIVE' && !['BEFORE', 'AFTER'].every(phase => observations.some(row => row.phase === phase))) {
         throw invalidState('Для вывода об эффекте нужны наблюдения до и после внедрения.');
       }
-      const plan = await tx.measurementPlan.findUnique({ where: { improvementId: item } });
-      if (input.outcome === 'VERIFIED' && plan && plan.method !== 'QUALITATIVE') {
+      if (input.outcome === 'VERIFIED' && plan.method !== 'QUALITATIVE') {
         const after = observations.find(row => row.phase === 'AFTER')?.value;
         const goal = plan.targetValue;
         const meetsTarget = after != null && goal != null &&
           (plan.direction === 'DECREASE' ? after <= goal : plan.direction === 'INCREASE' ? after >= goal : after === goal);
         if (!meetsTarget) throw invalidState('Последнее измерение не достигло целевого значения. Укажите подходящий итог.');
       }
-      await tx.verification.create({ data: { ...input, improvementId: item, verifierId: user.id, isSynthetic: record.isSynthetic } });
+      await claimAttachments(tx, user.id, input.evidenceIds, { improvementId: item });
+      await tx.verification.create({ data: { ...input, planVersion: plan.version, measurementIds: observations.map(row => row.id),
+        improvementId: item, verifierId: user.id, isSynthetic: record.isSynthetic } });
       await this.bump(tx, record);
       const event = await audit(tx, 'improvement', item, 'VERIFICATION', user.id, false, { outcome: input.outcome });
       await notify(tx, event.id, [record.ownerId], 'VERIFICATION', `/improvements/${item}`);

@@ -33,3 +33,5 @@ export function businessDeadline(start: Date, hours: number, timeZone = process.
   }
   return new Date(current);
 }
+
+export const clarificationKey = (appealId: string, waitingSince: Date) => `clarification:${appealId}:${waitingSince.toISOString()}`;

@@ -37,6 +37,10 @@ function AdminResource({ resource }: { resource: Resource }) {
   const editable = !['audit', 'outbox-failures', 'ai'].includes(resource);
   const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: resource !== 'ai' });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean; fallback: string }>('/ai/capabilities'), enabled: resource === 'ai' });
+  const monitor = useQuery({ queryKey: ['admin', 'worker-status'], enabled: resource === 'outbox-failures', refetchInterval: 15000,
+    queryFn: () => api<{ healthy: boolean; lastCheckAt: string | null; oldestAvailableAt: string | null; pendingCount: number; deadCount: number }>('/admin/worker-status') });
+  const retry = useMutation({ mutationFn: (id: string) => api(`/admin/outbox-failures/${id}/retry`, { method: 'POST', body: {} }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['admin'] }) });
   const users = useQuery({ queryKey: ['admin', 'users'], queryFn: () => api<Row[]>('/admin/users'), enabled: !!editor || preview });
   const units = useQuery({ queryKey: ['admin', 'organization-units'], queryFn: () => api<Row[]>('/admin/organization-units'), enabled: !!editor || preview });
   const cats = useQuery({ queryKey: ['admin', 'categories'], queryFn: () => api<Row[]>('/admin/categories'), enabled: !!editor || preview });
@@ -76,12 +80,19 @@ function AdminResource({ resource }: { resource: Resource }) {
         <p>{ai.data.fallback}</p><p>Провайдер настраивается серверными переменными окружения. Конфиденциальные карточки закрыты для передачи.</p></div>}</Section> :
       <Section title={resources[resource]} icon={<Settings size={18} />} action={resource === 'routing-rules' && <button className="button secondary"
         onClick={() => { inspect.reset(); setPreview(true); }}>Проверить маршрут <ArrowRight size={16} /></button>}>
+        {resource === 'outbox-failures' && monitor.data && <dl className="facts">
+          <div><dt>Worker</dt><dd>{monitor.data.healthy ? 'Работает' : 'Нет свежего сигнала'} · {monitor.data.lastCheckAt ? date(monitor.data.lastCheckAt, true) : 'Нет данных'}</dd></div>
+          <div><dt>Ожидают</dt><dd>{monitor.data.pendingCount}{monitor.data.oldestAvailableAt ? ` · с ${date(monitor.data.oldestAvailableAt, true)}` : ''}</dd></div>
+          <div><dt>Исчерпали попытки</dt><dd>{monitor.data.deadCount}</dd></div>
+        </dl>}
+        <ErrorBox error={monitor.error || retry.error} />
         <ErrorBox error={rows.error} retry={() => rows.refetch()} />{rows.isPending && <Loading />}
         {rows.data && (rows.data.length ? rows.data.map(item => <div key={item.id} className="task-row admin-row">
           <div><strong>{item.name ?? (item.priority ? label(item.priority) : label(item.action ?? item.kind ?? ''))}</strong>
             <small>{item.email ? `${item.email} · ${label(item.role ?? '')}` : item.priority ? `Первый ответ: ${item.firstResponseHours} ч · Следующее действие: ${item.nextActionHours} ч` :
               item.visibility ? label(item.visibility) + (item.fallback ? ' · Резервная' : '') : item.rank !== undefined ? `Приоритет ${item.rank}` :
                 item.entity ? `${item.entity} · ${date(item.createdAt, true)}` : item.deadAt ? `Попыток: ${item.attempts} · ${date(item.deadAt, true)}` : item.sensitive ? 'Специальный маршрут' : ''}</small></div>
+          {resource === 'outbox-failures' && <button className="button secondary" disabled={retry.isPending} onClick={() => retry.mutate(item.id)}>Повторить доставку</button>}
           {item.active === false && <Chip value="Неактивно" />}
           {editable && <button className="button subtle" onClick={() => { save.reset(); setEditor(item); }}>Изменить</button>}
         </div>) : <Empty title="Записей пока нет" />)}

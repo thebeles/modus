@@ -279,6 +279,9 @@ model Appeal {
   waitingSince DateTime?
   resumeState AppealStatus?
   firstHumanResponseAt DateTime?
+  controlDueAt DateTime? @default(dbgenerated())
+  firstResponseSeconds Float? @default(dbgenerated())
+  lastMeaningfulActionAt DateTime @default(now())
   firstResponseDueAt DateTime?
   dueAt DateTime?
   slaVersion Int?
@@ -298,6 +301,7 @@ model Appeal {
   linksTo AppealLink[] @relation("LinkTo")
   @@index([createdAt])
   @@index([status, dueAt])
+  @@index([controlDueAt])
   @@index([authorId])
   @@index([assigneeId])
   @@index([queueId])
@@ -324,6 +328,10 @@ model Attachment {
   id String @id @default(uuid())
   appealId String?
   appeal Appeal? @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  improvementId String?
+  improvement Improvement? @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  readyAt DateTime?
+  purgeAt DateTime?
   uploaderId String
   uploader User @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
   name String
@@ -333,6 +341,12 @@ model Attachment {
   createdAt DateTime @default(now())
   @@index([appealId])
   @@index([uploaderId])
+  @@index([improvementId])
+}
+
+enum ReviewRequestKind {
+  RECONSIDERATION
+  WITHDRAWAL
 }
 
 model ReviewRequest {
@@ -342,6 +356,7 @@ model ReviewRequest {
   authorId String
   author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
   reason String
+  kind ReviewRequestKind @default(RECONSIDERATION)
   decision String?
   decidedAt DateTime?
   createdAt DateTime @default(now())
@@ -444,6 +459,7 @@ model Improvement {
   @@index([departmentId, status])
   @@index([ownerId])
   @@index([problemId])
+  attachments Attachment[]
 }
 
 model ImprovementAppeal {
@@ -485,6 +501,7 @@ model ActionItem {
 
 model MeasurementPlan {
   improvementId String @id
+  version Int @default(1)
   improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
   method String
   hypothesis String
@@ -508,6 +525,9 @@ model Measurement {
   periodEnd DateTime
   sampleSize Int?
   source String
+  sourceType String @default("OTHER")
+  planVersion Int @default(1)
+  evidenceIds String[] @default([])
   recordedBy String
   isSynthetic Boolean @default(false)
   createdAt DateTime @default(now())
@@ -520,6 +540,9 @@ model Verification {
   outcome Outcome
   summary String
   limitations String
+  planVersion Int @default(1)
+  measurementIds String[] @default([])
+  evidenceIds String[] @default([])
   verifierId String
   isSynthetic Boolean @default(false)
   verifiedAt DateTime @default(now())
@@ -554,6 +577,7 @@ model Publication {
   audience OrganizationUnit? @relation(fields: [audienceId], references: [id])
   authorId String
   approvedBy String?
+  reviewNote String?
   publishedAt DateTime?
   isSynthetic Boolean @default(false)
   version Int @default(1)
@@ -583,8 +607,14 @@ model OutboxJob {
   attempts Int @default(0)
   availableAt DateTime @default(now())
   deliveredAt DateTime?
+  discardedAt DateTime?
   deadAt DateTime?
-  @@index([deliveredAt, deadAt, availableAt])
+  @@index([deliveredAt, deadAt, discardedAt, availableAt], map: "OutboxJob_pending_idx")
+}
+
+model WorkerHeartbeat {
+  id String @id
+  checkedAt DateTime
 }
 
 model Notification {

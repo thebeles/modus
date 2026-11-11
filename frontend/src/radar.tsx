@@ -14,7 +14,7 @@ type Bucket = { id: string | null; name: string; count: number };
 type MetricGroup = { key: string; count: number };
 type RadarData = {
   total: number; closed: number; documented: number; firstResponse: { count: number; hours: number | null };
-  overdue: number; stale: number; waiting: number; improved: number; verified: number; verifiedSuccess: number; topics: number;
+  overdue: number; stale: number; waiting: number; improved: number; verified: number; verifiedSuccess: number; verifiedDeterminate: number; topics: number; recurrenceCandidates: number;
   types: MetricGroup[]; statuses: MetricGroup[]; outcomes: MetricGroup[]; processes: Bucket[]; categories: Bucket[];
   attention: AppealRow[]; improvements: CaseRow[]; topicItems: LinkRow[]; minGroup: number;
 };
@@ -55,9 +55,9 @@ export function RadarPage() {
     {values && <>
       <div className="metric-grid">
         <Metric label="Обращения" value={values.total} detail="Созданы в выбранном периоде" icon={<Inbox size={19} />} to={toQueue()} />
-        <Metric label="Просрочено" value={values.overdue} detail="Активные обращения с истёкшим сроком" icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
-        <Metric label="Без активности" value={values.stale} detail="Нет действий за 3 суток или координатора" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
-        <Metric label="Тематические связи" value={values.topics} detail="Предложенные и подтверждённые связи" icon={<GitPullRequest size={19} />} />
+        <Metric label="Просрочено" value={values.overdue} detail="Истёк срок первого ответа или следующего действия" icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
+        <Metric label="Без активности" value={values.stale} detail="Три суток без действий или нет ответственного" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
+        <Metric label="Тематические связи" value={values.topics} detail="Связи, включая возможные повторы" icon={<GitPullRequest size={19} />} />
       </div>
       <Tabs.Root defaultValue="attention">
         <Tabs.List className="tab-strip radix-tabs" aria-label="Представления радара">{[
@@ -66,7 +66,7 @@ export function RadarPage() {
         <Tabs.Content value="attention" className="inner-stack">
           <div className="detail-grid">
             <Section title="Обращения к проверке" icon={<TriangleAlert size={19} />}>{values.attention.length ? values.attention.map(item => <div className="task-row" key={item.id}>
-              <div><Link to={`/work-queue/appeals/${item.id}`}>{item.title}</Link><small>{item.number} · {item.dueAt ? date(item.dueAt) : 'Срок не задан'}</small></div><Chip value={item.status} />
+              <div><Link to={`/work-queue/appeals/${item.id}`}>{item.title}</Link><small>{item.number} · {item.controlDueAt ? date(item.controlDueAt) : 'Срок не задан'}</small></div><Chip value={item.status} />
             </div>) : <Empty title="Нет обращений к проверке" />}</Section>
             <Section title="Рассмотрение" icon={<Activity size={19} />}><dl className="facts">
               <div><dt>Закрыты из созданных</dt><dd><Link to={toQueue({ status: 'CLOSED' })}>{ratio(values.closed, values.total)} · {values.closed} из {values.total}</Link></dd></div>
@@ -82,7 +82,7 @@ export function RadarPage() {
             </div> : <Empty title="Нет данных за выбранный период" />}</Section>
         </Tabs.Content>
         <Tabs.Content value="topics"><Section title="Тематические связи" icon={<GitPullRequest size={18} />}>
-          <p className="subtle-text section-intro">Связи основаны на теме или возможном повторе. Проверяйте первичные обращения перед подтверждением.</p>
+          <p className="subtle-text section-intro">Связи основаны на теме или возможном повторе. Возможные повторы после внедрения: {values.recurrenceCandidates}. Проверяйте первичные обращения перед подтверждением.</p>
           <LinkCards items={values.topicItems} /></Section></Tabs.Content>
         <Tabs.Content value="processes"><div className="two-fields">
           {[{ title: 'По процессам', field: 'processId', rows: values.processes }, { title: 'По категориям', field: 'categoryId', rows: values.categories }].map(group =>
@@ -97,7 +97,7 @@ export function RadarPage() {
         <Tabs.Content value="outcomes" className="inner-stack"><div className="metric-grid three">
           <Metric label="Внедрено" value={values.improved} detail="Внедрено, проверяется или завершено" icon={<Layers3 size={19} />} />
           <Metric label="Есть проверка" value={ratio(values.verified, values.improved)} detail={`${values.verified} из ${values.improved} внедрённых`} icon={<CheckCircle2 size={19} />} />
-          <Metric label="Эффект подтверждён" value={ratio(values.verifiedSuccess, values.verified)} detail={`${values.verifiedSuccess} из ${values.verified} с проверкой`} icon={<Activity size={19} />} />
+          <Metric label="Эффект подтверждён" value={ratio(values.verifiedSuccess, values.verifiedDeterminate)} detail={`${values.verifiedSuccess} из ${values.verifiedDeterminate} с определённым итогом`} icon={<Activity size={19} />} />
         </div><Section title="Итоги проверки">{values.outcomes.length ? values.outcomes.map(row => <div className="task-row" key={row.key}><Chip value={row.key} /><strong>{row.count}</strong></div>) : <Empty title="Завершённых проверок пока нет" />}
           {values.improvements.filter(item => item.verification).map(item => <div className="task-row" key={item.id}><Link to={`/improvements/${item.id}`}>{item.title}</Link><Chip value={item.verification!.outcome} /></div>)}
         </Section></Tabs.Content>

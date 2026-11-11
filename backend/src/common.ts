@@ -62,12 +62,15 @@ export async function allocate(tx: Tx, prefix: 'A' | 'P' | 'I') {
   return `${prefix}-${String(result.value).padStart(3, '0')}`;
 }
 
-export async function atomic<T>(db: Database, fn: (tx: Tx) => Promise<T>): Promise<T> {
+export async function atomic<T>(db: PrismaClient, fn: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await db.$transaction(fn, { isolationLevel: 'Serializable', timeout: 15000 });
     } catch (error) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2034') throw error;
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError)) throw error;
+      const retryable = error.code === 'P2034' ||
+        (error.code === 'P2010' && ['40001', '40P01'].includes(String(error.meta?.code)));
+      if (!retryable) throw error;
       if (attempt === 3) throw conflict();
       await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 15));
     }

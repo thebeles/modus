@@ -84,7 +84,7 @@ export function Modal({ title, description, close, children }: { title: string; 
 }
 
 export function Timeline({ items }: { items: EventRow[] }) {
-  return items.length ? <ol className="timeline">{items.map(event => <li key={event.id}><span className="timeline-dot"><Check size={12} /></span>
+  return items.length ? <ol className="timeline">{items.map(event => <li key={event.id} id={`event-${event.id}`}><span className="timeline-dot"><Check size={12} /></span>
     <div><strong>{label(event.action)}</strong><small>{date(event.createdAt, true)}</small>{event.details?.reason && <p>{event.details.reason}</p>}</div>
   </li>)}</ol> : <Empty title="История пока пуста" />;
 }

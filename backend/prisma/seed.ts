@@ -102,7 +102,7 @@ async function seed() {
         sourceSnapshot: { ...row }, type: typeMap[row.rawType], status, priority, authorId: author.id, departmentId: author.departmentId,
         assigneeId: handler.id, queueId: categoryQueue.id, categoryId: categories.get(row.rawCategory), processId: processes[sourceProcesses[index]].id,
         resolutionType, resolutionText, resolutionBy: closedAt ? (resolutionType === 'REJECTED' ? manager.id : handler.id) : null,
-        closedAt, waitingSince, resumeState: waitingSince ? 'REVIEW' : null, createdAt, updatedAt: date(28 - index),
+        closedAt, waitingSince, resumeState: waitingSince ? 'REVIEW' : null, createdAt, lastMeaningfulActionAt: closedAt ?? waitingSince ?? createdAt, updatedAt: date(28 - index),
         firstHumanResponseAt: status === 'NEW' ? null : date(28 - index), seedOrigin: 'ORIGINAL_DOCX', isSynthetic: true,
       } });
       appeals.push(record);
@@ -134,7 +134,7 @@ async function seed() {
     ] as const) {
       const record = await tx.appeal.upsert({ where: { number }, update: {}, create: { number, title, description, descriptionOriginal: description,
         authorId: author.id, departmentId: author.departmentId, queueId: q.id, visibility, type: 'PROPOSAL',
-        dueAt: overdue ? date(22) : null, slaVersion: overdue ? 1 : null, createdAt: date(22), updatedAt: date(23),
+        dueAt: overdue ? date(22) : null, slaVersion: overdue ? 1 : null, createdAt: date(22), lastMeaningfulActionAt: date(22), updatedAt: date(23),
         seedOrigin: 'DEMO_SYNTHETIC', isSynthetic: true } });
       const eventId = `seed-created-${number}`;
       await tx.auditEvent.upsert({ where: { id: eventId }, update: {}, create: { id: eventId, entity: 'appeal', entityId: record.id,

@@ -7,7 +7,7 @@ import { useForm } from 'react-hook-form';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from '@kontur/api/contracts';
-import { api, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
+import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, Synthetic, Timeline } from './ui';
 
@@ -25,7 +25,7 @@ function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow
     return <tr key={item.id}><td><Link className="table-title" to={to}><span className="row-icon"><FileText size={17} /></span><span>
       <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} />}</small><strong>{item.title}</strong>
     </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td>{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
-      <td className="date-cell">{staff ? item.dueAt ? date(item.dueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
+      <td className="date-cell">{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
       <td><Link className="icon-button row-arrow" to={to} aria-label={`Открыть ${item.number}`}><ChevronRight size={17} /></Link></td></tr>;
   })}</tbody></table></div>;
 }
@@ -105,16 +105,42 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
   </>;
 }
 
-const draftSchema = z.object({
-  type: z.enum(appealTypes), description: z.string().trim().min(5, 'Опишите ситуацию хотя бы в нескольких словах.').max(10000),
-  title: z.string().trim().max(180).refine(value => !value || value.length >= 3, 'Введите не менее 3 символов.'),
-  categoryId: z.string(), processId: z.string(), proposedSolution: z.string().max(10000)
-    .refine(value => !value.trim() || value.trim().length >= 5, 'Опишите решение хотя бы в нескольких словах.'),
+const draftFields = z.object({
+  type: z.enum(appealTypes), description: z.string().max(10000), title: z.string().max(180),
+  categoryId: z.string(), processId: z.string(), proposedSolution: z.string().max(10000),
   visibility: z.enum(visibilities),
 });
+const draftSchema = draftFields.extend({
+  description: z.string().trim().min(5, 'Опишите ситуацию хотя бы в нескольких словах.').max(10000),
+  title: z.string().trim().max(180).refine(value => !value || value.length >= 3, 'Введите не менее 3 символов.'),
+  proposedSolution: draftFields.shape.proposedSolution.refine(value => !value.trim() || value.trim().length >= 5, 'Опишите решение хотя бы в нескольких словах.'),
+});
 type Draft = z.infer<typeof draftSchema>;
-function restoreDraft(key: string) {
-  try { return draftSchema.partial().parse(JSON.parse(sessionStorage.getItem(key) ?? '{}')); } catch { return {}; }
+const storedDraft = z.object({
+  values: draftFields.partial(),
+  step: z.union([z.literal(1), z.literal(2)]).default(1),
+  attachments: z.array(z.object({ id: z.uuid(), name: z.string(), bytes: z.number(), mediaType: z.string() })).max(5).default([]),
+  attempts: z.array(z.tuple([z.string(), z.uuid()])).max(5).default([]),
+});
+type StoredDraft = z.output<typeof storedDraft>;
+function restoreDraft(key: string): StoredDraft {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(key) ?? '{}');
+    const envelope = storedDraft.safeParse(raw);
+    if (envelope.success) return envelope.data;
+    return storedDraft.parse({ values: draftFields.partial().parse(raw) });
+  } catch { return storedDraft.parse({ values: {} }); }
+}
+
+function persistDraft(key: string, draft: StoredDraft, catalog?: Catalog) {
+  const category = draft.values.categoryId;
+  try {
+    if (draft.values.visibility !== 'NORMAL_INTERNAL' || catalog?.categories.some(row => row.id === category && row.sensitive)) {
+      sessionStorage.removeItem(key);
+    } else if (!category || catalog?.categories.some(row => row.id === category)) {
+      sessionStorage.setItem(key, JSON.stringify(draft));
+    }
+  } catch { /* storage may be unavailable */ }
 }
 
 export function NewAppeal() {
@@ -126,33 +152,32 @@ export function NewAppeal() {
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean }>('/ai/capabilities') });
   const selected = z.enum(appealTypes).safeParse(params.get('type'));
-  const [step, setStep] = useState(1);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [initialDraft] = useState(() => restoreDraft(key));
+  const [step, setStep] = useState(initialDraft.step);
+  const [attachments, setAttachments] = useState<Attachment[]>(initialDraft.attachments);
   const [showConsent, setShowConsent] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const form = useForm<Draft>({ resolver: zodResolver(draftSchema), defaultValues: {
     type: 'PROBLEM', description: '', title: '', categoryId: '', processId: '', proposedSolution: '', visibility: 'NORMAL_INTERNAL',
-    ...restoreDraft(key), ...(selected.success ? { type: selected.data } : {}),
+    ...initialDraft.values, ...(selected.success ? { type: selected.data } : {}),
   } });
   const { errors } = form.formState;
   const type = form.watch('type');
   const visibility = form.watch('visibility');
-  const category = catalog.data?.categories.find(item => item.id === form.watch('categoryId'));
-  const isConfidential = visibility !== 'NORMAL_INTERNAL' || !!category?.sensitive;
-  const submitted = useRef<{ payload: string; key: string } | null>(null);
+  const categoryId = form.watch('categoryId');
+  const category = catalog.data?.categories.find(item => item.id === categoryId);
+  const isConfidential = visibility !== 'NORMAL_INTERNAL' || (!!categoryId && (!category || category.sensitive));
+  const submitted = useRef(new Map(initialDraft.attempts));
   const completed = useRef(false);
 
   useEffect(() => {
-    const subscription = form.watch(values => {
-      if (completed.current) return;
-      try {
-        if (values.visibility === 'NORMAL_INTERNAL' && !catalog.data?.categories.some(row => row.id === values.categoryId && row.sensitive)) {
-          sessionStorage.setItem(key, JSON.stringify(values));
-        } else sessionStorage.removeItem(key);
-      } catch { /* storage may be unavailable */ }
-    });
+    const save = () => {
+      if (!completed.current) persistDraft(key, { values: form.getValues(), step, attachments, attempts: [...submitted.current] }, catalog.data);
+    };
+    save();
+    const subscription = form.watch(save);
     return () => subscription.unsubscribe();
-  }, [form, key, catalog.data]);
+  }, [form, key, catalog.data, step, attachments]);
 
   useEffect(() => {
     function beforeUnload(event: BeforeUnloadEvent) {
@@ -162,27 +187,39 @@ export function NewAppeal() {
     return () => window.removeEventListener('beforeunload', beforeUnload);
   }, [form, attachments.length]);
 
-  const create = useMutation({ mutationFn: (draft: Draft) => {
+  const create = useMutation({ mutationFn: async (draft: Draft) => {
     const { title, categoryId, processId, proposedSolution, ...required } = draft;
     const body = { ...required, title: title || undefined, categoryId: categoryId || undefined, processId: processId || undefined,
       proposedSolution: proposedSolution.trim() || undefined, attachmentIds: attachments.map(item => item.id) };
-    const payload = JSON.stringify(body);
-    if (submitted.current?.payload !== payload) submitted.current = { payload, key: crypto.randomUUID() };
-    return api<{ id: string }>('/appeals', { method: 'POST', body, key: submitted.current.key });
+    const bytes = new TextEncoder().encode(JSON.stringify(body));
+    const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+    const attemptKey = submitted.current.get(fingerprint) ?? crypto.randomUUID();
+    submitted.current.delete(fingerprint);
+    submitted.current.set(fingerprint, attemptKey);
+    const attempts = [...submitted.current].slice(-5);
+    submitted.current = new Map(attempts);
+    persistDraft(key, { values: form.getValues(), step, attachments, attempts }, catalog.data);
+    return api<{ id: string }>('/appeals', { method: 'POST', body, key: attemptKey });
   }, onSuccess: result => {
     completed.current = true;
     try { sessionStorage.removeItem(key); } catch { /* storage may be unavailable */ }
     void client.invalidateQueries({ queryKey: ['appeals'] });
     navigate(`/appeals/${result.id}`, { state: { created: true } });
   } });
-  const upload = useMutation({ mutationFn: async (file: File) => {
-    const data = new FormData();
-    data.set('file', file);
-    return api<Attachment>('/attachments/complete', { method: 'POST', body: data });
-  }, onSuccess: result => setAttachments(items => [...items, result]) });
-  const assist = useMutation({ mutationFn: () => api<{ suggestion: { title: string; rephrasedDescription: string; followUpQuestions: string[] }; truncated?: boolean }>('/ai/appeal-assist', {
-    method: 'POST', body: { consent: true, text: form.getValues('description'), visibility, categoryId: category?.id },
+  const upload = useMutation({ mutationFn: uploadAttachment, onSuccess: result => setAttachments(items => [...items, result]) });
+  const assist = useMutation({ mutationFn: () => api<{ usageId: string; suggestion: { title: string; type: Draft['type']; categoryId: string | null; rephrasedDescription: string; followUpQuestions: string[] }; truncated?: boolean }>('/ai/appeal-assist', {
+    method: 'POST', body: { consent: true, text: form.getValues('description'), visibility, categoryId: categoryId || undefined },
   }) });
+  const acceptSuggestion = useMutation({ mutationFn: async (selection: FormData | null) => {
+    if (!assist.data) return;
+    const { usageId, suggestion } = assist.data;
+    await api(`/ai/usage/${usageId}/decision`, { method: 'POST', body: { decision: selection ? 'APPLIED' : 'DISMISSED' } });
+    if (selection?.has('title')) form.setValue('title', suggestion.title, { shouldValidate: true });
+    if (selection?.has('description')) form.setValue('description', suggestion.rephrasedDescription, { shouldValidate: true });
+    if (selection?.has('type')) form.setValue('type', suggestion.type, { shouldValidate: true });
+    if (selection?.has('category') && suggestion.categoryId) form.setValue('categoryId', suggestion.categoryId, { shouldValidate: true });
+  }, onSuccess: () => setShowConsent(false) });
+  const suggestedCategory = catalog.data?.categories.find(row => row.id === assist.data?.suggestion.categoryId && !row.sensitive);
   return <><PageHeading title="Новое обращение" subtitle="Опишите ситуацию. Мы направим её ответственному сотруднику." back={{ to: '/my/appeals', label: 'Мои обращения' }} />
     <div className="compose-grid"><div className="surface compose-panel">
       <ol className="stepper"><li className={step === 1 ? 'active' : 'done'}><span>{step > 1 ? <CheckCircle2 size={16} /> : 1}</span> Суть обращения</li>
@@ -195,7 +232,7 @@ export function NewAppeal() {
           <div className="form-actions"><button type="submit" className="button primary">Продолжить <ArrowRight size={17} /></button></div>
         </> : <>
           <Field label="Заголовок" hint="Можно оставить пустым. Система возьмёт первые слова из описания." error={errors.title?.message}><input {...form.register('title')} placeholder="Коротко о главном" /></Field>
-          {ai.data?.available && !isConfidential ? <button className="button subtle self-start" type="button" onClick={() => { assist.reset(); setShowConsent(true); }}><Sparkles size={16} /> Подсказать заголовок</button>
+          {ai.data?.available && !isConfidential ? <button className="button subtle self-start" type="button" onClick={() => { assist.reset(); acceptSuggestion.reset(); setShowConsent(true); }}><Sparkles size={16} /> Подсказать заголовок</button>
             : <small className="subtle-text">{isConfidential ? 'Для конфиденциальных обращений доступны ручные правки.' : 'Заполните детали вручную.'}</small>}
           <div className="two-fields">
             <Field label="Категория"><select {...form.register('categoryId')}><EntityOptions rows={catalog.data?.categories ?? []} blank="Не выбрана" /></select></Field>
@@ -219,11 +256,22 @@ export function NewAppeal() {
     </div><aside className="surface compose-aside"><span className="kind-icon mint"><ShieldCheck size={22} /></span>
       <h2>Кто увидит обращение</h2><p>Вы и сотрудники, отвечающие за рассмотрение в рамках выданных полномочий.</p>
       <p>Для чувствительных тем можно выбрать ограниченный доступ. Если категория не выбрана, обращение получит координатор резервной очереди.</p></aside></div>
-    {showConsent && <Modal title="Подсказка Groq" close={() => setShowConsent(false)} description="С вашего согласия описание будет отправлено внешнему сервису. Проверьте, что в тексте нет конфиденциальных сведений.">
-      <ErrorBox error={assist.error} />{assist.data ? <div className="form-stack"><h3>{assist.data.suggestion.title}</h3><p>{assist.data.suggestion.rephrasedDescription}</p>
-        {assist.data.truncated && <small>Часть входного текста была сокращена.</small>}
-        {assist.data.suggestion.followUpQuestions.map((q, index) => <small key={index}>{q}</small>)}
-        <button className="button primary" onClick={() => { form.setValue('title', assist.data.suggestion.title.slice(0, 180), { shouldValidate: true }); setShowConsent(false); }}>Использовать заголовок</button></div> :
+    {showConsent && <Modal title="Подсказка Groq" close={() => { if (!acceptSuggestion.isPending) setShowConsent(false); }}
+      description="С вашего согласия описание и список обычных категорий будут переданы внешнему сервису. Проверьте, что в тексте нет конфиденциальных сведений.">
+      <ErrorBox error={assist.error} />
+      {assist.data ? <ActionForm pending={acceptSuggestion.isPending} error={acceptSuggestion.error} submit="Применить выбранное"
+        onSubmit={selection => { if (Array.from(selection.keys()).length) acceptSuggestion.mutate(selection); }}>
+        {assist.data.truncated && <small>Часть входных данных была сокращена.</small>}
+        <label className="checkbox-line"><input type="checkbox" name="title" defaultChecked /> Заголовок «{assist.data.suggestion.title}»</label>
+        <label className="checkbox-line"><input type="checkbox" name="type" /> Тип «{label(assist.data.suggestion.type)}»</label>
+        {suggestedCategory && <label className="checkbox-line"><input type="checkbox" name="category" /> Категория «{suggestedCategory.name}»</label>}
+        <div><h3>Текущее описание</h3><p className="preserve">{form.getValues('description')}</p></div>
+        <label className="checkbox-line"><input type="checkbox" name="description" /> Использовать предложенное описание</label>
+        <p className="preserve">{assist.data.suggestion.rephrasedDescription}</p>
+        {assist.data.suggestion.followUpQuestions.map((question, index) => <small key={index}>{question}</small>)}
+        <button className="button subtle self-start" type="button" disabled={acceptSuggestion.isPending}
+          onClick={() => acceptSuggestion.mutate(null)}>Оставить свой текст</button>
+      </ActionForm> :
         <button className="button primary" disabled={assist.isPending} onClick={() => assist.mutate()}>{assist.isPending ? 'Получаем подсказку…' : 'Отправить описание в Groq'}</button>}
     </Modal>}
     {showPreview && <Modal title="Проверка обращения" close={() => { if (!create.isPending) setShowPreview(false); }}><div className="form-stack">
@@ -239,7 +287,7 @@ export function NewAppeal() {
 const actionNames: Record<string, string> = {
   REVIEW: 'Взять на рассмотрение', IN_PROGRESS: 'В работу', RESUME: 'Возобновить рассмотрение', CLARIFICATION: 'Запросить уточнение',
   AUTHOR_RESPONSE: 'Ответить на уточнение', RESOLVE: 'Закрыть с решением', WITHDRAW: 'Отозвать обращение',
-  REVIEW_REQUEST: 'Запросить пересмотр', REVIEW_DECISION: 'Рассмотреть запрос', ASSIGN: 'Назначить ответственного', EDIT: 'Редактировать',
+  REVIEW_REQUEST: 'Запросить пересмотр', REVIEW_DECISION: 'Рассмотреть запрос', ASSIGN: 'Назначить ответственного', REROUTE: 'Перенаправить', EDIT: 'Редактировать',
   CREATE_PROBLEM: 'Создать проблему', CREATE_IMPROVEMENT: 'Создать улучшение',
 };
 
@@ -272,7 +320,7 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
   const [candidate, setCandidate] = useState<Reference | null>(null);
   const similar = useQuery({ queryKey: ['similar', record.id], queryFn: () => api<(Reference & { explanation: string })[]>(`/object-links/similar/${record.id}`), enabled: show });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean }>('/ai/capabilities') });
-  const suggestion = useMutation({ mutationFn: (feature: string) => api<{ suggestion: Record<string, unknown> }>(`/ai/${feature}`, { method: 'POST', body: { id: record.id, consent: true } }) });
+  const suggestion = useMutation({ mutationFn: (feature: string) => api<{ mode: 'GROQ' | 'RULE'; suggestion?: Record<string, unknown>; candidates?: (Reference & { explanation: string })[] }>(`/ai/${feature}`, { method: 'POST', body: { id: record.id, consent: true } }) });
   const [aiFeature, setAiFeature] = useState<string | null>(null);
   const create = useMutation({ mutationFn: (data: FormData) => api('/object-links/suggest-or-create', { method: 'POST', body: {
     fromId: record.id, toId: candidate?.id, relation: field(data, 'relation'), explanation: field(data, 'explanation'),
@@ -296,9 +344,17 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
       </ActionForm></Modal>}
     {aiFeature && <Modal title="Подсказка Groq" description="Разрешённые данные будут отправлены внешнему сервису после вашего согласия." close={() => setAiFeature(null)}>
       <ErrorBox error={suggestion.error} />
-      {suggestion.data ? <div className="inner-stack">{Object.entries(suggestion.data.suggestion ?? {}).filter(([key]) => key !== 'sourceEventIds').map(([key, value]) =>
+      {suggestion.data ? <div className="inner-stack">
+        {suggestion.data.mode === 'RULE' && (suggestion.data.candidates?.length ? suggestion.data.candidates.map(item => <div className="file-line" key={item.id}>
+          <Link to={`/appeals/${item.id}`}>{item.number} · {item.title}</Link><small>{item.explanation}</small></div>) : <Empty title="Похожих доступных обращений нет" />)}
+        {Object.entries(suggestion.data.suggestion ?? {}).filter(([key]) => key !== 'sourceEventIds').map(([key, value]) =>
         <div key={key}>{typeof value === 'string' ? <p>{value}</p> : Array.isArray(value) && value.map((item, index) =>
-          typeof item === 'string' ? <p key={index}>{item}</p> : <p key={index}><Link to={`/appeals/${item.candidateId}`}>Открыть похожее обращение</Link> · {item.explanation}</p>)}</div>)}</div> :
+          typeof item === 'string' ? <p key={index}>{item}</p> : <p key={index}><Link to={`/appeals/${item.candidateId}`}>Открыть похожее обращение</Link> · {item.explanation}</p>)}</div>)}
+        {Array.isArray(suggestion.data.suggestion?.sourceEventIds) && suggestion.data.suggestion.sourceEventIds.flatMap(id => {
+          const event = record.events.find(row => row.id === id);
+          return event ? [<a key={event.id} href={`#event-${event.id}`} onClick={() => setAiFeature(null)}>{label(event.action)} · {date(event.createdAt, true)}</a>] : [];
+        })}
+      </div> :
         <button className="button primary" disabled={suggestion.isPending} onClick={() => suggestion.mutate(aiFeature)}>{suggestion.isPending ? 'Получаем подсказку…' : 'Запросить подсказку'}</button>}
     </Modal>}
   </Section>;
@@ -306,6 +362,7 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
 
 export function AppealDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { user } = useSession();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['appeal', id], queryFn: () => api<Appeal>(`/appeals/${id}`) });
@@ -317,16 +374,31 @@ export function AppealDetail() {
   const [notice, setNotice] = useState('');
   const record = query.data;
   const staff = !!record && record.authorId !== user.id;
-  const catalog = useQuery({ queryKey: ['catalog', id], queryFn: () => api<Catalog>(`/catalog?appealId=${id}`), enabled: !!action && ['EDIT', 'ASSIGN'].includes(action) });
+  const catalog = useQuery({ queryKey: ['catalog', id], queryFn: () => api<Catalog>(`/catalog?appealId=${id}`), enabled: !!action && ['EDIT', 'ASSIGN', 'REROUTE'].includes(action) });
   const targets = useQuery({ queryKey: ['appeals', 'resolution-targets'], queryFn: () => api<Page<AppealRow>>('/work-queue?limit=100'),
     enabled: action === 'RESOLVE' && ['LINKED_TO_EXISTING_CASE', 'ALREADY_ADDRESSED', 'TRANSFERRED'].includes(resolution) });
   const update = useMutation({ mutationFn: ({ data, edit }: { data: Record<string, unknown>; edit?: boolean }) => api<Appeal>(
     `/appeals/${id}${edit ? '' : '/transition'}`, { method: edit ? 'PATCH' : 'POST', body: { expectedVersion: action ? actionVersion : record?.version, ...data } }),
   onSuccess: item => { client.setQueryData(['appeal', id], item); void client.invalidateQueries({ queryKey: ['appeals'] }); setAction(null); setComment(''); setNotice('Изменения сохранены.'); } });
+  const reroute = useMutation({ mutationFn: (data: FormData) => api<{ readable: boolean }>(`/appeals/${id}/reroute`, { method: 'POST', body: {
+    expectedVersion: actionVersion, categoryId: optional(data, 'categoryId') ?? null, processId: optional(data, 'processId') ?? null,
+    text: field(data, 'text'),
+  } }), onSuccess: result => {
+    void client.invalidateQueries({ queryKey: ['appeals'] });
+    if (!result.readable) {
+      client.removeQueries({ queryKey: ['appeal', id], exact: true });
+      navigate('/work-queue');
+      return;
+    }
+    void query.refetch();
+    setAction(null);
+    setNotice('Маршрут обновлён.');
+  } });
   if (!record) return <><PageHeading title="Обращение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
   const can = (key: string) => record.allowedActions.includes(key);
   const openAction = (operation: string) => {
     update.reset();
+    reroute.reset();
     setNotice('');
     setActionVersion(record.version);
     if (operation === 'RESOLVE') setResolution(record.status === 'WAITING_AUTHOR' ? 'INSUFFICIENT_INFO' : 'RESOLVED');
@@ -337,6 +409,7 @@ export function AppealDetail() {
     if (!result.data || result.isError) return;
     setActionVersion(result.data.version);
     update.reset();
+    reroute.reset();
   };
   const next = record.status === 'WAITING_AUTHOR' ? 'Ответ автора' : ['CLOSED', 'WITHDRAWN'].includes(record.status) ? 'Рассмотрение завершено' :
     record.status === 'NEW' ? 'Первичное рассмотрение' : 'Рассмотрение и решение';
@@ -372,7 +445,7 @@ export function AppealDetail() {
     </div><aside className="detail-side">
       <Section title="Следующий шаг" icon={<ArrowRight size={18} />}>
         <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
-          <div><dt>Срок</dt><dd>{record.dueAt && !['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'].includes(record.status) ? date(record.dueAt, true) : 'Срок не задан'}</dd></div>
+          <div><dt>Срок</dt><dd>{record.controlDueAt ? date(record.controlDueAt, true) : 'Срок не задан'}</dd></div>
           {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
         {record.allowedActions.some(item => actionNames[item] && item !== 'EDIT') && <div className="side-actions">
           {record.allowedActions.filter(item => actionNames[item] && item !== 'EDIT').map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
@@ -385,19 +458,28 @@ export function AppealDetail() {
         {record.improvements.map(item => <Link key={item.id} className="inline-reference" to={`/improvements/${item.id}`}><small>{item.number}</small>{item.title}</Link>)}
       </Section>}
       {record.publications.length > 0 && <Section title="Опубликованные результаты" icon={<BookOpen size={18} />}>
-        {record.publications.map(item => <Link key={item.id} className="inline-reference" to={`/changes/${item.id}`}>{item.title}<ArrowRight size={16} /></Link>)}
+        {record.publications.map(item => <article key={item.id} className="comment">
+          <Link className="inline-reference" to={`/changes/${item.id}`}>{item.title}<ArrowRight size={16} /></Link>
+          <p className="preserve">{item.result}</p>
+        </article>)}
       </Section>}
       {record.reviews.length > 0 && <Section title="Запросы на пересмотр">{record.reviews.map(item => <div className="review-row" key={item.id}><p>{item.reason}</p><small>{item.decision ?? 'Ожидает рассмотрения'}</small></div>)}</Section>}
     </aside></div>
     {action && <Modal title={actionNames[action]} close={() => setAction(null)}>
-      <ActionForm pending={update.isPending} error={update.error} reload={() => void refreshAction()} submit={plain ? 'Подтвердить' : 'Сохранить'} onSubmit={data => {
-        if (action === 'EDIT') {
+      <ActionForm pending={update.isPending || reroute.isPending || (action === 'REROUTE' && !catalog.data)} error={update.error || reroute.error || catalog.error} reload={() => void refreshAction()} submit={plain ? 'Подтвердить' : 'Сохранить'} onSubmit={data => {
+        if (action === 'REROUTE') {
+          reroute.mutate(data);
+        } else if (action === 'EDIT') {
           update.mutate({ edit: true, data: { title: field(data, 'title'), description: staff ? undefined : field(data, 'description'),
             categoryId: optional(data, 'categoryId') ?? null, processId: optional(data, 'processId') ?? null, priority: staff ? field(data, 'priority') : undefined } });
         } else update.mutate({ data: { action, text: optional(data, 'text'), resolutionType: action === 'RESOLVE' ? resolution : undefined,
           relatedId: optional(data, 'relatedId'), assigneeId: action === 'ASSIGN' ? optional(data, 'assigneeId') ?? null : undefined,
           approve: action === 'REVIEW_DECISION' ? field(data, 'decision') === 'yes' : undefined } });
       }}>
+        {action === 'REROUTE' && catalog.data && <>
+          <Field label="Категория"><select name="categoryId" defaultValue={record.categoryId ?? ''}><EntityOptions rows={catalog.data.categories} blank="Не выбрана" /></select></Field>
+          <Field label="Процесс"><select name="processId" defaultValue={record.processId ?? ''}><EntityOptions rows={catalog.data.processes} blank="Не выбран" /></select></Field>
+        </>}
         {action === 'EDIT' ? <>
           <Field label="Заголовок"><input name="title" defaultValue={record.title} required minLength={3} maxLength={180} /></Field>
           {!staff && <Field label="Описание"><textarea name="description" defaultValue={record.description} required minLength={5} rows={5} /></Field>}

@@ -44,9 +44,14 @@ export type Page<T> = { items: T[]; total: number; page: number; limit: number }
 export type Reference = { id: string; number: string; title: string };
 export type EventRow = { id: string; action: string; createdAt: string; details?: { reason?: string; next?: string } };
 export type Attachment = { id: string; name: string; bytes: number; mediaType: string };
+export function uploadAttachment(file: File) {
+  const body = new FormData();
+  body.set('file', file);
+  return api<Attachment>('/attachments/complete', { method: 'POST', body });
+}
 export type AppealRow = Reference & {
   type: string; status: string; priority: string; visibility: string; version: number; isSynthetic: boolean;
-  authorId: string; assigneeId: string | null; createdAt: string; dueAt: string | null; category: { name: string } | null;
+  authorId: string; assigneeId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;
 };
 export type LinkRow = { id: string; version: number; from: Reference; to: Reference; relation: string; state: string; explanation: string; proposedBy: string };
@@ -54,16 +59,16 @@ export type Appeal = AppealRow & {
   description: string; proposedSolution: string | null; resolutionType: string | null; resolutionText: string | null; closedAt: string | null;
   assignee: { name: string } | null; queue: { name: string } | null; allowedActions: string[];
   comments: { id: string; author: { name: string }; body: string; internal: boolean; kind: string; createdAt: string }[];
-  events: EventRow[]; attachments: Attachment[]; problems: Reference[]; improvements: Reference[]; publications: { id: string; title: string }[]; links: LinkRow[];
+  events: EventRow[]; attachments: Attachment[]; problems: Reference[]; improvements: Reference[]; publications: { id: string; title: string; result: string }[]; links: LinkRow[];
   reviews: { id: string; reason: string; decision?: string; decidedAt?: string }[];
 };
 export type Change = { id: string; title: string; problem: string; change: string; method: string; result: string; limitations: string; publishedAt: string | null;
-  isSynthetic: boolean; state?: string; version?: number; authorId?: string; audienceId?: string | null };
+  isSynthetic: boolean; state?: string; version?: number; authorId?: string; audienceId?: string | null; reviewNote?: string | null };
 export type CaseRow = Reference & { status: string; owner: Entity | null; scope?: string; createdAt: string; updatedAt: string; isSynthetic: boolean; verification?: { outcome: string } | null };
 export type Problem = CaseRow & { symptoms: string; hypothesis: string | null; conclusion: string | null; version: number; canEdit: boolean;
-  allowedActions: string[]; sources: Reference[]; improvements: Reference[]; events: EventRow[]; findings: { id: string; body: string; source: string; createdAt: string }[] };
-export type Plan = { method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; protocol?: string;
-  observations: { id: string; phase: string; value: number | null; source: string; periodStart: string; periodEnd: string; sampleSize?: number; isSynthetic: boolean }[] };
+  allowedActions: string[]; people: Entity[]; sources: Reference[]; improvements: Reference[]; events: EventRow[]; findings: { id: string; body: string; source: string; createdAt: string }[] };
+export type Plan = { version: number; method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; protocol?: string;
+  observations: { id: string; phase: string; value: number | null; source: string; sourceType: string; periodStart: string; periodEnd: string; sampleSize?: number; isSynthetic: boolean; evidence: Attachment[] }[] };
 export type Feedback = { id: string; choice?: string; comment?: string; submittedAt?: string; version: number };
 export type Improvement = CaseRow & {
   rationale: string; goal: string; risks?: string; processId?: string; implementationNotes?: string; implementedAt?: string; version: number;
@@ -71,6 +76,6 @@ export type Improvement = CaseRow & {
   allowedActions: string[]; people: Entity[]; sources: Reference[]; problem: Reference | null; events: EventRow[]; plan: Plan | null;
   actions: { id: string; title: string; status: string; dueAt?: string; result?: string; owner: Entity; blocking: boolean; canUpdate: boolean }[];
   approvals: { id: string; reason: string; status: string; createdAt: string }[];
-  verification: { outcome: string; summary: string; limitations: string; verifiedAt: string; isSynthetic: boolean } | null;
+  verification: { outcome: string; summary: string; limitations: string; verifiedAt: string; isSynthetic: boolean; planVersion: number; measurementIds: string[]; evidence: Attachment[] } | null;
   publications: Change[]; feedback: Feedback[];
 };

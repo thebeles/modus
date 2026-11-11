@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 import { z } from 'zod';
 import { relations } from './contracts';
-import { Appeals, appealListInput } from './appeals';
+import { Appeals, appealListInput, appealQueueFilters } from './appeals';
 import { AuthRequest } from './auth';
 import { atomic, audit, bodyText, checked, Database, expectedVersion, forbidden, id, invalid, invalidState, missing, pagination, parse } from './common';
 import { Policy, Principal } from './policy';
@@ -85,21 +85,21 @@ export class Radar {
   async overview(user: Principal, raw: unknown) {
     if (!this.policy.isStaff(user)) throw forbidden();
     const filters = parse(appealListInput, raw);
-    const where: Prisma.AppealWhereInput = { AND: [this.appeals.where(user, filters, true), { visibility: 'NORMAL_INTERNAL' }] };
     const now = new Date();
-    const live: Prisma.AppealWhereInput = { status: { notIn: ['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'] } };
-    const overdueWhere: Prisma.AppealWhereInput = { AND: [where, live, { dueAt: { lt: now }, slaVersion: { not: null } }] };
-    const staleWhere: Prisma.AppealWhereInput = { AND: [where, live, { OR: [{ updatedAt: { lt: new Date(now.getTime() - 3 * 86400000) } }, { queue: { coordinator: { active: false } }, assigneeId: null }] }] };
+    const where: Prisma.AppealWhereInput = { AND: [this.appeals.where(user, filters, true, now), { visibility: 'NORMAL_INTERNAL' }] };
+    const tabs = appealQueueFilters(user, now);
+    const overdueWhere: Prisma.AppealWhereInput = { AND: [where, tabs.overdue] };
+    const staleWhere: Prisma.AppealWhereInput = { AND: [where, tabs.stale] };
     const improvementWhere: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), { visibility: 'NORMAL_INTERNAL',
       ...(filters.from || filters.to ? { createdAt: { gte: filters.from, lt: filters.to } } : {}),
       processId: filters.processId, departmentId: filters.departmentId }] };
     const implementedWhere: Prisma.ImprovementWhereInput = { AND: [improvementWhere, { status: { in: ['IMPLEMENTED', 'VERIFYING', 'COMPLETED'] } }] };
     const linkWhere: Prisma.AppealLinkWhereInput = { AND: [this.linksWhere(user), { from: where, to: where }, { state: { not: 'REJECTED' } }] };
     const totals = await this.db.$transaction(async tx => {
-      const [total, closed, documented, response, overdue, stale, waiting, types, statuses, processGroups, categoryGroups, improved, verified, verifiedSuccess, outcomeGroups, topics] = await Promise.all([
+      const [total, closed, documented, response, overdue, stale, waiting, types, statuses, processGroups, categoryGroups, improved, verified, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
         tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, { status: 'CLOSED' }] } }),
         tx.appeal.count({ where: { AND: [where, { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } }] } }),
-        tx.appeal.findMany({ where: { AND: [where, { firstHumanResponseAt: { not: null } }] }, select: { createdAt: true, firstHumanResponseAt: true } }),
+        tx.appeal.aggregate({ where, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
         tx.appeal.count({ where: overdueWhere }), tx.appeal.count({ where: staleWhere }),
         tx.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
         tx.appeal.groupBy({ by: ['type'], where, _count: { _all: true } }),
@@ -108,9 +108,9 @@ export class Radar {
         tx.appeal.groupBy({ by: ['categoryId'], where, _count: { _all: true } }),
         tx.improvement.count({ where: implementedWhere }),
         tx.improvement.count({ where: { AND: [implementedWhere, { verification: { isNot: null } }] } }),
-        tx.improvement.count({ where: { AND: [implementedWhere, { verification: { outcome: 'VERIFIED' } }] } }),
         tx.verification.groupBy({ by: ['outcome'], where: { improvement: implementedWhere }, _count: { _all: true } }),
         tx.appealLink.count({ where: linkWhere }),
+        tx.appealLink.count({ where: { AND: [linkWhere, { relation: 'POSSIBLE_RECURRENCE' }] } }),
       ]);
       const min = Math.max(2, Number(process.env.RADAR_MIN_GROUP || 2) || 2);
       const processes = processGroups.filter(row => row._count._all >= min);
@@ -118,7 +118,7 @@ export class Radar {
       const [processNames, categoryNames, attention, improvements, topicItems] = await Promise.all([
         tx.businessProcess.findMany({ where: { id: { in: processes.flatMap(row => row.processId ? [row.processId] : []) } } }),
         tx.category.findMany({ where: { id: { in: categories.flatMap(row => row.categoryId ? [row.categoryId] : []) } } }),
-        tx.appeal.findMany({ where: { OR: [overdueWhere, staleWhere] }, take: 8, orderBy: { dueAt: 'asc' }, select: { id: true, number: true, title: true, status: true, dueAt: true } }),
+        tx.appeal.findMany({ where: { OR: [overdueWhere, staleWhere] }, take: 8, orderBy: [{ controlDueAt: { sort: 'asc', nulls: 'last' } }, { id: 'asc' }], select: { id: true, number: true, title: true, status: true, controlDueAt: true } }),
         tx.improvement.findMany({ where: improvementWhere, take: 12, orderBy: { updatedAt: 'desc' },
           select: { id: true, number: true, title: true, status: true, isSynthetic: true, owner: { select: { name: true } }, verification: { select: { outcome: true } } } }),
         tx.appealLink.findMany({ where: linkWhere, take: 12, orderBy: { createdAt: 'desc' }, include: {
@@ -126,13 +126,16 @@ export class Radar {
         } }),
       ]);
       return { total, closed, documented, firstResponse: {
-        count: response.length, hours: response.length ? response.reduce((sum, row) => sum + (row.firstHumanResponseAt!.getTime() - row.createdAt.getTime()) / 3600000, 0) / response.length : null,
+        count: response._count.firstResponseSeconds, hours: response._avg.firstResponseSeconds === null ? null : response._avg.firstResponseSeconds / 3600,
       }, overdue, stale, waiting, types: types.map(row => ({ key: row.type, count: row._count._all })),
         statuses: statuses.map(row => ({ key: row.status, count: row._count._all })),
         processes: processes.map(row => ({ id: row.processId, name: processNames.find(value => value.id === row.processId)?.name ?? 'Процесс не указан', count: row._count._all })),
         categories: categories.map(row => ({ id: row.categoryId, name: categoryNames.find(value => value.id === row.categoryId)?.name ?? 'Категория не указана', count: row._count._all })),
-        improved, verified, verifiedSuccess, outcomes: outcomeGroups.map(row => ({ key: row.outcome, count: row._count._all })),
-        topics, topicItems, attention, improvements, minGroup: min };
+        improved, verified,
+        verifiedSuccess: outcomeGroups.find(row => row.outcome === 'VERIFIED')?._count._all ?? 0,
+        verifiedDeterminate: verified - (outcomeGroups.find(row => row.outcome === 'INCONCLUSIVE')?._count._all ?? 0),
+        outcomes: outcomeGroups.map(row => ({ key: row.outcome, count: row._count._all })),
+        topics, recurrenceCandidates, topicItems, attention, improvements, minGroup: min };
     }, { isolationLevel: 'RepeatableRead' });
     return totals;
   }
