@@ -89,7 +89,7 @@ export function RadarPage() {
             <ResponsiveContainer width="100%" height={230}><BarChart data={values.types.map(row => ({ name: label(row.key), count: row.count }))} margin={{ top: 12, right: 16, left: 0, bottom: 4 }}>
               <CartesianGrid stroke="var(--line)" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--muted)' }} /><YAxis allowDecimals={false} width={32} tick={{ fontSize: 11, fill: 'var(--muted)' }} />
               <Tooltip formatter={value => [value, 'Обращения']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--control-radius)', boxShadow: 'var(--shadow)' }} />
-              <Bar dataKey="count" fill="var(--primary)" radius={[5, 5, 0, 0]} maxBarSize={58} /></BarChart></ResponsiveContainer>
+              <Bar dataKey="count" fill="var(--chart-accent, var(--primary))" radius={[5, 5, 0, 0]} maxBarSize={58} /></BarChart></ResponsiveContainer>
             </div> : <Empty title="Нет данных за выбранный период" />}</Section>
         </Tabs.Content>
         <Tabs.Content value="topics"><Section title="Тематические связи" icon={<GitPullRequest size={18} />}>

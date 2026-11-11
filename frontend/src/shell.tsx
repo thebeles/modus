@@ -6,6 +6,7 @@ import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigat
 import { label } from '@kontur/api/contracts';
 import { api, ApiError, type Session } from './api';
 import { SessionContext, useSession } from './session';
+import { ThemeToggle } from './theme';
 import { ActionForm, date, Empty, ErrorBox, Field, field, Loading, Modal, PageHeading } from './ui';
 import { AppealDetail, AppealList, Home, NewAppeal } from './appeals';
 const CaseList = lazy(() => import('./cases').then(module => ({ default: module.CaseList })));
@@ -53,6 +54,7 @@ function Login() {
     ['other-employee', 'Другой сотрудник'], ['sensitive-handler', 'Спецочередь']];
   return <main className="login-main">
     <div className="login-card">
+      <ThemeToggle />
       <h1>Вход в Контур</h1>
       <p>Войдите с рабочей учётной записью.</p>
       <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
@@ -109,6 +111,7 @@ function Layout() {
       <Link to={landing[user.role]} className="crumb-home" aria-label="Рабочая главная"><House size={16} aria-hidden="true" /></Link><ChevronRight size={14} className="crumb-separator" />
       <span>{current?.text ?? 'Рабочее пространство'}</span></div>
       <div className="top-actions">{demoMode && <span className="demo-pill"><span /> Демо-режим</span>}
+        <ThemeToggle />
         <Link to="/notifications" className="icon-button bell-link" aria-label={`Уведомления, непрочитанных: ${notices.data?.unread ?? 0}`}><Bell size={19} />{notices.data?.unread ? <b /> : null}</Link>
         <button className="avatar small-avatar" onClick={() => setProfile(true)} type="button" aria-label="Профиль">{initials(user.name)}</button>
       </div></header>
