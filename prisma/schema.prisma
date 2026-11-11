@@ -1,0 +1,633 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum Role {
+  EMPLOYEE
+  HANDLER
+  MANAGER
+  ADMIN
+}
+
+enum Visibility {
+  NORMAL_INTERNAL
+  RESTRICTED
+  SPECIAL
+}
+
+enum AppealType {
+  PROBLEM
+  PROPOSAL
+  POSITIVE_FEEDBACK
+}
+
+enum AppealStatus {
+  NEW
+  REVIEW
+  WAITING_AUTHOR
+  IN_PROGRESS
+  CLOSED
+  WITHDRAWN
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum Origin {
+  ORIGINAL_DOCX
+  DEMO_SYNTHETIC
+  USER_CREATED
+}
+
+enum Resolution {
+  RESOLVED
+  ACCEPTED_FOR_IMPROVEMENT
+  EXPLANATION_PROVIDED
+  REJECTED
+  ALREADY_ADDRESSED
+  LINKED_TO_EXISTING_CASE
+  TRANSFERRED
+  POSITIVE_FEEDBACK_RECORDED
+  INSUFFICIENT_INFO
+}
+
+enum ProblemStatus {
+  CANDIDATE
+  INVESTIGATING
+  CONFIRMED
+  DISPROVED
+  CLOSED
+}
+
+enum ImprovementStatus {
+  DRAFT
+  UNDER_REVIEW
+  APPROVED
+  DEFERRED
+  REJECTED
+  IN_PROGRESS
+  IMPLEMENTED
+  VERIFYING
+  COMPLETED
+  CANCELED
+}
+
+enum ActionStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+  CANCELED
+}
+
+enum Outcome {
+  VERIFIED
+  PARTIAL
+  NOT_ACHIEVED
+  INCONCLUSIVE
+}
+
+enum Relation {
+  SIMILAR_TOPIC
+  POSSIBLE_DUPLICATE
+  CONFIRMED_SAME_ISSUE
+  ADDRESSED_BY_IMPROVEMENT
+  RELATED_CONTEXT
+  POSSIBLE_RECURRENCE
+}
+
+enum LinkState {
+  SUGGESTED
+  CONFIRMED
+  REJECTED
+}
+
+enum PublicationState {
+  DRAFT
+  APPROVED
+  PUBLISHED
+  RETRACTED
+}
+
+enum FeedbackChoice {
+  YES
+  PARTLY
+  NO
+  CANNOT_ASSESS
+}
+
+model OrganizationUnit {
+  id String @id @default(uuid())
+  name String @unique
+  parentId String?
+  parent OrganizationUnit? @relation("OrganizationTree", fields: [parentId], references: [id])
+  children OrganizationUnit[] @relation("OrganizationTree")
+  users User[]
+  appeals Appeal[]
+  rules RoutingRule[]
+  problems Problem[]
+  improvements Improvement[]
+  publications Publication[]
+}
+
+model User {
+  id String @id @default(uuid())
+  email String @unique
+  name String
+  passwordHash String
+  role Role @default(EMPLOYEE)
+  departmentId String?
+  department OrganizationUnit? @relation(fields: [departmentId], references: [id])
+  active Boolean @default(true)
+  demo Boolean @default(false)
+  notifyRegistration Boolean @default(true)
+  permissions String[] @default([])
+  sessions Session[]
+  queues QueueMember[]
+  coordinates WorkQueue[]
+  authored Appeal[] @relation("Author")
+  assigned Appeal[] @relation("Assignee")
+  comments Comment[]
+  attachments Attachment[]
+  notifications Notification[]
+  jobs OutboxJob[]
+  reviews ReviewRequest[]
+  problems Problem[]
+  improvements Improvement[]
+  tasks ActionItem[]
+  audit AuditEvent[]
+  feedback Feedback[]
+  aiUsage AiUsage[]
+  routing RoutingRule[]
+}
+
+model Session {
+  tokenHash String @id
+  csrfHash String
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model Category {
+  id String @id @default(uuid())
+  name String @unique
+  parentId String?
+  parent Category? @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  sensitive Boolean @default(false)
+  appeals Appeal[]
+  rules RoutingRule[]
+}
+
+model BusinessProcess {
+  id String @id @default(uuid())
+  name String @unique
+  appeals Appeal[]
+  improvements Improvement[]
+  rules RoutingRule[]
+}
+
+model WorkQueue {
+  id String @id @default(uuid())
+  name String @unique
+  visibility Visibility
+  fallback Boolean @default(false)
+  coordinatorId String
+  coordinator User @relation(fields: [coordinatorId], references: [id], onDelete: Restrict)
+  members QueueMember[]
+  appeals Appeal[]
+  rules RoutingRule[]
+  @@index([visibility, fallback])
+}
+
+model QueueMember {
+  userId String
+  queueId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  queue WorkQueue @relation(fields: [queueId], references: [id], onDelete: Restrict)
+  @@id([userId, queueId])
+}
+
+model RoutingRule {
+  id String @id @default(uuid())
+  name String @unique
+  categoryId String
+  category Category @relation(fields: [categoryId], references: [id])
+  departmentId String?
+  department OrganizationUnit? @relation(fields: [departmentId], references: [id])
+  processId String?
+  process BusinessProcess? @relation(fields: [processId], references: [id])
+  queueId String
+  queue WorkQueue @relation(fields: [queueId], references: [id], onDelete: Restrict)
+  assigneeId String?
+  assignee User? @relation(fields: [assigneeId], references: [id])
+  rank Int @default(100)
+  active Boolean @default(true)
+  effectiveFrom DateTime?
+  effectiveTo DateTime?
+  @@index([categoryId, rank])
+}
+
+model SlaPolicy {
+  id String @id @default(uuid())
+  priority Priority @unique
+  firstResponseHours Int
+  nextActionHours Int
+  active Boolean @default(true)
+  version Int @default(1)
+}
+
+model Appeal {
+  id String @id @default(uuid())
+  number String @unique
+  authorId String
+  author User @relation("Author", fields: [authorId], references: [id], onDelete: Restrict)
+  departmentId String?
+  department OrganizationUnit? @relation(fields: [departmentId], references: [id])
+  assigneeId String?
+  assignee User? @relation("Assignee", fields: [assigneeId], references: [id])
+  queueId String
+  queue WorkQueue @relation(fields: [queueId], references: [id], onDelete: Restrict)
+  title String
+  descriptionOriginal String
+  description String
+  proposedSolution String?
+  categoryId String?
+  category Category? @relation(fields: [categoryId], references: [id])
+  processId String?
+  process BusinessProcess? @relation(fields: [processId], references: [id])
+  type AppealType
+  status AppealStatus @default(NEW)
+  priority Priority @default(MEDIUM)
+  visibility Visibility @default(NORMAL_INTERNAL)
+  resolutionType Resolution?
+  resolutionText String?
+  resolutionBy String?
+  closedAt DateTime?
+  withdrawnAt DateTime?
+  waitingSince DateTime?
+  resumeState AppealStatus?
+  firstHumanResponseAt DateTime?
+  firstResponseDueAt DateTime?
+  dueAt DateTime?
+  slaVersion Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  version Int @default(1)
+  seedOrigin Origin @default(USER_CREATED)
+  isSynthetic Boolean @default(false)
+  sourceId String? @unique
+  sourceSnapshot Json?
+  comments Comment[]
+  attachments Attachment[]
+  reviews ReviewRequest[]
+  problems ProblemAppeal[]
+  improvements ImprovementAppeal[]
+  linksFrom AppealLink[] @relation("LinkFrom")
+  linksTo AppealLink[] @relation("LinkTo")
+  @@index([createdAt])
+  @@index([status, dueAt])
+  @@index([authorId])
+  @@index([assigneeId])
+  @@index([queueId])
+  @@index([departmentId])
+  @@index([categoryId])
+  @@index([priority])
+  @@index([processId])
+}
+
+model Comment {
+  id String @id @default(uuid())
+  appealId String
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  authorId String
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  body String
+  internal Boolean @default(false)
+  kind String @default("COMMENT")
+  createdAt DateTime @default(now())
+  @@index([appealId, createdAt])
+}
+
+model Attachment {
+  id String @id @default(uuid())
+  appealId String?
+  appeal Appeal? @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  uploaderId String
+  uploader User @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
+  name String
+  mediaType String
+  bytes Int
+  storageKey String @unique
+  createdAt DateTime @default(now())
+  @@index([appealId])
+  @@index([uploaderId])
+}
+
+model ReviewRequest {
+  id String @id @default(uuid())
+  appealId String
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  authorId String
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  reason String
+  decision String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([appealId])
+}
+
+model Problem {
+  id String @id @default(uuid())
+  number String @unique
+  title String
+  symptoms String
+  hypothesis String?
+  conclusion String?
+  status ProblemStatus @default(CANDIDATE)
+  visibility Visibility @default(NORMAL_INTERNAL)
+  departmentId String?
+  department OrganizationUnit? @relation(fields: [departmentId], references: [id])
+  ownerId String
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  isSynthetic Boolean @default(false)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  appeals ProblemAppeal[]
+  findings ProblemFinding[]
+  improvements Improvement[]
+  @@index([departmentId, status])
+}
+
+model ProblemAppeal {
+  problemId String
+  appealId String
+  explanation String
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Restrict)
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  @@id([problemId, appealId])
+  @@index([appealId])
+}
+
+model ProblemFinding {
+  id String @id @default(uuid())
+  problemId String
+  problem Problem @relation(fields: [problemId], references: [id], onDelete: Restrict)
+  body String
+  source String
+  recordedBy String
+  createdAt DateTime @default(now())
+  @@index([problemId])
+}
+
+model AppealLink {
+  id String @id @default(uuid())
+  fromId String
+  toId String
+  from Appeal @relation("LinkFrom", fields: [fromId], references: [id], onDelete: Restrict)
+  to Appeal @relation("LinkTo", fields: [toId], references: [id], onDelete: Restrict)
+  relation Relation
+  state LinkState @default(SUGGESTED)
+  explanation String
+  proposedBy String @default("USER")
+  confirmedBy String?
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  @@unique([fromId, toId, relation])
+  @@index([toId])
+}
+
+model Improvement {
+  id String @id @default(uuid())
+  number String @unique
+  title String
+  rationale String
+  goal String
+  risks String?
+  scope String
+  status ImprovementStatus @default(DRAFT)
+  visibility Visibility @default(NORMAL_INTERNAL)
+  departmentId String?
+  department OrganizationUnit? @relation(fields: [departmentId], references: [id])
+  processId String?
+  process BusinessProcess? @relation(fields: [processId], references: [id])
+  ownerId String
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  problemId String?
+  problem Problem? @relation(fields: [problemId], references: [id], onDelete: Restrict)
+  implementationNotes String?
+  implementedAt DateTime?
+  completedAt DateTime?
+  isSynthetic Boolean @default(false)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  appeals ImprovementAppeal[]
+  actions ActionItem[]
+  approvals ApprovalDecision[]
+  plan MeasurementPlan?
+  verification Verification?
+  feedback Feedback[]
+  publications Publication[]
+  @@index([departmentId, status])
+  @@index([ownerId])
+  @@index([problemId])
+}
+
+model ImprovementAppeal {
+  improvementId String
+  appealId String
+  explanation String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  @@id([improvementId, appealId])
+  @@index([appealId])
+}
+
+model ApprovalDecision {
+  id String @id @default(uuid())
+  improvementId String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  status ImprovementStatus
+  decidedBy String
+  reason String
+  createdAt DateTime @default(now())
+  @@index([improvementId])
+}
+
+model ActionItem {
+  id String @id @default(uuid())
+  improvementId String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  ownerId String
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  title String
+  dueAt DateTime?
+  blocking Boolean @default(true)
+  status ActionStatus @default(TODO)
+  result String?
+  version Int @default(1)
+  @@index([improvementId])
+  @@index([ownerId])
+}
+
+model MeasurementPlan {
+  improvementId String @id
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  method String
+  hypothesis String
+  criterion String
+  metricName String?
+  unit String?
+  direction String?
+  targetValue Float?
+  protocol String?
+  observations Measurement[]
+}
+
+model Measurement {
+  id String @id @default(uuid())
+  improvementId String
+  plan MeasurementPlan @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict)
+  phase String
+  supersededAt DateTime?
+  value Float?
+  periodStart DateTime
+  periodEnd DateTime
+  sampleSize Int?
+  source String
+  recordedBy String
+  isSynthetic Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@index([improvementId, phase])
+}
+
+model Verification {
+  improvementId String @id
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  outcome Outcome
+  summary String
+  limitations String
+  verifierId String
+  isSynthetic Boolean @default(false)
+  verifiedAt DateTime @default(now())
+}
+
+model Feedback {
+  id String @id @default(uuid())
+  improvementId String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  choice FeedbackChoice?
+  comment String?
+  submittedAt DateTime?
+  version Int @default(1)
+  @@unique([improvementId, userId])
+  @@index([userId])
+}
+
+model Publication {
+  id String @id @default(uuid())
+  improvementId String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  state PublicationState @default(DRAFT)
+  title String
+  problem String
+  change String
+  method String
+  result String
+  limitations String
+  audienceId String?
+  audience OrganizationUnit? @relation(fields: [audienceId], references: [id])
+  authorId String
+  approvedBy String?
+  publishedAt DateTime?
+  isSynthetic Boolean @default(false)
+  version Int @default(1)
+  @@index([state, audienceId])
+}
+
+model AuditEvent {
+  id String @id @default(uuid())
+  entity String
+  entityId String
+  action String
+  actorId String?
+  actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  authorVisible Boolean @default(false)
+  details Json?
+  createdAt DateTime @default(now())
+  @@index([entity, entityId, createdAt])
+}
+
+model OutboxJob {
+  id String @id @default(uuid())
+  key String @unique
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  kind String
+  href String?
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  deliveredAt DateTime?
+  deadAt DateTime?
+  @@index([deliveredAt, deadAt, availableAt])
+}
+
+model Notification {
+  id String @id @default(uuid())
+  key String @unique
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  kind String
+  href String?
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId, readAt, createdAt])
+}
+
+model Sequence {
+  name String @id
+  value Int
+}
+
+model IdempotencyKey {
+  userId String
+  route String
+  key String
+  requestHash String
+  resourceId String
+  createdAt DateTime @default(now())
+  @@id([userId, route, key])
+}
+
+model RateBucket {
+  key String @id
+  count Int
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model AiUsage {
+  id String @id @default(uuid())
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  feature String
+  inputLength Int
+  state String
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+}

@@ -1,0 +1,76 @@
+name: modus-kontur
+x-server: &server
+  image: modus-kontur-server
+  build:
+    context: .
+    target: server
+  environment: &runtime
+    NODE_ENV: development
+    PORT: "4000"
+    DATABASE_URL: postgresql://modus:modus_dev@postgres:5432/modus_kontur?schema=public
+    WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
+    DEMO_MODE: ${DEMO_MODE:-true}
+    SEED_DEMO_USERS: ${SEED_DEMO_USERS:-true}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    STORAGE_DIR: /app/.storage
+    APP_TIMEZONE: Asia/Almaty
+    GROQ_API_KEY: ${GROQ_API_KEY:-}
+    GROQ_AI_ENABLED: ${GROQ_AI_ENABLED:-false}
+    GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
+    GROQ_OUTPUT_MODE: ${GROQ_OUTPUT_MODE:-json_schema}
+    GROQ_TIMEOUT_MS: ${GROQ_TIMEOUT_MS:-15000}
+    AI_MAX_INPUT_CHARS: ${AI_MAX_INPUT_CHARS:-10000}
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: modus
+      POSTGRES_PASSWORD: modus_dev
+      POSTGRES_DB: modus_kontur
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U modus -d modus_kontur"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "node node_modules/prisma/build/index.js migrate deploy && node dist/prisma/seed.js"]
+  api:
+    <<: *server
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - storage:/app/.storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  worker:
+    <<: *server
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "dist/apps/worker/src/main.js"]
+  web:
+    build:
+      context: .
+      target: web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+volumes:
+  db:
+  storage:
