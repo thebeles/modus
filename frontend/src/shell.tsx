@@ -66,7 +66,7 @@ function Login() {
         <div className="demo-options">
           {demoAccounts.map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => {
             setEmail(`${account}@demo.local`); setPassword(''); login.mutate({ profile: account });
-          }}>{name}</button>)}
+          }}><span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
         </div>
       </section>}
     </div>
