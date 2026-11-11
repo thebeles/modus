@@ -19,7 +19,8 @@ const kinds = [
 ] as const;
 
 function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow[]; staff?: boolean; compact?: boolean }) {
-  return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={`data-table appeal-table ${compact ? 'compact' : ''}`}><thead><tr>
+  const tableClass = ['data-table', 'appeal-table', !staff && 'personal-appeal-table', compact && 'compact'].filter(Boolean).join(' ');
+  return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={tableClass}><thead><tr>
     <th>Обращение</th><th>Статус</th>{!compact && <th>{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
     const to = `${staff ? '/work-queue' : ''}/appeals/${item.id}`;
@@ -108,7 +109,7 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
       <select aria-label="Сортировка" value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select>
     </div>
     <ErrorBox error={rows.error || catalog.error || assignees.error} retry={() => { void rows.refetch(); void catalog.refetch(); if (staff) void assignees.refetch(); }} />{rows.isPending && <Loading />}
-    {rows.data && <div className="surface">
+    {rows.data && <div className={staff ? 'surface' : 'surface personal-appeal-list'}>
       <div className="list-meta" aria-live="polite">{rows.isFetching ? 'Обновляем…' : `Найдено: ${rows.data.total}`}</div>
       {rows.data.items.length ? <AppealTable rows={rows.data.items} staff={staff} /> :
         <Empty title="Обращения не найдены"><button className="button subtle" onClick={() => setParams({})}>Сбросить фильтры</button></Empty>}
