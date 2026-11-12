@@ -245,12 +245,15 @@ test('E2E-07 draft is private until approval and publishing, and employee reads 
   const manager = await session(browser, 'manager');
   await manager.page.goto(path);
   await manager.page.getByRole('tab', { name: 'Результат' }).click();
-  for (const operation of ['Согласовать публикацию', 'Опубликовать']) {
-    await manager.page.getByRole('button', { name: title, exact: true }).click();
+  const publication = manager.page.getByRole('button', { name: title, exact: true });
+  const publicationRow = manager.page.locator('.task-row').filter({ has: publication });
+  for (const [operation, status] of [['Согласовать публикацию', 'Согласовано'], ['Опубликовать', 'Опубликовано']]) {
+    await publication.click();
     await manager.page.getByRole('dialog').getByRole('button', { name: operation, exact: true }).click();
     await expect(manager.page.getByRole('dialog')).toBeHidden();
+    await expect(publicationRow.getByText(status, { exact: true })).toBeVisible();
   }
-  await manager.page.getByRole('button', { name: title, exact: true }).click();
+  await publication.click();
   await manager.page.getByText('Редакции публикации', { exact: true }).click();
   await expect(manager.page.getByText(/^Версия 3 ·/)).toBeVisible();
   await expect(manager.page.getByText(/^Версия 1 ·/)).toBeVisible();
