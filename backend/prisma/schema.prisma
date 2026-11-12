@@ -323,13 +323,16 @@ model Appeal {
   @@index([categoryId])
   @@index([priority])
   @@index([processId])
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_title_search_idx")
+  @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_description_search_idx")
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_number_search_idx")
   workPeriods AppealWorkPeriod[]
   nextActions AppealNextAction[]
 }
 
 model AppealNextAction {
   appealId String
-  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   revision Int
   kind String
   state String
@@ -609,7 +612,7 @@ model Verification {
 model VerificationAmendment {
   id String @id @default(uuid())
   improvementId String
-  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict)
+  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict, onUpdate: NoAction)
   requestedBy String
   reviewerId String
   reason String
@@ -622,7 +625,7 @@ model VerificationAmendment {
 
 model VerificationRevision {
   improvementId String
-  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict)
+  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict, onUpdate: NoAction)
   revision Int
   snapshot Json
   reason String
@@ -767,7 +770,7 @@ enum AiSuggestionStatus {
 
 model AiSuggestion {
   usageId String @id
-  usage AiUsage @relation(fields: [usageId], references: [id], onDelete: Restrict)
+  usage AiUsage @relation(fields: [usageId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   organizationId String?
   templateVersion String
   provider String

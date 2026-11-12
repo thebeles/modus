@@ -55,6 +55,7 @@ jobs:
       - run: pnpm -C backend test
       - run: pnpm -C backend build && pnpm -C frontend build
       - run: docker compose -f backend/deploy/docker-compose.yml config --quiet
+      - run: docker compose -f backend/deploy/docker-compose.yml -f backend/deploy/docker-compose.hackathon.yml config --quiet
       - run: docker compose -f backend/deploy/docker-compose.production.yml config --quiet
         env:
           WEB_ORIGIN: https://modus.example.invalid
@@ -62,6 +63,8 @@ jobs:
           MIGRATION_DATABASE_URL: postgresql://migrator:validation@db.example.invalid/modus
       - run: docker compose -f backend/deploy/docker-compose.yml build api web
       - run: pnpm -C backend db:migrate && pnpm -C backend db:seed && pnpm -C backend db:seed
+      - name: Check Prisma schema matches the migrated database
+        run: pnpm -C backend exec prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
       - run: pnpm -C backend test:integration
       - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE modus_ci_load'
         env:
@@ -77,8 +80,13 @@ jobs:
       - run: pnpm -C backend db:migrate && pnpm -C backend db:seed
         env:
           DATABASE_URL: ${{ env.E2E_DATABASE_URL }}
+      - run: docker exec -i "$POSTGRES_CONTAINER" psql -U modus -d modus_e2e -v ON_ERROR_STOP=1 < frontend/tests/ux-fixtures.sql
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       - run: pnpm -C frontend exec playwright install --with-deps chromium
       - run: pnpm -C frontend test:e2e
+        env:
+          UX_FIXTURES: "true"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
