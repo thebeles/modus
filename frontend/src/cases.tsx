@@ -314,6 +314,12 @@ export function ImprovementDetail() {
           {[['overview', 'Обзор'], ['plan', 'План'], ['result', 'Результат'], ['feedback', 'Обратная связь'], ['history', 'История']].map(([key, title]) => <Tabs.Trigger key={key} value={key}>{title}</Tabs.Trigger>)}
         </Tabs.List>
         <Tabs.Content value="overview" className="inner-stack">
+          <dl className="surface section initiative-summary">
+            <div><dt>Владелец</dt><dd>{record.owner?.name ?? 'Не указан'}</dd></div>
+            <div><dt>Задачи выполнены</dt><dd>{record.actions.filter(task => task.status === 'DONE').length} из {record.actions.length}</dd></div>
+            <div><dt>Внедрение</dt><dd>{record.implementedAt ? date(record.implementedAt) : 'Ещё не внедрено'}</dd></div>
+            <div><dt>Проверка результата</dt><dd>{record.verification ? <Chip value={record.verification.outcome} /> : 'Ещё не проверен'}</dd></div>
+          </dl>
           <Section title="Цель и основание" icon={<Layers3 size={18} />} action={planEditable && <button className="text-button" onClick={() => edit.open({
             title: 'Редактировать улучшение', path, method: 'PATCH',
             fields: <><Field label="Название"><input name="title" defaultValue={record.title} required minLength={3} /></Field>

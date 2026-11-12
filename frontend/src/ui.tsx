@@ -89,6 +89,8 @@ export function Pagination({ total, limit, page, onChange }: { total: number; li
 
 export function Modal({ title, description, close, children }: { title: string; description?: string; close: () => void; children: ReactNode }) {
   const content = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const descriptionId = useId();
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== 'Escape' || !(event.target instanceof Node) || !content.current?.contains(event.target)) return;
@@ -99,9 +101,16 @@ export function Modal({ title, description, close, children }: { title: string; 
     return () => window.removeEventListener('keydown', handleEscape, true);
   }, []);
   return <Dialog.Root open onOpenChange={open => { if (!open) close(); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" />
-    <Dialog.Content ref={content} className="dialog-content" aria-describedby={description ? undefined : 'dialog-description'}>
+    <Dialog.Content ref={content} className="dialog-content" aria-describedby={descriptionId}
+      onOpenAutoFocus={() => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
+      onCloseAutoFocus={event => {
+        if (opener.current?.isConnected) {
+          event.preventDefault();
+          opener.current.focus();
+        }
+      }}>
       <div className="dialog-header"><Dialog.Title>{title}</Dialog.Title><Dialog.Close asChild><button className="icon-button" aria-label="Закрыть"><X size={19} /></button></Dialog.Close></div>
-      <Dialog.Description id="dialog-description" className={description ? 'subtle-text' : 'sr-only'}>{description ?? title}</Dialog.Description>{children}
+      <Dialog.Description id={descriptionId} className={description ? 'subtle-text' : 'sr-only'}>{description ?? title}</Dialog.Description>{children}
     </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 

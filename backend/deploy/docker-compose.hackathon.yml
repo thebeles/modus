@@ -1,0 +1,25 @@
+# Apply after docker-compose.yml with project name modus-hackathon.
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:55532:5432"
+  migrate:
+    image: modus-hackathon-server
+    environment: &demo
+      WEB_ORIGIN: http://localhost:55531
+      DEMO_MODE: "true"
+      SEED_DEMO_USERS: "true"
+      COOKIE_SECURE: "false"
+      GROQ_AI_ENABLED: "false"
+      GROQ_API_KEY: ""
+  api:
+    image: modus-hackathon-server
+    environment: *demo
+    ports: !reset []
+  worker:
+    image: modus-hackathon-server
+    environment: *demo
+  web:
+    image: modus-hackathon-web
+    ports: !override
+      - "127.0.0.1:55531:80"

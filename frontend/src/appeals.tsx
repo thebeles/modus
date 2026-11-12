@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, Fi
   Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
 import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
@@ -18,17 +18,18 @@ const kinds = [
   { code: 'POSITIVE_FEEDBACK', name: 'Поблагодарить', description: 'Отметьте то, что хорошо работает.', icon: Heart, tone: 'lavender' },
 ] as const;
 
-function AppealTable({ rows, staff = false, compact = false }: { rows: AppealRow[]; staff?: boolean; compact?: boolean }) {
+function AppealTable({ rows, staff = false, compact = false, returnTo }: { rows: AppealRow[]; staff?: boolean; compact?: boolean; returnTo?: string }) {
   const tableClass = ['data-table', 'appeal-table', !staff && 'personal-appeal-table', compact && 'compact'].filter(Boolean).join(' ');
   return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={tableClass}><thead><tr>
-    <th>Обращение</th><th>Статус</th>{!compact && <th>{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th><span className="sr-only">Открыть</span></th>
+    <th>Обращение</th><th>Статус</th>{!compact && <th className="appeal-context">{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th className="appeal-arrow"><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
     const to = `${staff ? '/work-queue' : ''}/appeals/${item.id}`;
-    return <tr key={item.id}><td><Link className="table-title" to={to}><span className="row-icon"><FileText size={17} /></span><span>
-      <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} />}</small><strong>{item.title}</strong>
-    </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td>{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
+    return <tr key={item.id}><td><Link className="table-title" to={to} state={{ returnTo }}><span className="row-icon"><FileText size={17} /></span><span>
+      <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} aria-label="Ограниченный доступ" />}</small><strong>{item.title}</strong>
+      {!compact && <small className="appeal-context-mobile">{staff ? item.department?.name : label(item.type)}</small>}
+    </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td className="appeal-context">{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
       <td className="date-cell">{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
-      <td><Link className="icon-button row-arrow" to={to} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
+      <td className="appeal-arrow"><Link className="icon-button row-arrow" to={to} state={{ returnTo }} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
   })}</tbody></table></TableRegion>;
 }
 
@@ -71,6 +72,7 @@ export function Home() {
 
 export function AppealList({ staff = false }: { staff?: boolean }) {
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const assignees = useQuery({ queryKey: ['appeal-assignees'], enabled: staff,
     queryFn: () => api<{ id: string; name: string }[]>('/work-queue/assignees') });
@@ -94,10 +96,11 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
       <select aria-label="Статус" value={filter.status ?? ''} onChange={event => apply('status', event.target.value)}><Options items={appealStatuses} blank="Все статусы" /></select>
       <select aria-label="Тип" value={filter.type ?? ''} onChange={event => apply('type', event.target.value)}><Options items={appealTypes} blank="Все типы" /></select>
       <select aria-label="Категория" value={filter.categoryId ?? ''} onChange={event => apply('categoryId', event.target.value)}><EntityOptions rows={catalog.data?.categories ?? []} blank="Все категории" /></select>
-      {staff && <><select aria-label="Подразделение" value={filter.departmentId ?? ''} onChange={event => apply('departmentId', event.target.value)}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все подразделения" /></select>
+      {staff && <details className="advanced-filters">
+        <summary>Дополнительные фильтры{['departmentId', 'processId', 'priority', 'assigneeId', 'dueFrom', 'dueTo'].filter(key => filter[key]).length > 0 && ' · применены'}</summary>
+        <div className="advanced-filter-fields"><select aria-label="Подразделение" value={filter.departmentId ?? ''} onChange={event => apply('departmentId', event.target.value)}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все подразделения" /></select>
         <select aria-label="Процесс" value={filter.processId ?? ''} onChange={event => apply('processId', event.target.value)}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select>
-        <select aria-label="Приоритет" value={filter.priority ?? ''} onChange={event => apply('priority', event.target.value)}><Options items={priorities} blank="Все приоритеты" /></select></>}
-      {staff && <>
+        <select aria-label="Приоритет" value={filter.priority ?? ''} onChange={event => apply('priority', event.target.value)}><Options items={priorities} blank="Все приоритеты" /></select>
         <select aria-label="Исполнитель" value={filter.assigneeId ?? ''} onChange={event => apply('assigneeId', event.target.value)}>
           <EntityOptions rows={assignees.data ?? []} blank="Все исполнители" />
         </select>
@@ -105,13 +108,14 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
           onValueChange={value => apply('dueFrom', value && new Date(value + 'Z').toISOString())} /></Field>
         <Field label="Срок до (UTC)"><DatePicker type="datetime-local" value={filter.dueTo?.slice(0, 16) ?? ''}
           onValueChange={value => apply('dueTo', value && new Date(value + 'Z').toISOString())} /></Field>
-      </>}
+      </div></details>}
       <select aria-label="Сортировка" value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select>
+      {params.size > 0 && <button className="button subtle" type="button" onClick={() => setParams({})}>Очистить фильтры</button>}
     </div>
     <ErrorBox error={rows.error || catalog.error || assignees.error} retry={() => { void rows.refetch(); void catalog.refetch(); if (staff) void assignees.refetch(); }} />{rows.isPending && <Loading />}
     {rows.data && <div className={staff ? 'surface' : 'surface personal-appeal-list'}>
       <div className="list-meta" aria-live="polite">{rows.isFetching ? 'Обновляем…' : `Найдено: ${rows.data.total}`}</div>
-      {rows.data.items.length ? <AppealTable rows={rows.data.items} staff={staff} /> :
+      {rows.data.items.length ? <AppealTable rows={rows.data.items} staff={staff} returnTo={location.pathname + location.search} /> :
         <Empty title="Обращения не найдены"><button className="button subtle" onClick={() => setParams({})}>Сбросить фильтры</button></Empty>}
       <Pagination {...rows.data} onChange={next => apply('page', String(next))} />
     </div>}
@@ -376,14 +380,21 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
 
 export function AppealDetail() {
   const { id } = useParams();
+  return <AppealDetailContent key={id} />;
+}
+
+function AppealDetailContent() {
+  const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useSession();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['appeal', id], queryFn: () => api<Appeal>(`/appeals/${id}`) });
   const [action, setAction] = useState<string | null>(null);
   const [actionVersion, setActionVersion] = useState<number>();
   const [notes, setNotes] = useState(false);
-  const [comment, setComment] = useState('');
+  const [drafts, setDrafts] = useState({ external: '', internal: '' });
+  const channel = notes ? 'internal' : 'external';
   const [resolution, setResolution] = useState('RESOLVED');
   const [targetSearch, setTargetSearch] = useState('');
   const [targetPage, setTargetPage] = useState(1);
@@ -396,7 +407,16 @@ export function AppealDetail() {
     enabled: action === 'RESOLVE' && ['LINKED_TO_EXISTING_CASE', 'ALREADY_ADDRESSED', 'TRANSFERRED'].includes(resolution) });
   const update = useMutation({ mutationFn: ({ data, edit }: { data: Record<string, unknown>; edit?: boolean }) => api<Appeal>(
     `/appeals/${id}${edit ? '' : '/transition'}`, { method: edit ? 'PATCH' : 'POST', body: { expectedVersion: action ? actionVersion : record?.version, ...data } }),
-  onSuccess: item => { client.setQueryData(['appeal', id], item); void client.invalidateQueries({ queryKey: ['appeals'] }); setAction(null); setComment(''); setNotice('Изменения сохранены.'); } });
+  onSuccess: (item, { data }) => {
+    client.setQueryData(['appeal', id], item);
+    void client.invalidateQueries({ queryKey: ['appeals'] });
+    setAction(null);
+    if (data.action === 'COMMENT') {
+      const sent = data.internal ? 'internal' : 'external';
+      setDrafts(previous => previous[sent] === data.text ? { ...previous, [sent]: '' } : previous);
+    }
+    setNotice('Изменения сохранены.');
+  } });
   const reroute = useMutation({ mutationFn: (data: FormData) => api<{ readable: boolean }>(`/appeals/${id}/reroute`, { method: 'POST', body: {
     expectedVersion: actionVersion, categoryId: optional(data, 'categoryId') ?? null, processId: optional(data, 'processId') ?? null,
     text: field(data, 'text'),
@@ -437,8 +457,12 @@ export function AppealDetail() {
   const next = record.nextAction ? actionLabels[record.nextAction.kind] ?? fallbackNext : fallbackNext;
   const nextDue = record.nextAction ? record.nextAction.dueAt : record.controlDueAt;
   const plain = ['REVIEW', 'IN_PROGRESS'].includes(action ?? '') && record.status !== 'IN_PROGRESS';
+  const fromQueue = location.pathname.startsWith('/work-queue/');
+  const listPath = fromQueue ? '/work-queue' : '/my/appeals';
+  const previousList = location.state?.returnTo;
+  const backTo = typeof previousList === 'string' && previousList.split('?')[0] === listPath ? previousList : listPath;
   return <><PageHeading title={record.title} subtitle={`${record.number} · ${label(record.type)} · ${date(record.createdAt)}`}
-    back={{ to: staff ? '/work-queue' : '/my/appeals', label: staff ? 'Очередь' : 'Мои обращения' }}
+    back={{ to: backTo, label: fromQueue ? 'Очередь' : 'Мои обращения' }}
     action={<Chip value={record.status} />} />
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
@@ -458,10 +482,10 @@ export function AppealDetail() {
         {record.comments.filter(item => item.internal === notes).map(item => <article className={`comment ${item.internal ? 'internal' : ''}`} key={item.id}><header><strong>{item.author.name}</strong><small>{date(item.createdAt, true)}</small></header>
           {item.kind !== 'COMMENT' && <small>{label(item.kind)}</small>}<p className="preserve">{item.body}</p></article>)}
         {!record.comments.some(item => item.internal === notes) && <Empty title={notes ? 'Служебных заметок пока нет' : 'Сообщений пока нет'} />}
-        {can('COMMENT') && <form className="form-stack" onSubmit={event => { event.preventDefault(); setNotice(''); update.mutate({ data: { action: 'COMMENT', text: comment, internal: notes } }); }}>
+        {can('COMMENT') && <form className="form-stack" onSubmit={event => { event.preventDefault(); setNotice(''); update.mutate({ data: { action: 'COMMENT', text: drafts[channel], internal: notes } }); }}>
           <Field label={notes ? 'Заметка только для обработчиков' : 'Сообщение в общий диалог'}
-            hint={awaitingAnswer ? 'Чтобы возобновить обработку обращения, нажмите «Ответить на уточнение».' : undefined}>
-            <textarea rows={3} minLength={5} maxLength={10000} required value={comment} onChange={event => setComment(event.target.value)} /></Field>
+            hint={notes ? 'Автор обращения не увидит эту заметку.' : awaitingAnswer ? 'Чтобы возобновить обработку обращения, нажмите «Ответить на уточнение».' : staff ? 'Автор обращения увидит это сообщение.' : undefined}>
+            <textarea rows={3} minLength={5} maxLength={10000} required value={drafts[channel]} onChange={event => setDrafts(previous => ({ ...previous, [channel]: event.target.value }))} /></Field>
           {!action && <ErrorBox error={update.error} retry={() => query.refetch()} />}
           <button className={`button ${notes ? 'secondary' : 'primary'} self-start`} disabled={update.isPending}><Send size={16} />{notes ? 'Сохранить служебную заметку' : 'Отправить сообщение'}</button>
         </form>}

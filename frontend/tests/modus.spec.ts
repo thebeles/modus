@@ -1,6 +1,73 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
+test('queue stays readable at 360 px, retains the search, and keeps dialog drafts separate', async ({ page, browser }) => {
+  const employee = await session(browser, 'employee');
+  const title = 'Проверка очереди ' + randomUUID().slice(0, 8);
+  await create(employee.page, title);
+  await employee.close();
+  await login(page, 'handler');
+  await page.setViewportSize({ width: 360, height: 820 });
+  const search = page.getByRole('textbox', { name: 'Поиск по обращениям' });
+  await search.fill(title);
+  const table = page.getByRole('region', { name: 'Очередь обращений' });
+  await expect(table.getByRole('link', { name: new RegExp(title) })).toBeVisible();
+  expect(await table.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await table.getByRole('link', { name: new RegExp(title) }).click();
+  await page.getByRole('button', { name: 'Служебные заметки' }).click();
+  await page.getByLabel('Заметка только для обработчиков').fill('Черновик служебной заметки');
+  await page.getByRole('button', { name: 'Переписка с автором' }).click();
+  await expect(page.getByLabel('Сообщение в общий диалог')).toHaveValue('');
+  await page.getByLabel('Сообщение в общий диалог').fill('Черновик сообщения автору');
+  await page.getByRole('button', { name: 'Служебные заметки' }).click();
+  await expect(page.getByLabel('Заметка только для обработчиков')).toHaveValue('Черновик служебной заметки');
+  const menu = page.getByRole('button', { name: 'Открыть навигацию' });
+  await menu.focus();
+  await menu.press('Enter');
+  await expect(page.getByRole('dialog', { name: 'Навигация' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeFocused();
+  await page.getByRole('link', { name: 'Очередь', exact: true }).click();
+  await expect(search).toHaveValue(title);
+});
+
+test('finds an old transfer target beyond the first hundred through the dialog', async ({ page, browser }) => {
+  test.skip(process.env.UX_FIXTURES !== 'true', 'Requires ux-fixtures.sql on an isolated E2E database');
+  const employee = await session(browser, 'employee');
+  const item = await create(employee.page, 'UX transfer ' + randomUUID().slice(0, 8));
+  await employee.close();
+  await login(page, 'handler');
+  await page.goto('/work-queue/appeals/' + item.id);
+  await mutation(page, 'Взять на рассмотрение', undefined, 'Подтвердить');
+  await mutation(page, 'Закрыть с решением', async dialog => {
+    await dialog.getByLabel('Тип решения').selectOption('TRANSFERRED');
+    const select = dialog.getByLabel('Связанная запись');
+    await expect(select.locator('option', { hasText: 'UX archived transfer target' })).toHaveCount(0);
+    await dialog.getByLabel('Поиск цели по номеру или заголовку').fill('UX archived transfer target');
+    await expect(select.locator('option', { hasText: 'UX archived transfer target' })).toHaveCount(1);
+    await select.selectOption({ label: 'UX-0 · UX archived transfer target' });
+    await dialog.getByLabel('Обоснование').fill('Контрольная передача старой записи.');
+  });
+  await expect(page.getByRole('heading', { name: 'Итог рассмотрения' })).toBeVisible();
+});
+
+test('opens the oldest unread notification beyond the first fifty', async ({ page }) => {
+  test.skip(process.env.UX_FIXTURES !== 'true', 'Requires ux-fixtures.sql on an isolated E2E database');
+  await login(page, 'employee');
+  await page.goto('/notifications');
+  const target = await get<{ items: { id: string }[] }>(page, '/appeals?own=true&q=UX%20archived%20transfer%20target');
+  const href = '/appeals/' + target.items[0].id;
+  const old = page.locator('main a').and(page.locator(`a[href="${href}"]`));
+  await expect(old).toHaveCount(0);
+  await page.getByRole('checkbox', { name: 'Только непрочитанные' }).check();
+  await expect(old).toBeVisible();
+  await old.click();
+  await expect(page.getByRole('heading', { name: 'UX archived transfer target' })).toBeVisible();
+  await page.goto('/notifications');
+  await page.getByRole('checkbox', { name: 'Только непрочитанные' }).check();
+  await expect(old).toHaveCount(0);
+});
+
 const profileNames = { employee: 'Сотрудник', handler: 'Обработчик', manager: 'Руководитель', admin: 'Администратор', other: 'Другой сотрудник' } as const;
 
 async function login(page: Page, role: keyof typeof profileNames) {
