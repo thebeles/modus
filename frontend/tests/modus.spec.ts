@@ -250,6 +250,9 @@ test('E2E-05 independent approval, implementation and verification through the i
   await login(page, 'handler');
   const original = await get<{ items: { id: string }[] }>(page, '/work-queue?q=A-001');
   await page.goto('/work-queue/appeals/' + original.items[0].id);
+  const relatedLinks = page.locator('.link-pair a');
+  await expect(relatedLinks.first()).toBeVisible();
+  expect(await relatedLinks.evaluateAll(links => links.every(link => link.getBoundingClientRect().height >= 24))).toBe(true);
   await page.getByRole('link', { name: 'Создать улучшение' }).click();
   const title = 'Изменение шаблона ' + randomUUID().slice(0, 8);
   await page.getByLabel('Название', { exact: true }).fill(title);
@@ -324,6 +327,11 @@ test('E2E-05 independent approval, implementation and verification through the i
   await page.reload();
   await mutation(page, 'Завершить улучшение');
   await expect(page.locator('.heading-line').getByText('Завершено', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Обзор' }).click();
+  const summary = page.locator('.initiative-summary');
+  await expect(summary).toContainText('1 из 1');
+  await expect(summary).toContainText('Внедрение');
+  await expect(summary).toContainText('Владелец');
   await manager.close();
 });
 

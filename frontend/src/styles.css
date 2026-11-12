@@ -284,7 +284,7 @@ input[type=file]::file-selector-button { margin-right: 8px; border: 0; border-ra
 .link-card { padding: 12px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--soft); display: grid; gap: 7px; }
 .link-card p { font-size: 12px; }
 .link-pair { display: grid; gap: 3px; }
-.link-pair a { color: var(--accent); font-weight: 650; font-size: 13px; }
+.link-pair a { display: flex; align-items: center; min-height: 24px; color: var(--accent); font-weight: 650; font-size: 13px; }
 .task-row, .notification-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; padding: 11px 0; border-bottom: 1px solid var(--line); min-width: 0; }
 .task-row:last-child, .notification-row:last-child { border-bottom: 0; }
 .task-row > div:first-child { flex: 1 1 130px; min-width: 0; }
