@@ -1,7 +1,7 @@
 import { DatePicker } from './date-picker';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, ArrowRight, BookOpen, CheckCircle2, Clock3, Download, GitPullRequest, Inbox, Layers3, Search, TriangleAlert } from 'lucide-react';
+import { Activity, ArrowRight, BookOpen, CheckCircle2, Clock3, Download, GitPullRequest, Inbox, Layers3, Search, TriangleAlert } from './icons';
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';

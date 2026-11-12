@@ -1,7 +1,7 @@
 import { DatePicker } from './date-picker';
 import * as Tabs from '@radix-ui/react-tabs';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullRequest, Layers3, Plus, Search, Sparkles } from 'lucide-react';
+import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullRequest, Layers3, Plus, Search, Sparkles } from './icons';
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { improvementStatuses, label, outcomes, problemStatuses } from '@modus/api/contracts';

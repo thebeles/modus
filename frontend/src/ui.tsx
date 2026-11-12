@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertCircle, ArrowLeft, ArrowRight, Check, CircleDashed, FileText, Inbox, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, Check, CircleDashed, FileText, Inbox, X } from './icons';
 import { cloneElement, useEffect, useId, useRef, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { label } from '@modus/api/contracts';
@@ -16,8 +16,8 @@ export const date = (value?: string | null, time = false) => value ? new Intl.Da
   timeZone: import.meta.env.VITE_APP_TIMEZONE || 'Asia/Almaty', day: 'numeric', month: 'short', ...(time ? { hour: '2-digit', minute: '2-digit' } : { year: 'numeric' }),
 }).format(new Date(value)) : '—';
 
-export function Chip({ value, dot = true }: { value: string; dot?: boolean }) {
-  return <span className={`chip tone-${tones[value] ?? 'muted'}`}>{dot && <span className="chip-dot" />}{label(value)}</span>;
+export function Chip({ value }: { value: string }) {
+  return <span className={`chip tone-${tones[value] ?? 'muted'}`}>{label(value)}</span>;
 }
 
 export function ErrorBox({ error, retry }: { error: unknown; retry?: () => void }) {

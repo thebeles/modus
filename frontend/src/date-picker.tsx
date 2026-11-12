@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock } from './icons';
 import { useId, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent } from 'react';
 
 type DatePickerProps = Omit<ComponentPropsWithoutRef<'input'>, 'type' | 'onChange' | 'min' | 'max'> & {

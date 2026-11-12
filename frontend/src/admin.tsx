@@ -1,6 +1,6 @@
 import { DatePicker } from './date-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, Plus, Settings, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Plus, Settings, ShieldCheck } from './icons';
 import { useState } from 'react';
 import { NavLink, useParams } from 'react-router-dom';
 import { label, permissions, priorities, roles, visibilities } from '@modus/api/contracts';

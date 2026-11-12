@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
-  GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from 'lucide-react';
+  GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
 import { label } from '@modus/api/contracts';

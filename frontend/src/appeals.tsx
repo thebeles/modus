@@ -2,7 +2,7 @@ import { DatePicker } from './date-picker';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
-  Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react';
+  Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
 import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -45,7 +45,7 @@ export function Home() {
       </div></section>
     <section className="home-start"><h2>С чего начнём?</h2>
       <div className="kind-grid">{kinds.map(({ code, name, description, icon: Icon, tone }) => <Link key={code} className="kind-card" to={`/appeals/new?type=${code}`}>
-        <span className={`kind-icon ${tone}`}><Icon size={27} strokeWidth={1.75} aria-hidden="true" /></span>
+        <span className={`kind-icon ${tone}`}><Icon size={27} aria-hidden="true" /></span>
         <div><strong>{name}</strong><p>{description}</p></div><ArrowRight size={21} className="kind-arrow" aria-hidden="true" /></Link>)}</div>
     </section>
     <ErrorBox error={waiting.error} retry={() => waiting.refetch()} />
@@ -434,7 +434,7 @@ export function AppealDetail() {
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     <div className="detail-grid"><div className="detail-main">
       <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
-        <div className="inline-chips"><Chip value={record.priority} dot={false} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
+        <div className="inline-chips"><Chip value={record.priority} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
         <p className="preserve detail-text">{record.description}</p>
         {record.proposedSolution && <><h3>Предложенное решение</h3><p className="preserve">{record.proposedSolution}</p></>}
         {record.attachments.map(file => <a className="file-line" key={file.id} href={`/api/v1/attachments/${file.id}/download`}><Paperclip size={16} />{file.name}<small>{Math.max(1, Math.ceil(file.bytes / 1024))} КБ</small></a>)}
