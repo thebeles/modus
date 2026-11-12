@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Inject, Injectable, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { anonymousStaffMessage } from './anonymous';
 import { JsonBody, QueryFields } from './openapi';
 import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { Appeal, Prisma, ReviewRequestKind } from '@prisma/client';
@@ -60,7 +61,7 @@ export function appealQueueFilters(user: Principal, now: Date) {
   });
   const tabs = {
     all: {},
-    mine: { AND: [active, { authorId: { not: user.id }, OR: [
+    mine: { AND: [active, { OR: [{ authorId: null }, { authorId: { not: user.id } }] }, { OR: [
       { assigneeId: user.id }, { assigneeId: null, queue: { coordinatorId: user.id } },
     ] }] },
     new: { AND: [active, { OR: [{ status: 'NEW' }, { assigneeId: null }] }] },
@@ -145,7 +146,7 @@ export class Appeals {
         const owner: Prisma.UserWhereInput = {
           ...eligibleStaff(source.visibility),
           OR: [
-            { id: source.authorId },
+            ...(source.authorId ? [{ id: source.authorId }] : []),
             ...(source.assigneeId ? [{ id: source.assigneeId }] : []),
             ...(source.queueId ? queueStaff(source.queueId).OR ?? [] : []),
             ...(source.visibility === 'NORMAL_INTERNAL' && source.departmentId ? [{ role: 'MANAGER' as const, departmentId: source.departmentId }] : []),
@@ -155,7 +156,7 @@ export class Appeals {
           status: { notIn: ['CLOSED', 'WITHDRAWN'] }, visibility: source.visibility,
           queueId: source.visibility === 'NORMAL_INTERNAL' ? { not: null } : source.queueId,
           OR: [
-            { NOT: { authorId: { equals: tx.appeal.fields.assigneeId } }, assignee: owner },
+            { OR: [{ authorId: null }, { NOT: { authorId: { equals: tx.appeal.fields.assigneeId } } }], assignee: owner },
             { assigneeId: null, queue: { coordinator: owner } },
           ],
         } satisfies Prisma.AppealWhereInput);
@@ -350,7 +351,10 @@ export class Appeals {
       if (record.status !== 'WAITING_AUTHOR' || !record.waitingSince || Date.now() - record.waitingSince.getTime() < 72 * 3600000) {
         throw invalidState('Дождитесь истечения трёх суток после запроса уточнения.');
       }
-      const reminder = await tx.notification.findUnique({ where: { key: clarificationKey(record.id, record.waitingSince) } });
+      const key = clarificationKey(record.id, record.waitingSince);
+      const reminder = record.authorId === null
+        ? await tx.auditEvent.findUnique({ where: { id: key } })
+        : await tx.notification.findUnique({ where: { key } });
       if (!reminder) throw invalidState('Сначала должно быть отправлено напоминание автору.');
     }
     if (input.resolutionType === 'ACCEPTED_FOR_IMPROVEMENT') {
@@ -377,9 +381,10 @@ export class Appeals {
       }
       const [fromId, toId] = [record.id, other.id].sort();
       const relation = 'RELATED_CONTEXT';
+      const explanation = record.authorId === null ? 'Решение зафиксировано в защищённой переписке.' : input.text;
       await tx.appealLink.upsert({ where: { fromId_toId_relation: { fromId, toId, relation } },
-        create: { fromId, toId, relation, explanation: input.text, state: 'CONFIRMED', confirmedBy: user.id },
-        update: { state: 'CONFIRMED', explanation: input.text, confirmedBy: user.id, version: { increment: 1 } } });
+        create: { fromId, toId, relation, explanation, state: 'CONFIRMED', confirmedBy: user.id },
+        update: { state: 'CONFIRMED', explanation, confirmedBy: user.id, version: { increment: 1 } } });
     }
   }
 
@@ -426,7 +431,7 @@ export class Appeals {
         case 'RESOLVE':
           if (pending?.kind === 'WITHDRAWAL') throw invalidState('Сначала рассмотрите запрос на отзыв.');
           await this.resolution(tx, user, record, input);
-          Object.assign(data, { status: 'CLOSED', resolutionType: input.resolutionType, resolutionText: input.text, resolutionOrigin: 'USER_ACTION',
+          Object.assign(data, { status: 'CLOSED', resolutionType: input.resolutionType, resolutionText: record.authorId === null ? 'Решение доступно в защищённой переписке.' : input.text, resolutionOrigin: 'USER_ACTION',
             resolutionBy: user.id, closedAt: now, waitingSince: null, resumeState: null });
           event = 'RESOLVED_EVENT';
           break;
@@ -483,10 +488,16 @@ export class Appeals {
         data.slaVersion = sla?.version ?? null;
       }
       await checked(tx.appeal.updateMany({ where: { id: appealId, version: input.expectedVersion }, data }));
-      if (comment && input.text) await tx.comment.create({ data: { appealId, authorId: user.id, body: input.text, internal: !visible, kind: event, origin: 'USER_ACTION' } });
+      if (record.authorId === null && input.action === 'RESOLVE' && input.text) {
+        await anonymousStaffMessage(tx, appealId, input.text, 'RESOLUTION');
+      }
+      if (comment && input.text) {
+        if (record.authorId === null && visible) await anonymousStaffMessage(tx, appealId, input.text);
+        else await tx.comment.create({ data: { appealId, authorId: user.id, body: input.text, internal: !visible, kind: event, origin: 'USER_ACTION' } });
+      }
       const entry = await audit(tx, 'appeal', appealId, event, user.id, visible, { previous: record.status,
         next: typeof data.status === 'string' ? data.status : record.status,
-        ...(input.text && !comment ? { reason: input.text } : {}) });
+        ...(input.text && !comment && !(record.authorId === null && input.action === 'RESOLVE') ? { reason: input.text } : {}) });
       await notify(tx, entry.id, recipients, event, `/appeals/${appealId}`);
     });
     return this.detail(user, appealId);
@@ -501,7 +512,7 @@ export class Appeals {
       const categoryId = input.categoryId === undefined ? record.categoryId : input.categoryId;
       const processId = input.processId === undefined ? record.processId : input.processId;
       const route = await this.routing.route(tx, { categoryId, processId, visibility: record.visibility,
-        authorId: record.authorId, departmentId: record.departmentId });
+        authorId: record.authorId, departmentId: record.departmentId, demo: record.authorId === null ? record.isSynthetic : undefined });
       await checked(tx.appeal.updateMany({ where: { id: appealId, version: input.expectedVersion }, data: {
         categoryId, processId, visibility: route.visibility, queueId: route.queueId, assigneeId: route.assigneeId,
         version: { increment: 1 },
@@ -518,7 +529,7 @@ export class Appeals {
     if (appealId && await this.policy.handles(this.db, user, appealId)) {
       const record = await this.policy.appeal(this.db, user, appealId);
       if (record.queueId) people = await this.db.user.findMany({
-        where: { id: { not: record.authorId }, ...eligibleStaff(record.visibility), ...queueStaff(record.queueId) },
+        where: { id: { not: record.authorId ?? undefined }, ...eligibleStaff(record.visibility), ...queueStaff(record.queueId) },
         select: { id: true, name: true }, orderBy: { name: 'asc' },
       });
     }

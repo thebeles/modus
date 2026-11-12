@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { strict as assert } from 'node:assert';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,7 @@ import { Ai, type AiProvider } from '../src/ai';
 import { Policy, principalSelect } from '../src/policy';
 import { Radar } from '../src/radar';
 import { Cases } from '../src/cases';
+import { OneC } from '../src/one-c';
 import { LocalStorage, purgeUploads } from '../src/files';
 import { deadlines, deliver, retryRouting } from '../src/worker';
 
@@ -42,6 +44,8 @@ before(async () => {
   process.env.WEB_ORIGIN = origin;
   process.env.DEMO_MODE = 'true';
   process.env.GROQ_AI_ENABLED = 'false';
+  process.env.ANONYMOUS_DATA_KEY = randomBytes(32).toString('hex');
+  process.env.ONEC_MODE = 'simulator';
   process.env.STORAGE_DIR = await storage;
   await startApi();
 });
@@ -51,11 +55,12 @@ after(async () => {
   await rm(await storage, { recursive: true, force: true });
 });
 
-async function request<T>(path: string, opts: { session?: Session; body?: unknown; method?: string; key?: string; origin?: string; csrf?: string } = {}) {
+async function request<T>(path: string, opts: { session?: Session; body?: unknown; method?: string; key?: string; origin?: string; csrf?: string; appealToken?: string } = {}) {
   const { session, body, method = body === undefined ? 'GET' : 'POST' } = opts;
   const headers = new Headers({ Origin: opts.origin ?? origin });
   if (session) { headers.set('Cookie', session.cookie); headers.set('X-CSRF-Token', opts.csrf ?? session.csrf); }
   if (opts.key) headers.set('Idempotency-Key', opts.key);
+  if (opts.appealToken) headers.set('X-Appeal-Token', opts.appealToken);
   if (body !== undefined && !(body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const response = await fetch(base + path, { method, headers, body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body) });
   const result = response.headers.get('content-type')?.includes('json') ? await response.json() as Envelope<T> : undefined;
@@ -784,4 +789,257 @@ test('PostgreSQL audit guard rejects mutations even for the migration owner', as
   await assert.rejects(db.$executeRaw`UPDATE "AuditEvent" SET action = action WHERE id = ${event.id}`);
   await assert.rejects(db.$executeRaw`DELETE FROM "AuditEvent" WHERE id = ${event.id}`);
   assert.ok(await db.auditEvent.findUnique({ where: { id: event.id } }));
+});
+
+test('anonymous dialogue resumes the appeal and protects identity, attachments and resolution', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const sensitive = await login('sensitive-handler');
+  const data = { title: 'Проверка анонимного канала ' + randomUUID(), type: 'PROBLEM', text: 'Конфиденциальное описание.',
+    attachment: 'x'.repeat(64 * 1024) };
+  assert.equal((await request('/anonymous/appeals', { body: data, origin: 'https://foreign.example' })).response.status, 403);
+  const created = success(await request<{ token: string; number: string }>('/anonymous/appeals', { session: employee, body: data }));
+  const item = await db.appeal.findUniqueOrThrow({ where: { number: created.number }, include: { anonymousAccess: true } });
+  const path = '/appeals/' + item.id;
+  assert.equal(item.authorId, null);
+  assert.equal(item.departmentId, null);
+  assert.equal(item.visibility, 'SPECIAL');
+  assert.notEqual(item.description, data.text);
+  assert.notEqual(item.anonymousAccess?.tokenHash, created.token);
+  assert.equal((await request(path, { session: employee })).response.status, 404);
+  assert.equal((await request(path + '/anonymous-thread', { session: handler })).response.status, 404);
+  const track = async (token = created.token) => request<{ status: string; resolutionType: string; messages:
+    { id: string; side: string; text: string; hasAttachment: boolean; kind?: string }[] }>(
+    '/anonymous/track', { body: {}, appealToken: token });
+  const tracked = await track();
+  assert.equal(tracked.response.headers.get('cache-control'), 'no-store');
+  const initial = success(tracked).messages[0];
+  assert.equal(initial.text, data.text);
+  assert.equal(initial.hasAttachment, true);
+  assert.ok(!JSON.stringify(tracked.data).includes(data.attachment));
+  const attachmentPath = '/anonymous/attachments/' + initial.id;
+  assert.equal((await track(randomBytes(32).toString('base64url'))).response.status, 404);
+  assert.equal((await request(attachmentPath, { body: {} })).response.status, 404);
+  assert.equal((await request(path + '/anonymous-thread/attachments/' + initial.id, { session: handler })).response.status, 404);
+  assert.equal(success(await request<{ attachment: string }>(attachmentPath, { body: {}, appealToken: created.token })).attachment, data.attachment);
+  assert.equal(success(await request<{ attachment: string }>(path + '/anonymous-thread/attachments/' + initial.id, { session: sensitive })).attachment, data.attachment);
+  const step = (version: number, action: string, extra = {}) => request<Row>(path + '/transition', {
+    session: sensitive, body: { expectedVersion: version, action, ...extra },
+  });
+  const reviewed = success(await step(1, 'REVIEW'));
+  const note = 'Закрытая служебная заметка.';
+  const withNote = success(await step(reviewed.version, 'COMMENT', { text: note, internal: true }));
+  const question = 'Уточните, в какой день это случилось?';
+  const waiting = success(await step(withNote.version, 'CLARIFICATION', { text: question }));
+  assert.equal(waiting.status, 'WAITING_AUTHOR');
+  const wait = new Date(Date.now() - 25 * 3600000);
+  await db.appeal.update({ where: { id: item.id }, data: { waitingSince: wait } });
+  await Promise.all([deadlines(db), deadlines(db)]);
+  const dialogue = success(await track()).messages;
+  assert.equal(dialogue.filter(message => message.kind === 'REMINDER').length, 1);
+  assert.ok(dialogue.some(message => message.text === question && message.side === 'STAFF'));
+  assert.ok(!JSON.stringify(dialogue).includes(note));
+  success(await request('/anonymous/reply', { appealToken: created.token, body: { text: 'Ситуация произошла в четверг.' } }));
+  assert.equal(success(await track()).status, 'REVIEW');
+  const resolution = 'Закрыли обращение после проверки документов.';
+  assert.equal(success(await step(waiting.version + 1, 'RESOLVE', { text: resolution, resolutionType: 'RESOLVED' })).status, 'CLOSED');
+  const closed = success(await track());
+  assert.equal(closed.resolutionType, 'RESOLVED');
+  assert.ok(closed.messages.some(message => message.kind === 'RESOLUTION' && message.text === resolution));
+  assert.equal((await request('/anonymous/reply', { appealToken: created.token, body: { text: 'Закрытая переписка.' } })).response.status, 409);
+  const stored = await db.anonymousMessage.findMany({ where: { appealId: item.id } });
+  const audit = await db.auditEvent.findMany({ where: { entityId: item.id } });
+  for (const secret of [data.text, data.attachment, question, resolution, created.token]) {
+    assert.ok(!JSON.stringify({ stored, audit }).includes(secret));
+  }
+  assert.equal(await db.comment.count({ where: { appealId: item.id, internal: false } }), 0);
+});
+
+test('proposal votes and conversion are idempotent and department-scoped', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const outsider = await login('other-employee');
+  const title = 'Предложение по форме ' + randomUUID();
+  const item = success(await request<{ id: string }>('/proposals', { session: employee, body: { title, description: 'Упростить форму заказа.' } }));
+  const path = '/proposals/' + item.id;
+  const vote = (session: Session, method = 'PUT') => request(path + '/vote', { session, method });
+  (await Promise.all([vote(employee), vote(employee), vote(handler)])).forEach(success);
+  assert.equal(await db.proposalVote.count({ where: { proposalId: item.id } }), 2);
+  assert.equal((await vote(outsider)).response.status, 404);
+  const board = success(await request<{ items: { id: string; voted: boolean; _count: { votes: number } }[] }>('/proposals?sort=popular', { session: employee }));
+  assert.equal(board.items[0].id, item.id);
+  assert.equal(board.items[0].voted, true);
+  assert.equal(board.items[0]._count.votes, 2);
+  success(await vote(employee, 'DELETE'));
+  success(await vote(employee, 'DELETE'));
+  assert.equal(await db.proposalVote.count({ where: { proposalId: item.id } }), 1);
+  success(await request(path + '/comments', { session: employee, body: { body: 'Предлагаю проверить на пилотной группе.' } }));
+  assert.equal((await request(path + '/comments', { session: outsider })).response.status, 404);
+  const convert = (session: Session) => request<{ id: string }>(path + '/convert', {
+    session, body: { goal: 'Сократить время заполнения.', scope: 'Форма заказа' },
+  });
+  assert.equal((await convert(employee)).response.status, 403);
+  const [first, second] = (await Promise.all([convert(handler), convert(handler)])).map(success);
+  assert.equal(first.id, second.id);
+  const improvement = await db.improvement.findUniqueOrThrow({ where: { id: first.id }, include: { proposal: true } });
+  assert.equal(improvement.title, title);
+  assert.equal(improvement.proposal?.id, item.id);
+  assert.equal(improvement.status, 'DRAFT');
+});
+
+test('customer CSV import validates all rows, deduplicates, finds recurrence and links scoped sources', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const csvPath = '/customer-reviews/import';
+  const marker = randomUUID();
+  const csv = 'date,title,body\r\n2026-10-11,"Опоздание доставки ' + marker + '","Курьер задержал доставку, обещал ""перезвонить"".\r\nЗаказ не получен вовремя."\r\n' +
+    '2026-10-12,"Опоздание доставки ' + marker + '","Курьер задержал доставку, заказ не получен вовремя."';
+  assert.equal((await request(csvPath, { session: employee, body: { csv } })).response.status, 403);
+  assert.equal((await request(csvPath, { session: handler, body: { csv: csv + '\n2026-02-30,Некорректная дата,Строка с неверной датой' } })).response.status, 400);
+  assert.equal(await db.customerReview.count({ where: { title: { contains: marker } } }), 0);
+  const upload = () => request<{ inserted: number; duplicates: number }>(csvPath, { session: handler, body: { csv } }).then(success);
+  assert.deepEqual(await upload(), { inserted: 2, duplicates: 0 });
+  assert.deepEqual(await upload(), { inserted: 0, duplicates: 2 });
+  const [a, b] = await db.customerReview.findMany({ where: { title: { contains: marker } }, orderBy: { occurredAt: 'asc' } });
+  assert.equal(a.category, 'DELIVERY');
+  assert.ok(a.body.includes('"перезвонить"'));
+  const similar = success(await request<{ id: string }[]>('/customer-reviews/' + a.id + '/similar', { session: handler }));
+  assert.ok(similar.some(row => row.id === b.id));
+  const appeal = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', title: 'Доставка с опозданием ' + marker, description: 'Жалобы на доставку.', visibility: 'NORMAL_INTERNAL',
+  } }));
+  const improvement = success(await request<{ id: string }>('/improvements', { session: handler, body: {
+    title: 'Контроль доставки ' + marker, rationale: 'Жалобы на доставку.', goal: 'Снизить число опозданий.', scope: 'Доставка', appealId: appeal.id,
+  } }));
+  const targets = success(await request<{ items: { id: string }[] }>('/customer-reviews/targets?target=appeal&q=' + marker, { session: handler }));
+  assert.deepEqual(targets.items.map(row => row.id), [appeal.id]);
+  const linkPath = '/customer-reviews/' + a.id + '/links';
+  for (const [target, targetId] of [['appeal', appeal.id], ['improvement', improvement.id]]) {
+    const body = { target, targetId };
+    success(await request(linkPath, { session: handler, body }));
+    success(await request(linkPath, { session: handler, body }));
+    const list = () => request<{ items: { id: string }[] }>('/customer-reviews?' + target + 'Id=' + targetId, { session: handler }).then(success);
+    assert.deepEqual((await list()).items.map(item => item.id), [a.id]);
+    success(await request(linkPath, { session: handler, body, method: 'DELETE' }));
+    assert.deepEqual((await list()).items, []);
+  }
+  assert.equal((await request(linkPath, { session: handler, body: { target: 'appeal', targetId: randomUUID() } })).response.status, 404);
+});
+
+test('1C simulator persists request, status, inventory and operation journal', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const manager = await login('manager');
+  assert.equal((await request('/one-c/products', { session: employee })).response.status, 403);
+  const improvement = success(await request<{ id: string }>('/improvements', { session: handler, body: {
+    title: 'Замена маркировки', rationale: 'Этикетки рвутся при перевозке.', goal: 'Снизить число повреждений.', scope: 'Склад',
+  } }));
+  const products = () => request<{ mode: string; items: { sku: string; stock: number }[] }>('/one-c/products', { session: handler }).then(success);
+  const initial = await products();
+  assert.equal(initial.mode, 'simulator');
+  const key = randomUUID();
+  const body = { sku: 'DEMO-001', quantity: 2, improvementId: improvement.id };
+  const create = (quantity = body.quantity) => request<{ id: string; externalId: string; status: string }>('/one-c/requests',
+    { session: handler, key, body: { ...body, quantity } });
+  const [first, second] = (await Promise.all([create(), create()])).map(success);
+  assert.equal(first.id, second.id);
+  assert.equal(first.externalId, second.externalId);
+  assert.equal(first.status, 'SUBMITTED');
+  assert.equal((await create(3)).response.status, 409);
+  const stock = (result: typeof initial) => result.items.find(row => row.sku === body.sku)!.stock;
+  assert.equal(stock(await products()), stock(initial) - 2);
+  await db.oneCRequest.update({ where: { id: first.id }, data: { createdAt: new Date(Date.now() - 61000) } });
+  const refreshPath = '/one-c/requests/' + first.id + '/refresh';
+  assert.equal((await request(refreshPath, { session: manager, body: {} })).response.status, 404);
+  assert.equal(success(await request<{ status: string }>(refreshPath, { session: handler, body: {} })).status, 'COMPLETED');
+  const linkedPath = '/one-c/improvements/' + improvement.id + '/requests';
+  assert.equal((await request(linkedPath, { session: employee })).response.status, 404);
+  assert.equal(success(await request<{ items: { id: string }[] }>(linkedPath, { session: manager })).items[0].id, first.id);
+  const journal = success(await request<{ items: { action: string; result: string; requestId: string }[] }>('/one-c/journal', { session: handler }));
+  assert.ok(journal.items.some(row => row.action === 'SUBMIT' && row.result === 'OK' && row.requestId === first.id));
+  assert.ok(journal.items.some(row => row.action === 'STATUS' && row.result === 'OK' && row.requestId === first.id));
+});
+
+test('AI triage only accepts supplied categories and group members, and records a human decision', async () => {
+  const employee = await login('employee');
+  const handlerSession = await login('handler');
+  const handler = await db.user.findUniqueOrThrow({ where: { email: 'handler@demo.local' }, select: principalSelect });
+  const category = await db.category.findFirstOrThrow({ where: { sensitive: false }, orderBy: { name: 'asc' } });
+  const marker = randomUUID();
+  const make = (suffix: string) => request<{ id: string }>('/appeals', { session: employee, key: randomUUID(), body: {
+    type: 'PROBLEM', title: 'Повторная задержка поставки ' + marker + suffix, description: 'Повторная задержка поставки на склад.',
+    visibility: 'NORMAL_INTERNAL', categoryId: category.id,
+  } }).then(success);
+  const first = await make(' первая');
+  const second = await make(' вторая');
+  let member: string = randomUUID();
+  const provider: AiProvider = { available: () => true, complete: async () => ({
+    categoryId: category.id, classificationReason: 'Речь идёт о процессе поставки.', hypotheses: ['Возможен пропуск контроля срока.'],
+    possibleActions: ['Проверить журнал поставок.'], proposedMetrics: ['Доля опоздавших поставок за месяц, %'], needsValidation: true,
+    groups: [{ title: 'Похожие задержки', evidence: 'В сообщениях упоминается повторная задержка.', candidateIds: [member], relation: 'POSSIBLE_RECURRENCE' }],
+  }) };
+  const ai = new Ai(db, app.get(Policy), provider, app.get(Radar), app.get(Cases));
+  const input = { id: first.id, consent: true };
+  await assert.rejects(ai.advise(handler, 'appeal-triage', input), { code: 'AI_UNAVAILABLE' });
+  member = second.id;
+  const result = await ai.advise(handler, 'appeal-triage', input);
+  assert.equal(result.mode, 'GROQ');
+  assert.ok(result.usageId);
+  assert.equal((await db.aiSuggestion.findUniqueOrThrow({ where: { usageId: result.usageId } })).status, 'PENDING');
+  assert.equal((await request('/ai/usage/' + result.usageId + '/decision', { session: employee, body: { decision: 'APPLIED' } })).response.status, 404);
+  success(await request('/ai/usage/' + result.usageId + '/decision', { session: handlerSession, body: { decision: 'APPLIED' } }));
+  const problem = success(await request<{ id: string }>('/problems', { session: handlerSession, body: {
+    title: 'Повторная задержка поставок', symptoms: 'Задержки зафиксированы в двух обращениях.', appealId: first.id, relatedAppealIds: [second.id],
+  } }));
+  assert.equal(await db.problemAppeal.count({ where: { problemId: problem.id } }), 2);
+});
+
+test('1C HTTP adapter reuses the external idempotency key after an ambiguous submission', async () => {
+  const operator = await db.user.create({ data: { name: 'Интеграционный оператор', email: randomUUID() + '@example.test',
+    passwordHash: 'unused', role: 'HANDLER', permissions: ['ONEC_OPERATOR'] }, select: principalSelect });
+  const token = randomUUID();
+  const externalId = 'REF-' + randomUUID();
+  const attempts: { key?: string | string[]; body: { requestId: string; sku: string; quantity: number } }[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== 'Bearer ' + token) { res.writeHead(401).end(); return; }
+    if (req.method === 'GET' && req.url === '/exchange/products') {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify([{ sku: 'SKU-001', name: 'Тестовый товар', stock: 12 }]));
+    } else if (req.method === 'POST' && req.url === '/exchange/requests') {
+      let payload = '';
+      for await (const part of req) payload += String(part);
+      attempts.push({ key: req.headers['idempotency-key'], body: JSON.parse(payload) });
+      if (attempts.length === 1) { req.socket.destroy(); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ externalId, status: 'SUBMITTED' }));
+    } else if (req.method === 'GET' && req.url === '/exchange/requests/' + externalId) {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ externalId, status: 'COMPLETED' }));
+    } else res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const previous = { ONEC_MODE: process.env.ONEC_MODE, ONEC_API_URL: process.env.ONEC_API_URL, ONEC_API_TOKEN: process.env.ONEC_API_TOKEN };
+  try {
+    process.env.ONEC_MODE = 'http';
+    process.env.ONEC_API_URL = 'http://127.0.0.1:' + (server.address() as AddressInfo).port + '/exchange';
+    process.env.ONEC_API_TOKEN = token;
+    const adapter = app.get(OneC);
+    assert.equal((await adapter.products(operator)).items[0].stock, 12);
+    const key = randomUUID();
+    const data = { sku: 'SKU-001', quantity: 3 };
+    await assert.rejects(adapter.create(operator, data, key), { code: 'ONEC_UNAVAILABLE' });
+    const pending = (await adapter.list(operator, {})).items[0];
+    assert.equal(pending.status, 'PENDING');
+    const result = await adapter.refresh(operator, pending.id);
+    assert.equal(result.id, pending.id);
+    assert.equal(result.externalId, externalId);
+    assert.deepEqual(attempts, Array.from({ length: 2 }, () => ({ key: pending.id, body: { requestId: pending.id, ...data } })));
+    assert.equal((await adapter.refresh(operator, pending.id)).status, 'COMPLETED');
+    assert.equal((await adapter.create(operator, data, key)).status, 'COMPLETED');
+    assert.equal(attempts.length, 2);
+    assert.ok((await adapter.journal(operator, {})).items.some(item => item.action === 'SUBMIT' && item.result === 'ERROR'));
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 });

@@ -5,7 +5,7 @@ x-server: &server
   build:
     context: ..
   restart: unless-stopped
-  environment:
+  environment: &server_env
     NODE_ENV: production
     PORT: "4000"
     DATABASE_URL: ${DATABASE_URL:?Set the application database URL}
@@ -22,6 +22,10 @@ x-server: &server
     APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Almaty}
     APPEAL_STALE_HOURS: ${APPEAL_STALE_HOURS:-72}
     GROQ_AI_ENABLED: ${GROQ_AI_ENABLED:-false}
+    ANONYMOUS_DATA_KEY: ${ANONYMOUS_DATA_KEY:-}
+    ONEC_MODE: ${ONEC_MODE:-}
+    ONEC_API_URL: ${ONEC_API_URL:-}
+    ONEC_API_TOKEN: ${ONEC_API_TOKEN:-}
     GROQ_API_KEY: ${GROQ_API_KEY:-}
     GROQ_ORG_HOURLY_LIMIT: ${GROQ_ORG_HOURLY_LIMIT:-240}
     GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
@@ -37,6 +41,9 @@ services:
     command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
   api:
     <<: *server
+    environment:
+      <<: *server_env
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-1}"
     depends_on:
       migrate:
         condition: service_completed_successfully

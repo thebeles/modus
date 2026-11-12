@@ -68,11 +68,11 @@ test('opens the oldest unread notification beyond the first fifty', async ({ pag
   await expect(old).toHaveCount(0);
 });
 
-const profileNames = { employee: 'Сотрудник', handler: 'Обработчик', manager: 'Руководитель', admin: 'Администратор', other: 'Другой сотрудник' } as const;
+const profileNames = { employee: 'Сотрудник', handler: 'Обработчик', manager: 'Руководитель', admin: 'Администратор', other: 'Другой сотрудник', 'sensitive-handler': 'Спецочередь' } as const;
 
 async function login(page: Page, role: keyof typeof profileNames) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: profileNames[role], exact: true }).click();
+  await page.getByRole('button', { name: profileNames[role], exact: true }).press('Enter');
   await expect(page.getByRole('button', { name: 'Выйти из аккаунта', exact: true })).toBeVisible();
 }
 
@@ -616,4 +616,85 @@ test('a draft survives reload and reuses the submission after a lost response', 
   await expect(page).toHaveURL(new RegExp('/appeals/' + createdId + '$'));
   const rows = await get<{ total: number }>(page, '/appeals?own=true&q=' + encodeURIComponent(title));
   expect(rows.total).toBe(1);
+});
+
+test('guest submits and tracks a private appeal without signing in', async ({ page, browser }) => {
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Отправить анонимно' }).click();
+  await expect(page.getByRole('heading', { name: 'Анонимное обращение' })).toBeVisible();
+  const title = 'Анонимный канал ' + randomUUID().slice(0, 8);
+  await page.getByLabel('Заголовок').fill(title);
+  await page.getByLabel('Сообщение', { exact: true }).fill('Описание для закрытого диалога.');
+  await page.getByLabel('Вложение').setInputFiles({ name: 'evidence.txt', mimeType: 'text/plain', buffer: Buffer.from('Текстовое вложение.') });
+  await page.getByRole('button', { name: 'Отправить обращение' }).click();
+  const secret = await page.getByLabel('Токен доступа').inputValue();
+  expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const handler = await session(browser, 'sensitive-handler');
+  await handler.page.getByRole('textbox', { name: 'Поиск по обращениям' }).fill(title);
+  await handler.page.getByRole('link', { name: new RegExp(title) }).click();
+  await expect(handler.page.getByText('Описание для закрытого диалога.', { exact: true })).toBeVisible();
+  await handler.page.getByLabel('Сообщение в общий диалог').fill('Ответ из специальной очереди.');
+  await handler.page.getByRole('button', { name: 'Отправить сообщение' }).click();
+  await expect(handler.page.getByText('Ответ из специальной очереди.', { exact: true })).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: 'Проверить статус' }).click();
+  await page.getByLabel('Токен доступа').fill(secret);
+  await page.getByRole('button', { name: 'Проверить статус' }).last().click();
+  await expect(page.getByText('Ответ из специальной очереди.', { exact: true })).toBeVisible();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Скачать текстовое вложение' }).click();
+  expect((await download).suggestedFilename()).toBe('attachment.txt');
+  await handler.close();
+});
+
+test('an employee discusses a proposal and the owner converts it to a draft', async ({ page, browser }) => {
+  await login(page, 'employee');
+  await page.getByRole('link', { name: 'Предложения', exact: true }).click();
+  const title = 'Идея команды ' + randomUUID().slice(0, 8);
+  await page.getByRole('button', { name: 'Новое предложение' }).click();
+  const createDialog = page.getByRole('dialog');
+  await createDialog.getByLabel('Название').fill(title);
+  await createDialog.getByLabel('Что предлагаете изменить').fill('Сделать форму заказа короче.');
+  await createDialog.getByRole('button', { name: 'Опубликовать' }).click();
+  const proposal = page.locator('section').filter({ has: page.getByRole('heading', { name: title }) });
+  await proposal.getByRole('button', { name: /Голосовать/ }).click();
+  await expect(proposal.getByRole('button', { name: /Убрать голос · 1/ })).toBeVisible();
+  await proposal.getByRole('button', { name: /Обсуждение/ }).click();
+  await page.getByRole('dialog').getByLabel('Комментарий').fill('Готов помочь с пилотной проверкой.');
+  await page.getByRole('dialog').getByRole('button', { name: 'Добавить комментарий' }).click();
+  await expect(page.getByText('Готов помочь с пилотной проверкой.', { exact: true })).toBeVisible();
+  const handler = await session(browser, 'handler');
+  await handler.page.getByRole('link', { name: 'Предложения', exact: true }).click();
+  const row = handler.page.locator('section').filter({ has: handler.page.getByRole('heading', { name: title }) });
+  await row.getByRole('button', { name: 'Создать инициативу' }).click();
+  const conversion = handler.page.getByRole('dialog');
+  await conversion.getByLabel('Цель изменения').fill('Сократить время заполнения заказа.');
+  await conversion.getByLabel('Область изменения').fill('Закупки');
+  await conversion.getByRole('button', { name: 'Создать черновик' }).click();
+  await expect(handler.page.getByRole('heading', { name: title })).toBeVisible();
+  await expect(handler.page.getByText('Проверка результата', { exact: true })).toBeVisible();
+  await handler.close();
+});
+
+test('staff can import feedback and send a request through the labeled 1C simulator', async ({ page }) => {
+  await login(page, 'handler');
+  await page.getByRole('link', { name: 'Клиентские отзывы' }).click();
+  const title = 'Опоздание доставки ' + randomUUID().slice(0, 8);
+  await page.getByRole('button', { name: 'Импортировать CSV' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Файл CSV').setInputFiles({ name: 'reviews.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('date,title,body\n2026-11-10,' + title + ',Курьер задержал доставку.') });
+  await dialog.getByRole('button', { name: 'Импортировать', exact: true }).click();
+  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await expect(page.getByText(/Добавлено: 1/)).toBeVisible();
+  await page.getByRole('link', { name: 'Интеграция 1С' }).click();
+  await expect(page.getByText('Демонстрационный симулятор 1С')).toBeVisible();
+  await page.getByRole('button', { name: 'Новая заявка' }).click();
+  await page.getByRole('dialog').getByLabel('Товар').selectOption('DEMO-001');
+  await page.getByRole('dialog').getByLabel('Количество').fill('2');
+  await page.getByRole('dialog').getByRole('button', { name: 'Отправить заявку' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.getByText('DEMO-001 · 2 шт.', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Журнал операций' }).click();
+  await expect(page.getByText('Отправка заявки', { exact: true }).first()).toBeVisible();
 });

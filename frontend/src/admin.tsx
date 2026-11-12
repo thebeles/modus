@@ -19,7 +19,7 @@ type Row = { id: string; name?: string; email?: string; role?: string; departmen
 const permissionLabels: Record<string, string> = {
   ROUTING_COORDINATOR: 'Переназначение обращений', PROBLEM_OWNER: 'Исследование проблем', IMPROVEMENT_OWNER: 'Управление улучшениями',
   IMPROVEMENT_APPROVER: 'Согласование улучшений', RESULT_VERIFIER: 'Проверка результата', PUBLICATION_APPROVER: 'Согласование публикаций',
-  SENSITIVE_CASE_HANDLER: 'Обработка чувствительных обращений', EXPORT_DATA: 'Выгрузка данных',
+  SENSITIVE_CASE_HANDLER: 'Обработка чувствительных обращений', EXPORT_DATA: 'Выгрузка данных', ONEC_OPERATOR: 'Обмен с 1С',
 };
 const routeReasons: Record<string, string> = { MATCH: 'Найдено подходящее правило', SPECIAL_ROUTE: 'Специальная очередь',
   NO_RULE: 'Правило отсутствует, резервная очередь', RULE_CONFLICT: 'Совпали приоритеты правил, резервная очередь',

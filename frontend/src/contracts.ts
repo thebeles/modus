@@ -9,7 +9,7 @@ export const actionStatuses = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCEL
 export const outcomes = ['VERIFIED', 'PARTIAL', 'NOT_ACHIEVED', 'INCONCLUSIVE'] as const;
 export const relations = ['SIMILAR_TOPIC', 'POSSIBLE_DUPLICATE', 'CONFIRMED_SAME_ISSUE', 'RELATED_CONTEXT'] as const;
 export const roles = ['EMPLOYEE', 'HANDLER', 'MANAGER', 'ADMIN'] as const;
-export const permissions = ['ROUTING_COORDINATOR', 'PROBLEM_OWNER', 'IMPROVEMENT_OWNER', 'IMPROVEMENT_APPROVER', 'RESULT_VERIFIER', 'PUBLICATION_APPROVER', 'SENSITIVE_CASE_HANDLER', 'EXPORT_DATA'] as const;
+export const permissions = ['ROUTING_COORDINATOR', 'PROBLEM_OWNER', 'IMPROVEMENT_OWNER', 'IMPROVEMENT_APPROVER', 'RESULT_VERIFIER', 'PUBLICATION_APPROVER', 'SENSITIVE_CASE_HANDLER', 'EXPORT_DATA', 'ONEC_OPERATOR'] as const;
 export const feedbackChoices = ['YES', 'PARTLY', 'NO', 'CANNOT_ASSESS'] as const;
 
 export const labels: Record<string, string> = {
@@ -43,6 +43,7 @@ export const labels: Record<string, string> = {
   MEASUREMENT_PLAN: 'План проверки обновлён', VERIFICATION: 'Результат проверен',
   FEEDBACK_INVITED: 'Оцените результат изменения', FEEDBACK_SUBMITTED: 'Получена обратная связь',
   CLARIFICATION_REMINDER: 'Напоминание об уточнении', WITHDRAWAL_REQUEST: 'Запрошен отзыв', SOURCE_LINKED: 'Добавлен источник',
+  SOURCE_UNLINKED: 'Источник отвязан', ONEC_REQUEST_CREATED: 'Создана заявка 1С',
   VERIFICATION_SUPERSEDED: 'Результат отправлен на доработку', EXPORT: 'Выполнена выгрузка',
 };
 

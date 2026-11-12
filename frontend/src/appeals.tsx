@@ -3,13 +3,16 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
   Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
-import { useEffect, useRef, useState } from 'react';
+import { lazy, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
+import { StaffAnonymousThread } from './anonymous';
+import { AppealTriage } from './appeal-triage';
+
 import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';
 
 const kinds = [
@@ -331,6 +334,8 @@ export function LinkCards({ items, onChanged }: { items: LinkRow[]; onChanged?: 
   </Modal>}</>;
 }
 
+const LinkedReviews = lazy(() => import('./feedback-channels').then(module => ({ default: module.LinkedReviews })));
+
 function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void }) {
   const { user } = useSession();
   const [show, setShow] = useState(false);
@@ -410,6 +415,7 @@ function AppealDetailContent() {
   onSuccess: (item, { data }) => {
     client.setQueryData(['appeal', id], item);
     void client.invalidateQueries({ queryKey: ['appeals'] });
+    if (item.authorId === null) void client.invalidateQueries({ queryKey: ['anonymous-thread', id] });
     if (data.action === 'COMMENT') {
       const sent = data.internal ? 'internal' : 'external';
       setDrafts(previous => previous[sent] === data.text ? { ...previous, [sent]: '' } : previous);
@@ -479,9 +485,10 @@ function AppealDetailContent() {
       <Section title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
         <button className="button primary" disabled={saving} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
         {staff && <div className="tab-strip compact-tabs"><button aria-pressed={!notes} onClick={() => setNotes(false)}>Переписка с автором</button><button aria-pressed={notes} onClick={() => setNotes(true)}>Служебные заметки</button></div>}
+        {!notes && record.authorId === null && <StaffAnonymousThread appealId={record.id} />}
         {record.comments.filter(item => item.internal === notes).map(item => <article className={`comment ${item.internal ? 'internal' : ''}`} key={item.id}><header><strong>{item.author.name}</strong><small>{date(item.createdAt, true)}</small></header>
           {item.kind !== 'COMMENT' && <small>{label(item.kind)}</small>}<p className="preserve">{item.body}</p></article>)}
-        {!record.comments.some(item => item.internal === notes) && <Empty title={notes ? 'Служебных заметок пока нет' : 'Сообщений пока нет'} />}
+        {(notes || record.authorId !== null) && !record.comments.some(item => item.internal === notes) && <Empty title={notes ? 'Служебных заметок пока нет' : 'Сообщений пока нет'} />}
         {can('COMMENT') && <form className="form-stack" onSubmit={event => { event.preventDefault(); setNotice(''); update.mutate({ data: { action: 'COMMENT', text: drafts[channel], internal: notes } }); }}>
           <Field label={notes ? 'Заметка только для обработчиков' : 'Сообщение в общий диалог'}
             hint={notes ? 'Автор обращения не увидит эту заметку.' : awaitingAnswer ? 'Чтобы возобновить обработку обращения, нажмите «Ответить на уточнение».' : staff ? 'Автор обращения увидит это сообщение.' : undefined}>
@@ -491,6 +498,9 @@ function AppealDetailContent() {
         </form>}
       </Section>
       {staff && record.visibility === 'NORMAL_INTERNAL' && <RelatedAppeals record={record} reload={() => void query.refetch()} />}
+      {staff && record.visibility === 'NORMAL_INTERNAL' && can('EDIT') && <AppealTriage record={record} />}
+      {staff && record.visibility === 'NORMAL_INTERNAL' && record.departmentId && record.departmentId === user.departmentId &&
+        record.isSynthetic === user.demo && <LinkedReviews target="appeal" targetId={record.id} />}
       {timing && <Section title="Время рассмотрения" icon={<Clock3 size={18} />}>
         <dl className="facts"><div><dt>Активное время</dt><dd>{Math.floor(timing.activeSeconds / 60)} мин</dd></div>
           <div><dt>Ожидание автора</dt><dd>{Math.floor(timing.waitingSeconds / 60)} мин</dd></div></dl>

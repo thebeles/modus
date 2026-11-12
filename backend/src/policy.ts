@@ -30,7 +30,7 @@ export class Policy {
     if (this.has(user, 'SENSITIVE_CASE_HANDLER')) {
       access.push({ visibility: { in: ['RESTRICTED', 'SPECIAL'] }, OR: membership });
     }
-    return { OR: access };
+    return { OR: access, AND: [{ OR: [{ authorId: { not: null } }, { isSynthetic: user.demo }] }] };
   }
 
   appeals(user: Principal): Prisma.AppealWhereInput {
@@ -45,7 +45,7 @@ export class Policy {
 
   async handles(tx: Tx, user: Principal, id: string) {
     return !!await tx.appeal.findFirst({
-      where: { AND: [{ id, authorId: { not: user.id } }, this.staffAppeals(user, true)] }, select: { id: true },
+      where: { AND: [{ id, OR: [{ authorId: null }, { authorId: { not: user.id } }] }, this.staffAppeals(user, true)] }, select: { id: true },
     });
   }
 

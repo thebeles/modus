@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { anonymousStaffMessage } from './anonymous';
 import { Appeal, OutboxJob, PrismaClient } from '@prisma/client';
 import { atomic, audit, notify, Tx } from './common';
 import { LocalStorage, purgeUploads } from './files';
@@ -107,6 +108,12 @@ export async function deadlines(client: PrismaClient, now = new Date()) {
         const href = `/appeals/${item.id}`;
         if (item.status === 'WAITING_AUTHOR' && item.waitingSince && item.waitingSince <= waitingCutoff) {
           const key = clarificationKey(item.id, item.waitingSince);
+          if (item.authorId === null) {
+            const inserted = await tx.auditEvent.createMany({ data: { id: key, entity: 'appeal', entityId: item.id,
+              action: 'CLARIFICATION_REMINDER', authorVisible: true, origin: 'SYSTEM' }, skipDuplicates: true });
+            if (inserted.count) await anonymousStaffMessage(tx, item.id, 'Служба обработки ожидает вашего ответа на запрос уточнения.', 'REMINDER');
+            return;
+          }
           const inserted = await tx.outboxJob.createMany({ data: { key, userId: item.authorId, kind: 'CLARIFICATION_REMINDER', href }, skipDuplicates: true });
           if (inserted.count) await audit(tx, 'appeal', item.id, 'CLARIFICATION_REMINDER', undefined, true);
           return;
@@ -136,7 +143,7 @@ export async function retryRouting(client: PrismaClient, now = new Date()) {
     await atomic(client, async tx => {
       const item = await tx.appeal.findFirst({ where: { id, queueId: null, routingRetryAt: { lte: now } } });
       if (!item || !activeAppeal(item.status)) return;
-      const route = await routing.find(tx, { ...item, authorId: item.authorId });
+      const route = await routing.find(tx, { ...item, authorId: item.authorId, demo: item.authorId === null ? item.isSynthetic : undefined });
       if (route.queueId === null) {
         const seconds = Math.min(300, 5 * 2 ** Math.min(item.routingAttempts, 6));
         await tx.appeal.update({ where: { id }, data: {

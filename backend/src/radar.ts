@@ -92,17 +92,31 @@ export class Radar {
     const matches: Prisma.AppealWhereInput[] = [];
     if (base.categoryId) matches.push({ categoryId: base.categoryId });
     if (base.processId) matches.push({ processId: base.processId });
-    const words = [...new Set((base.title.toLowerCase().match(/[а-яё]{6,}/g) ?? []))].slice(0, 8);
-    matches.push(...words.map(word => ({ title: { contains: word, mode: 'insensitive' as const } })));
+    const words = [...new Set((base.title.toLowerCase().match(/\p{L}{5,}/gu) ?? []))].slice(0, 8);
+    matches.push(...words.flatMap(word => [
+      { title: { contains: word, mode: 'insensitive' as const } },
+      { description: { contains: word, mode: 'insensitive' as const } },
+    ]));
     const records = await this.db.appeal.findMany({
-      where: { AND: [this.policy.staffAppeals(user), { visibility: 'NORMAL_INTERNAL', id: { not: item }, OR: matches,
+      where: { AND: [this.policy.staffAppeals(user), { visibility: 'NORMAL_INTERNAL', isSynthetic: base.isSynthetic, id: { not: item }, OR: matches,
         linksFrom: { none: { toId: item, state: 'REJECTED' } }, linksTo: { none: { fromId: item, state: 'REJECTED' } } }] },
-      orderBy: { createdAt: 'desc' }, take: 8, select: { id: true, number: true, title: true, categoryId: true, processId: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: 60,
+      select: { id: true, number: true, title: true, description: true, categoryId: true, processId: true,
+        improvements: { where: { improvement: { visibility: 'NORMAL_INTERNAL', implementedAt: { lt: base.createdAt },
+          AND: [this.policy.improvements(user)] } }, select: { improvementId: true }, take: 1 } },
     });
-    return records.map(row => ({ id: row.id, number: row.number, title: row.title, explanation:
-      [row.categoryId && row.categoryId === base.categoryId ? 'Совпадает категория' : '',
-        row.processId && row.processId === base.processId ? 'Совпадает процесс' : '',
-        words.some(word => row.title.toLowerCase().includes(word)) ? 'Общие слова в заголовке' : ''].filter(Boolean).join('. ') }));
+    return records.map(row => {
+      const category = !!row.categoryId && row.categoryId === base.categoryId;
+      const process = !!row.processId && row.processId === base.processId;
+      const titleMatches = words.filter(word => row.title.toLowerCase().includes(word)).length;
+      const bodyMatches = words.filter(word => row.description.toLowerCase().includes(word)).length;
+      const afterImplementation = !!row.improvements.length;
+      return { id: row.id, number: row.number, title: row.title, afterImplementation,
+        rank: Number(category) * 2 + Number(process) * 2 + titleMatches * 3 + bodyMatches + Number(afterImplementation),
+        explanation: [category ? 'Совпадает категория' : '', process ? 'Совпадает процесс' : '',
+          titleMatches || bodyMatches ? 'Общие слова в описании или заголовке' : '',
+          afterImplementation ? 'Сходное обращение связано с более ранним внедрением' : ''].filter(Boolean).join('. ') };
+    }).sort((a, b) => b.rank - a.rank).slice(0, 8).map(({ rank: _rank, ...row }) => row);
   }
 
   private analyticsScope(user: Principal, filters: z.output<typeof appealListInput>, now: Date) {

@@ -2,12 +2,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
   GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { label } from './contracts';
 import { api, ApiError, queryString, type Page, type Session } from './api';
 import { SessionContext, useSession } from './session';
 import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading, Pagination } from './ui';
 import { AppealDetail, AppealList, Home, NewAppeal } from './appeals';
+import { AnonymousPage } from './anonymous';
+const ProposalsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ProposalsPage })));
+const ReviewsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ReviewsPage })));
+const OneCPage = lazy(() => import('./one-c').then(module => ({ default: module.OneCPage })));
 const CaseList = lazy(() => import('./cases').then(module => ({ default: module.CaseList })));
 const CreateCase = lazy(() => import('./cases').then(module => ({ default: module.CreateCase })));
 const ImprovementDetail = lazy(() => import('./cases').then(module => ({ default: module.ImprovementDetail })));
@@ -59,6 +63,7 @@ function Login() {
         <ErrorBox error={login.error} />
         <button className="button primary login-submit" disabled={login.isPending}>{login.isPending ? 'Входим…' : 'Войти'} <ArrowRight size={20} aria-hidden="true" /></button>
       </form>
+      <a className="button secondary login-submit" href="/anonymous">Отправить анонимно</a>
       {demo.data?.demoMode && <section className="demo-box" aria-labelledby="demo-heading">
         <h2 id="demo-heading" className="demo-heading">Демонстрационный вход</h2>
         <div className="demo-options">
@@ -80,11 +85,17 @@ function Layout() {
   const logout = useMutation({ mutationFn: () => api('/auth/logout', { method: 'POST' }),
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
   const nav = navigation[user.role];
+  const staff = user.role === 'HANDLER' || user.role === 'MANAGER';
+  const oneC = useQuery({ queryKey: ['one-c-capabilities'], queryFn: () => api<{ mode: string | null }>('/one-c/capabilities'),
+    enabled: staff && (user.demo || user.permissions.includes('ONEC_OPERATOR')) });
   function sideContent() {
     return <><div className="sidebar-brand"><Link to={landing[user.role]} onClick={() => setMobile(false)}><Brand /></Link></div>
       {user.role !== 'ADMIN' && <div className="sidebar-create"><Link className="button primary" to="/appeals/new" onClick={() => setMobile(false)}><Plus size={19} />Создать обращение</Link></div>}
       <nav className="nav-list" aria-label="Основная навигация"><div className="nav-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
         {nav.map(({ to, text, icon: Icon }) => <NavLink key={to} end={to === '/'} to={to} onClick={() => setMobile(false)}><Icon size={18} />{text}</NavLink>)}
+        {user.role !== 'ADMIN' && user.departmentId && <NavLink to="/proposals" onClick={() => setMobile(false)}><Layers3 size={18} />Предложения</NavLink>}
+        {staff && user.departmentId && <NavLink to="/customer-reviews" onClick={() => setMobile(false)}><Inbox size={18} />Клиентские отзывы</NavLink>}
+        {oneC.data?.mode && <NavLink to="/one-c" onClick={() => setMobile(false)}><Settings size={18} />Интеграция 1С</NavLink>}
         <NavLink to="/notifications" onClick={() => setMobile(false)}><Bell size={18} />Уведомления{notices.data?.unread ? <span className="nav-count">{notices.data.unread}</span> : null}</NavLink>
       </nav>
       <div className="sidebar-bottom"><Link to="/help" className="nav-help" onClick={() => setMobile(false)}><CircleHelp size={18} />Помощь</Link>
@@ -138,7 +149,7 @@ export function Notifications() {
 
 function Help() {
   return <><PageHeading title="Помощь" /><div className="surface detail-section"><h2>Как отправить обращение</h2><p>Выберите тип, опишите ситуацию и отправьте. Категорию и решение можно добавить, если они уже известны.</p>
-    <h2>Кто увидит обращение</h2><p>Автор и сотрудники с разрешением на обработку. Для чувствительных тем используйте ограниченный доступ или специальную очередь. Система сохраняет личность автора.</p>
+    <h2>Кто увидит обращение</h2><p>Автор и сотрудники с разрешением на обработку. Для чувствительных тем используйте ограниченный доступ или специальную очередь. Для подачи без учётной записи откройте <a href="/anonymous">анонимный канал</a>.</p>
     <h2>Как узнать результат</h2><p>Откройте карточку обращения или перейдите по ссылке из уведомления. Итог и обоснование появятся после рассмотрения.</p></div></>;
 }
 
@@ -153,8 +164,9 @@ function Unavailable() {
 }
 
 export function App() {
+  const location = useLocation();
   const client = useQueryClient();
-  const me = useQuery({ queryKey: ['session'], queryFn: async () => {
+  const me = useQuery({ queryKey: ['session'], enabled: !['/anonymous', '/anonymous/'].includes(location.pathname), queryFn: async () => {
     try { return await api<Session>('/auth/me'); } catch (error) { if (error instanceof ApiError && error.status === 401) return null; throw error; }
   } });
   useEffect(() => {
@@ -162,6 +174,7 @@ export function App() {
     window.addEventListener('modus-session-expired', expired);
     return () => window.removeEventListener('modus-session-expired', expired);
   }, [client]);
+  if (location.pathname === '/anonymous' || location.pathname === '/anonymous/') return <AnonymousPage />;
   if (me.isPending) return <main className="full-center"><Loading /></main>;
   if (me.error) return <main className="full-center"><ErrorBox error={me.error} retry={() => me.refetch()} /></main>;
   if (!me.data) return <Login />;
@@ -181,6 +194,9 @@ export function App() {
       <Route path="improvements" element={<Guard roles={staff}><CaseList kind="improvement" /></Guard>} />
       <Route path="improvements/new" element={<Guard roles={staff}><CreateCase kind="improvement" /></Guard>} />
       <Route path="improvements/:id" element={<Guard roles={staff}><ImprovementDetail /></Guard>} />
+      <Route path="proposals" element={<Guard roles={['EMPLOYEE', ...staff]}><ProposalsPage /></Guard>} />
+      <Route path="customer-reviews" element={<Guard roles={staff}><ReviewsPage /></Guard>} />
+      <Route path="one-c" element={<Guard roles={staff}><OneCPage /></Guard>} />
       <Route path="radar" element={<Guard roles={staff}><RadarPage /></Guard>} />
       <Route path="changes" element={<Changes />} /><Route path="changes/:id" element={<ChangeDetail />} />
       <Route path="feedback/:id" element={<FeedbackPage />} /><Route path="notifications" element={<Notifications />} />

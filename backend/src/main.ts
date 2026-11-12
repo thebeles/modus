@@ -13,6 +13,7 @@ import helmet from 'helmet';
 import { map } from 'rxjs';
 import { Admin, AdminController } from './admin';
 import { Ai, AiController, Groq } from './ai';
+import { AnonymousAppeals, AnonymousAppealsController } from './anonymous';
 import { Appeals, AppealsController } from './appeals';
 import { AuthController, AuthService, Public, SessionGuard } from './auth';
 import { Cases, CasesController } from './cases';
@@ -22,6 +23,9 @@ import { NotificationsController } from './notifications';
 import { Policy } from './policy';
 import { Publications, PublicationsController } from './publications';
 import { Radar, RadarController } from './radar';
+import { Proposals, ProposalsController } from './proposals';
+import { Reviews, ReviewsController } from './customer-reviews';
+import { OneC, OneCController } from './one-c';
 import { Routing } from './routing';
 
 @Controller('health')
@@ -77,8 +81,8 @@ class ResponseEnvelope implements NestInterceptor {
 
 @Module({
   controllers: [HealthController, AuthController, AppealsController, CasesController, RadarController,
-    PublicationsController, AdminController, NotificationsController, FileController, AiController],
-  providers: [Database, Policy, Routing, AuthService, Appeals, Cases, Radar, Publications, Admin, Files, LocalStorage, Ai, Groq,
+    PublicationsController, AdminController, NotificationsController, FileController, AiController, AnonymousAppealsController, ProposalsController, ReviewsController, OneCController],
+  providers: [Database, Policy, Routing, AuthService, Appeals, Cases, Radar, Publications, Admin, Files, LocalStorage, Ai, Groq, AnonymousAppeals, Proposals, Reviews, OneC,
     { provide: APP_GUARD, useClass: SessionGuard }],
 })
 export class AppModule {}
@@ -88,6 +92,8 @@ export async function createApp() {
   if (process.env.NODE_ENV === 'production' && !process.env.WEB_ORIGIN.startsWith('https://')) throw new Error('Production requires HTTPS');
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log'] });
   app.disable('x-powered-by');
+  const proxyHops = process.env.TRUST_PROXY_HOPS;
+  if (proxyHops && /^[1-3]$/.test(proxyHops)) app.set('trust proxy', Number(proxyHops));
   app.enableShutdownHooks();
   app.use(helmet({ contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false }));
   app.use(cookieParser());
@@ -96,12 +102,13 @@ export async function createApp() {
     if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     next();
   });
+  app.useBodyParser('json', { limit: '512kb' });
   app.enableCors({ origin: process.env.WEB_ORIGIN, credentials: true });
   app.setGlobalPrefix('api/v1');
   app.useGlobalFilters(new Errors());
   app.useGlobalInterceptors(new ResponseEnvelope());
   if (process.env.NODE_ENV !== 'production') {
-    const options = new DocumentBuilder().setTitle('До результата').setDescription('API обращений и улучшений. Изменяющие запросы требуют Origin и CSRF-токен.').setVersion('1.0').addCookieAuth('modus_session').build();
+    const options = new DocumentBuilder().setTitle('До результата').setDescription('API обращений и улучшений. Изменяющие запросы требуют Origin, запросы с сессией также требуют CSRF-токен.').setVersion('1.0').addCookieAuth('modus_session').build();
     const doc = SwaggerModule.createDocument(app, options);
     SwaggerModule.setup('api/v1/docs', app, doc, { jsonDocumentUrl: 'api/v1/openapi.json' });
   }

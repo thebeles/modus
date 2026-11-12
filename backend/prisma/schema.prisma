@@ -135,6 +135,8 @@ model OrganizationUnit {
   problems Problem[]
   improvements Improvement[]
   publications Publication[]
+  proposals Proposal[]
+  customerReviews CustomerReview[]
 }
 
 model User {
@@ -166,6 +168,11 @@ model User {
   feedback Feedback[]
   aiUsage AiUsage[]
   routing RoutingRule[]
+  proposals Proposal[]
+  proposalVotes ProposalVote[]
+  proposalComments ProposalComment[]
+  oneCRequests OneCRequest[]
+  oneCOperations OneCOperation[]
 }
 
 model Session {
@@ -259,8 +266,8 @@ enum EvidenceOrigin {
 model Appeal {
   id String @id @default(uuid())
   number String @unique
-  authorId String
-  author User @relation("Author", fields: [authorId], references: [id], onDelete: Restrict)
+  authorId String?
+  author User? @relation("Author", fields: [authorId], references: [id], onDelete: Restrict)
   departmentId String?
   department OrganizationUnit? @relation(fields: [departmentId], references: [id])
   assigneeId String?
@@ -328,6 +335,8 @@ model Appeal {
   @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_number_search_idx")
   workPeriods AppealWorkPeriod[]
   nextActions AppealNextAction[]
+  anonymousAccess AnonymousAccess?
+  customerReviews CustomerReviewAppeal[]
 }
 
 model AppealNextAction {
@@ -511,6 +520,9 @@ model Improvement {
   @@index([ownerId])
   @@index([problemId])
   attachments Attachment[]
+  proposal Proposal?
+  customerReviews CustomerReviewImprovement[]
+  oneCRequests OneCRequest[]
 }
 
 model ImprovementAppeal {
@@ -780,4 +792,121 @@ model AiSuggestion {
   expiresAt DateTime
   decidedAt DateTime?
   @@index([status, expiresAt])
+}
+model AnonymousAccess {
+  appealId String @id
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  tokenHash String @unique
+  messages AnonymousMessage[]
+}
+
+model AnonymousMessage {
+  id String @id @default(uuid())
+  appealId String
+  access AnonymousAccess @relation(fields: [appealId], references: [appealId], onDelete: Restrict)
+  side String
+  content String
+  createdAt DateTime @default(now())
+  @@index([appealId, createdAt, id])
+}
+
+model Proposal {
+  id String @id @default(uuid())
+  title String
+  description String
+  authorId String
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  departmentId String
+  department OrganizationUnit @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  isSynthetic Boolean
+  createdAt DateTime @default(now())
+  improvementId String? @unique
+  improvement Improvement? @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  votes ProposalVote[]
+  comments ProposalComment[]
+  @@index([departmentId, isSynthetic, createdAt])
+}
+
+model ProposalVote {
+  proposalId String
+  proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([proposalId, userId])
+}
+
+model ProposalComment {
+  id String @id @default(uuid())
+  proposalId String
+  proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+  authorId String
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  body String
+  createdAt DateTime @default(now())
+  @@index([proposalId, createdAt, id])
+}
+
+model CustomerReview {
+  id String @id @default(uuid())
+  departmentId String
+  department OrganizationUnit @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  isSynthetic Boolean
+  fingerprint String
+  title String
+  body String
+  category String
+  occurredAt DateTime
+  importedAt DateTime @default(now())
+  appeals CustomerReviewAppeal[]
+  improvements CustomerReviewImprovement[]
+  @@unique([departmentId, isSynthetic, fingerprint])
+  @@index([departmentId, isSynthetic, category])
+}
+
+model CustomerReviewAppeal {
+  reviewId String
+  review CustomerReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  appealId String
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  @@id([reviewId, appealId])
+}
+
+model CustomerReviewImprovement {
+  reviewId String
+  review CustomerReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  improvementId String
+  improvement Improvement @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  @@id([reviewId, improvementId])
+}
+
+model OneCRequest {
+  id String @id @default(uuid())
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  key String
+  improvementId String?
+  improvement Improvement? @relation(fields: [improvementId], references: [id], onDelete: Restrict)
+  mode String
+  sku String
+  quantity Int
+  externalId String?
+  status String @default("PENDING")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([userId, key])
+  @@unique([mode, externalId])
+  @@index([userId, mode, createdAt])
+  @@index([improvementId])
+}
+
+model OneCOperation {
+  id String @id @default(uuid())
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  mode String
+  action String
+  requestId String?
+  result String
+  createdAt DateTime @default(now())
+  @@index([userId, mode, createdAt])
 }

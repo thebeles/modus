@@ -7,6 +7,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { improvementStatuses, label, outcomes, problemStatuses } from './contracts';
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Effect, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
+import { LinkedReviews } from './feedback-channels';
+import { ImprovementOneC } from './one-c';
 import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
   PageHeading, Pagination, Section, TableRegion, Timeline, timestamp } from './ui';
 
@@ -184,16 +186,16 @@ function EffectFacts({ effect }: { effect: Effect }) {
   </dl>;
 }
 
-function PlanForm({ plan }: { plan: Plan | null }) {
+function PlanForm({ plan, proposedMetric }: { plan: Plan | null; proposedMetric?: string }) {
   const [method, setMethod] = useState(plan?.method ?? 'QUANTITATIVE');
   const [direction, setDirection] = useState(plan?.direction ?? 'DECREASE');
   return <><Field label="Метод проверки"><select name="method" value={method} onChange={event => setMethod(event.target.value)}><Options items={['QUANTITATIVE', 'QUALITATIVE', 'MIXED']} /></select></Field>
     {textBox('Гипотеза', 'hypothesis', true, plan?.hypothesis)}{textBox('Критерий успеха', 'criterion', true, plan?.criterion)}
-    {method !== 'QUALITATIVE' && <><div className="two-fields"><Field label="Показатель"><input name="metricName" defaultValue={plan?.metricName ?? ''} required /></Field>
-      <Field label="Единица измерения"><input name="unit" defaultValue={plan?.unit ?? ''} required /></Field></div>
+    {method !== 'QUALITATIVE' && <><div className="two-fields"><Field label="Показатель"><input name="metricName" defaultValue={proposedMetric?.slice(0, 500) ?? plan?.metricName ?? ''} required /></Field>
+      <Field label="Единица измерения"><input name="unit" defaultValue={proposedMetric ? '' : plan?.unit ?? ''} required /></Field></div>
       <div className="two-fields"><Field label="Направление"><select name="direction" value={direction} onChange={event => setDirection(event.target.value)}><Options items={['DECREASE', 'INCREASE', 'TARGET', 'RANGE']} /></select></Field>
-        <Field label={direction === 'RANGE' ? 'Нижняя граница' : 'Целевое значение'}><input name="targetValue" type="number" step="any" defaultValue={plan?.targetValue ?? ''} required /></Field></div>
-       {direction === 'RANGE' && <Field label="Верхняя граница"><input name="targetMaximum" type="number" step="any" defaultValue={plan?.targetMaximum ?? ''} required /></Field>}</>}
+        <Field label={direction === 'RANGE' ? 'Нижняя граница' : 'Целевое значение'}><input name="targetValue" type="number" step="any" defaultValue={proposedMetric ? '' : plan?.targetValue ?? ''} required /></Field></div>
+       {direction === 'RANGE' && <Field label="Верхняя граница"><input name="targetMaximum" type="number" step="any" defaultValue={proposedMetric ? '' : plan?.targetMaximum ?? ''} required /></Field>}</>}
     {method !== 'QUANTITATIVE' && textBox('Протокол качественной проверки', 'protocol', true, plan?.protocol)}
     <fieldset><legend>Сопоставимость наблюдений</legend>
       <div className="two-fields">
@@ -293,8 +295,8 @@ export function ImprovementDetail() {
   const planEditable = record.canEdit && ['DRAFT', 'DEFERRED'].includes(record.status);
   const plan = record.plan;
   const pendingAmendment = record.amendments?.find(row => !row.resolvedAt);
-  const addPlan = () => edit.open({ title: plan ? 'Изменить план проверки' : 'Добавить план проверки', path: path + '/measurement-plan',
-    fields: <PlanForm plan={plan} />, body: data => ({ method: field(data, 'method'), hypothesis: field(data, 'hypothesis'), criterion: field(data, 'criterion'),
+  const addPlan = (proposedMetric?: string) => edit.open({ title: plan ? 'Изменить план проверки' : 'Добавить план проверки', path: path + '/measurement-plan',
+    fields: <PlanForm plan={plan} proposedMetric={proposedMetric} />, body: data => ({ method: field(data, 'method'), hypothesis: field(data, 'hypothesis'), criterion: field(data, 'criterion'),
       metricName: optional(data, 'metricName'), unit: optional(data, 'unit'), direction: optional(data, 'direction'), targetValue: numeric(data, 'targetValue'), targetMaximum: numeric(data, 'targetMaximum'), protocol: optional(data, 'protocol'),
       minimumSampleSize: numeric(data, 'minimumSampleSize'), requireSameSource: data.has('requireSameSource'),
       maxPeriodDifferencePercent: numeric(data, 'maxPeriodDifferencePercent') }) });
@@ -332,9 +334,14 @@ export function ImprovementDetail() {
               processId: optional(data, 'processId') ?? null, risks: optional(data, 'risks') }),
           })}>Редактировать</button>}>
             <h3>Что хотим изменить</h3><p className="preserve">{record.goal}</p>
-            <h3>Основание</h3><p className="preserve">{record.rationale}</p>{record.risks && <><h3>Риски</h3><p className="preserve">{record.risks}</p></>}
+            <h3>Основание</h3>{record.proposal && <p>Предложение сотрудников · {record.proposal.title}</p>}
+            <p className="preserve">{record.rationale}</p>{record.risks && <><h3>Риски</h3><p className="preserve">{record.risks}</p></>}
             {record.implementationNotes && <><h3>Что внедрили</h3><p className="preserve">{record.implementationNotes}</p><small>{date(record.implementedAt)}</small></>}
           </Section>
+          {record.visibility === 'NORMAL_INTERNAL' && record.isSynthetic === user.demo && <>
+            {record.departmentId && record.departmentId === user.departmentId && <LinkedReviews target="improvement" targetId={record.id} />}
+            <ImprovementOneC improvementId={record.id} />
+          </>}
           <Section title="Решения согласования"><div className="inner-stack">{record.approvals.length ? record.approvals.map(item => <article className="comment" key={item.id}>
             <Chip value={item.status} /><p>{item.reason}</p><small>{date(item.createdAt)}</small></article>) : <Empty title="Решений пока нет" />}</div></Section>
         </Tabs.Content>
@@ -349,7 +356,7 @@ export function ImprovementDetail() {
               {record.canEdit && <button className="button subtle" onClick={() => addTask(item)}>Изменить</button>}
             </article>) : <Empty title="Задачи ещё не добавлены" />}
           </Section>
-          <Section title="План проверки эффекта" icon={<Activity size={18} />} action={planEditable && <button className="button secondary" onClick={addPlan}>{plan ? 'Изменить' : 'Добавить план'}</button>}>
+          <Section title="План проверки эффекта" icon={<Activity size={18} />} action={planEditable && <button className="button secondary" onClick={() => addPlan()}>{plan ? 'Изменить' : 'Добавить план'}</button>}>
             {plan ? <dl className="facts"><div><dt>Метод</dt><dd>{label(plan.method)}</dd></div><div><dt>Гипотеза</dt><dd>{plan.hypothesis}</dd></div><div><dt>Критерий успеха</dt><dd>{plan.criterion}</dd></div>
               {plan.metricName && <div><dt>Целевой показатель</dt><dd>{plan.metricName}: {plan.targetValue}{plan.direction === 'RANGE' ? ` — ${plan.targetMaximum}` : ''} {plan.unit}</dd></div>}{plan.protocol && <div><dt>Протокол</dt><dd>{plan.protocol}</dd></div>}
               {plan.minimumSampleSize != null && <div><dt>Минимальная выборка</dt><dd>{plan.minimumSampleSize}</dd></div>}
@@ -482,7 +489,10 @@ export function ImprovementDetail() {
     {aiOpen && <Modal title="Анализ Groq" description="Цель и основание будут отправлены внешнему сервису после вашего согласия." close={() => setAiOpen(false)}>
       <ErrorBox error={suggestion.error} />{suggestion.data ? <div className="inner-stack">{suggestion.data.truncated && <p>Часть текста была сокращена.</p>}
         {Object.entries({ hypotheses: 'Гипотезы', possibleActions: 'Возможные действия', risks: 'Риски', proposedMetrics: 'Показатели', limitations: 'Ограничения' }).map(([key, title]) =>
-          <div key={key}><h3>{title}</h3>{Array.isArray(suggestion.data.suggestion[key]) && (suggestion.data.suggestion[key] as string[]).map((item, index) => <p key={index}>{item}</p>)}</div>)}
+          <div key={key}><h3>{title}</h3>{Array.isArray(suggestion.data.suggestion[key]) && (suggestion.data.suggestion[key] as string[]).map((item, index) => <div key={index}><p>{item}</p>
+            {key === 'proposedMetrics' && planEditable && <button className="button subtle" onClick={() => {
+              setAiOpen(false); addPlan(item);
+            }}>Перенести в план проверки</button>}</div>)}</div>)}
         <AiDecision usageId={suggestion.data.usageId} onDecide={() => setAiOpen(false)} />
         </div> : <button className="button primary" disabled={suggestion.isPending} onClick={() => suggestion.mutate()}>{suggestion.isPending ? 'Получаем подсказку…' : 'Запросить анализ'}</button>}
     </Modal>}

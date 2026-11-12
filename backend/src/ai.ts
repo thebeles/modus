@@ -14,6 +14,11 @@ export const appealAssistanceSchema = z.strictObject({ title: z.string().trim().
   followUpQuestions: lines.max(2), rephrasedDescription: line });
 const similar = z.strictObject({ candidates: z.array(z.strictObject({ candidateId: id, relation: z.enum(['SIMILAR_TOPIC', 'POSSIBLE_DUPLICATE']),
   explanation: line, confidenceLabel: z.enum(['LOW', 'MEDIUM', 'HIGH']) })).max(8) });
+const triage = z.strictObject({
+  categoryId: id.nullable(), classificationReason: line, hypotheses: lines, possibleActions: lines, proposedMetrics: lines,
+  groups: z.array(z.strictObject({ title: line, evidence: line, candidateIds: z.array(id).min(1).max(8),
+    relation: z.enum(['SIMILAR_TOPIC', 'POSSIBLE_DUPLICATE', 'POSSIBLE_RECURRENCE']) })).max(5), needsValidation: z.literal(true),
+});
 const summary = z.strictObject({ summary: line, facts: lines, openQuestions: lines, sourceEventIds: z.array(id).max(15), suggestedNextStep: line });
 const analysis = z.strictObject({ hypotheses: lines, possibleActions: lines, risks: lines, proposedMetrics: lines, limitations: lines, needsValidation: z.literal(true) });
 const unavailable = () => new AppError('AI_UNAVAILABLE', 'Подсказка недоступна. Продолжите вручную.', 503);
@@ -22,6 +27,9 @@ const guidelines = 'Отвечай на русском языке. Рассма�
 const scopes = {
   'appeal-assist': 'Предложи заголовок, тип, не более двух уточняющих вопросов и нейтральную редакцию. Для категории используй только ID из списка либо null.',
   'similar-appeals': 'Предложи связи только для заданных идентификаторов кандидатов. Тематическое сходство не доказывает дублирование.',
+  'appeal-triage': 'Предложи категорию из переданного списка или null. Сгруппируй кандидатов относительно исходного обращения. ' +
+    'Используй только их ID, не повторяй кандидата в разных группах. Различай общую тему, возможный дубль и повтор проблемы. ' +
+    'Назови проверяемые гипотезы, возможные меры и KPI с формулой и единицей измерения, не выдумывай фактические значения.',
   'handler-summary': 'Сделай сводку только по предоставленным данным. Используй только предоставленные идентификаторы событий.',
   'improvement-analysis': 'Предложи гипотезы, действия, риски, показатели и ограничения проверки. needsValidation всегда true.',
 };
@@ -162,6 +170,21 @@ export class Ai {
         schema = appealAssistanceSchema;
         break;
       }
+      case 'appeal-triage': {
+        const item = parse(id, base.id);
+        if (!await this.policy.handles(this.db, user, item)) throw forbidden();
+        const record = await this.db.appeal.findFirst({
+          where: { id: item, visibility: 'NORMAL_INTERNAL' }, select: { title: true, description: true, categoryId: true, processId: true },
+        });
+        if (!record) throw missing();
+        const [candidates, categories] = await Promise.all([
+          this.radar.similarities(user, item),
+          this.db.category.findMany({ where: { sensitive: false }, select: { id: true, name: true }, take: 30, orderBy: { name: 'asc' } }),
+        ]);
+        context = { categories, candidates, ...record };
+        schema = triage;
+        break;
+      }
       case 'similar-appeals':
       case 'handler-summary': {
         if (!this.policy.isStaff(user)) throw forbidden();
@@ -210,6 +233,13 @@ export class Ai {
       if (feature === 'appeal-assist') {
         const categoryId = appealAssistanceSchema.parse(result).categoryId;
         if (categoryId && !ids('categories').has(categoryId)) throw unavailable();
+      }
+      if (feature === 'appeal-triage') {
+        const suggestion = triage.parse(result);
+        const candidates = ids('candidates');
+        const members = suggestion.groups.flatMap(group => group.candidateIds);
+        if ((suggestion.categoryId && !ids('categories').has(suggestion.categoryId)) ||
+            members.some(item => !candidates.has(item)) || new Set(members).size !== members.length) throw unavailable();
       }
       if (feature === 'similar-appeals') {
         const allowed = ids('candidates');

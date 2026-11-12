@@ -8,15 +8,16 @@ export function csrf() {
   return document.cookie.split('; ').find(item => item.startsWith('modus_csrf='))?.split('=')[1] ?? '';
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; key?: string; signal?: AbortSignal } = {}): Promise<T> {
-  const { method = 'GET', body, key, signal } = options;
+export async function api<T>(path: string, options: { method?: string; body?: unknown; key?: string; signal?: AbortSignal; anonymous?: boolean; appealToken?: string } = {}): Promise<T> {
+  const { method = 'GET', body, key, signal, anonymous, appealToken } = options;
   const headers = new Headers();
-  if (method !== 'GET') headers.set('X-CSRF-Token', csrf());
+  if (appealToken) headers.set('X-Appeal-Token', appealToken);
+  if (!anonymous && method !== 'GET') headers.set('X-CSRF-Token', csrf());
   if (key) headers.set('Idempotency-Key', key);
   if (body !== undefined && !(body instanceof FormData)) headers.set('Content-Type', 'application/json');
   let response: Response;
   try {
-    response = await fetch('/api/v1' + path, { method, headers, credentials: 'same-origin', signal: signal ?? AbortSignal.timeout(25000),
+    response = await fetch('/api/v1' + path, { method, headers, credentials: anonymous ? 'omit' : 'same-origin', signal: signal ?? AbortSignal.timeout(25000),
       body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body) });
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -24,7 +25,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   }
   const parsed = await response.json().catch(() => null);
   if (!response.ok || !parsed) {
-    if (response.status === 401 && !['/auth/login', '/auth/demo', '/auth/me'].includes(path)) window.dispatchEvent(new Event('modus-session-expired'));
+    if (!anonymous && response.status === 401 && !['/auth/login', '/auth/demo', '/auth/me'].includes(path)) window.dispatchEvent(new Event('modus-session-expired'));
     throw new ApiError(parsed?.error?.code ?? 'REQUEST_ERROR', parsed?.error?.message ?? 'Не удалось выполнить запрос.', response.status, parsed?.error?.details);
   }
   return parsed.data as T;
@@ -51,7 +52,7 @@ export function uploadAttachment(file: File) {
 }
 export type AppealRow = Reference & {
   type: string; status: string; priority: string; visibility: string; version: number; isSynthetic: boolean;
-  authorId: string; assigneeId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
+  authorId: string | null; assigneeId: string | null; departmentId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;
 };
 export type LinkRow = { id: string; version: number; from: Reference; to: Reference; relation: string; state: string; explanation: string; proposedBy: string };
@@ -79,12 +80,12 @@ export type Plan = { version: number; method: string; hypothesis: string; criter
   observations: { id: string; phase: string; value: number | null; source: string; sourceType: string; periodStart: string; periodEnd: string; sampleSize?: number; isSynthetic: boolean; evidence: Attachment[] }[] };
 export type Feedback = { id: string; choice?: string; comment?: string; submittedAt?: string; version: number };
 export type Improvement = CaseRow & {
-  rationale: string; goal: string; risks?: string; processId?: string; implementationNotes?: string; implementedAt?: string; version: number;
+  visibility: string; departmentId: string | null; rationale: string; goal: string; risks?: string; processId?: string; implementationNotes?: string; implementedAt?: string; version: number;
   eligibleReviewers: Entity[]; canRequestAmendment: boolean; canDecideAmendment: boolean;
   amendments: { id: string; reason: string; resolvedAt: string | null; approved: boolean | null; decision: string | null }[];
   verificationRevisions: { revision: number; reason: string; snapshot: { outcome: string; summary: string }; archivedAt: string }[];
   canManageSources: boolean; canEdit: boolean; canMeasure: boolean; canVerify: boolean; canInvite: boolean; canDraftPublication: boolean; canApprovePublication: boolean;
-  allowedActions: string[]; people: Entity[]; sources: Reference[]; problem: Reference | null; events: EventRow[]; plan: Plan | null;
+  allowedActions: string[]; people: Entity[]; sources: Reference[]; problem: Reference | null; proposal?: { id: string; title: string } | null; events: EventRow[]; plan: Plan | null;
   actions: { id: string; title: string; status: string; dueAt?: string; result?: string; owner: Entity; blocking: boolean; canUpdate: boolean }[];
   approvals: { id: string; reason: string; status: string; createdAt: string }[];
   verification: { outcome: string; summary: string; limitations: string; verifiedAt: string; isSynthetic: boolean; planVersion: number; revision?: number; measurementIds: string[]; effect?: Effect | null; evidence: Attachment[] } | null;

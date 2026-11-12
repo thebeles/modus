@@ -874,3 +874,4 @@ a.metric:hover { border-color: #bac6df; }
 .date-picker-actions .button { min-height: 30px; }
 
 :root .recharts-tooltip-cursor { fill: var(--soft); }
+.anonymous-card { width: min(100%, 42rem); }

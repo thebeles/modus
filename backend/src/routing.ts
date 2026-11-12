@@ -12,13 +12,14 @@ export function queueStaff(queueId: string): Prisma.UserWhereInput {
 }
 
 export async function notifyRoutingPending(tx: Tx, appeal: {
-  id: string; visibility: Visibility; departmentId: string | null; authorId: string;
+  id: string; visibility: Visibility; departmentId: string | null; authorId: string | null; isSynthetic: boolean;
 }) {
   const queue = { visibility: appeal.visibility };
   const recipients = await tx.user.findMany({
     where: {
       ...eligibleStaff(appeal.visibility),
-      id: { not: appeal.authorId },
+      id: { not: appeal.authorId ?? undefined },
+      ...(appeal.authorId === null ? { demo: appeal.isSynthetic } : {}),
       permissions: appeal.visibility === 'NORMAL_INTERNAL' ? { has: 'ROUTING_COORDINATOR' } :
         { hasEvery: ['ROUTING_COORDINATOR', 'SENSITIVE_CASE_HANDLER'] },
       OR: [
@@ -34,7 +35,7 @@ export async function notifyRoutingPending(tx: Tx, appeal: {
 
 @Injectable()
 export class Routing {
-  async find(tx: Tx, input: { categoryId?: string | null; departmentId?: string | null; processId?: string | null; visibility: Visibility; authorId?: string }) {
+  async find(tx: Tx, input: { categoryId?: string | null; departmentId?: string | null; processId?: string | null; visibility: Visibility; authorId?: string | null; demo?: boolean }) {
     const category = input.categoryId ? await tx.category.findUnique({ where: { id: input.categoryId } }) : null;
     if (input.categoryId && !category) throw invalid('Выбранная категория недоступна.');
     const visibility = category?.sensitive ? 'SPECIAL' : input.visibility;
@@ -56,7 +57,7 @@ export class Routing {
     const fallback = async (reason: string) => {
       const queue = await tx.workQueue.findFirst({
         where: { visibility, fallback: true, coordinatorId: input.authorId ? { not: input.authorId } : undefined,
-          coordinator: eligibleStaff(visibility) }, orderBy: { id: 'asc' },
+          coordinator: { ...eligibleStaff(visibility), demo: input.demo } }, orderBy: { id: 'asc' },
       });
       if (queue) return result(queue, null, reason);
       if (input.authorId) {

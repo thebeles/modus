@@ -12,7 +12,7 @@ export function AiDecision({ usageId, onDecide }: { usageId: string; onDecide: (
     onSuccess: onDecide,
   });
   return <><ErrorBox error={decision.error} /><div className="button-row">
-    <button className="button secondary" disabled={decision.isPending} onClick={() => decision.mutate('APPLIED')}>Отметить полезной</button>
+    <button className="button secondary" disabled={decision.isPending} onClick={() => decision.mutate('APPLIED')}>Подтвердить рекомендацию</button>
     <button className="button subtle" disabled={decision.isPending} onClick={() => decision.mutate('DISMISSED')}>Отклонить</button>
   </div></>;
 }

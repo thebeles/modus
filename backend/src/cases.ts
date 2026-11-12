@@ -11,7 +11,7 @@ import { improvementTransitions, problemTransitions } from './workflow';
 import { assessEffect } from './effect';
 
 const listInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), status: z.string().max(30).optional(), processId: id.optional() });
-const problemInput = z.strictObject({ title, symptoms: bodyText, hypothesis: bodyText.optional(), appealId: id.optional(), explanation: bodyText.optional() });
+const problemInput = z.strictObject({ title, symptoms: bodyText, hypothesis: bodyText.optional(), appealId: id.optional(), relatedAppealIds: z.array(id).max(8).default([]), explanation: bodyText.optional() });
 const improvementInput = z.strictObject({ title, rationale: bodyText, goal: bodyText, scope: shortText, risks: bodyText.optional(),
   processId: id.optional(), appealId: id.optional(), problemId: id.optional(), ownerId: id.optional() });
 const taskInput = z.strictObject({ expectedVersion, title, dueAt: dateTime.nullable().optional(), ownerId: id.optional(), blocking: z.boolean().default(true) });
@@ -139,15 +139,24 @@ export class Cases {
 
   async createProblem(user: Principal, raw: unknown) {
     if (!this.policy.has(user, 'PROBLEM_OWNER')) throw forbidden();
-    const { appealId, explanation, ...data } = parse(problemInput, raw);
+    const { appealId, relatedAppealIds, explanation, ...data } = parse(problemInput, raw);
     return atomic(this.db, async tx => {
       const source = appealId && await tx.appeal.findFirst({
         where: { AND: [{ id: appealId, ...restrictedSources }, this.policy.staffAppeals(user)] },
       });
       if (appealId && !source) throw missing();
+      const extraIds = [...new Set(relatedAppealIds)].filter(item => item !== appealId);
+      if (extraIds.length && !source) throw invalid('Укажите основное обращение для группы.');
+      const isSynthetic = user.demo || !!(source && source.isSynthetic);
+      if (extraIds.length !== await tx.appeal.count({ where: { AND: [
+        { id: { in: extraIds }, ...restrictedSources, ...(!isSynthetic ? { isSynthetic: false } : {}) },
+        this.policy.staffAppeals(user),
+      ] } })) throw missing();
       const record = await tx.problem.create({ data: { ...data, number: await allocate(tx, 'P'), ownerId: user.id,
-        departmentId: (source && source.departmentId) || user.departmentId, isSynthetic: user.demo || !!(source && source.isSynthetic),
-        ...(source ? { appeals: { create: { appealId: source.id, explanation: explanation ?? 'Источник наблюдения.' } } } : {}) } });
+        departmentId: (source && source.departmentId) || user.departmentId, isSynthetic,
+        ...(source ? { appeals: { create: [source.id, ...extraIds].map(appealId => ({
+          appealId, explanation: explanation ?? 'Источник наблюдения.',
+        })) } } : {}) } });
       await audit(tx, 'problem', record.id, 'CREATED', user.id);
       return { id: record.id };
     });
@@ -215,7 +224,7 @@ export class Cases {
     return this.db.$transaction(async tx => {
       const record = await this.improvement(tx, user, item);
       const manager = this.manages(user, record);
-      const [owner, actions, approvals, plan, verification, sources, problem, events, feedback, publications, attachments] = await Promise.all([
+      const [owner, actions, approvals, plan, verification, sources, problem, events, feedback, publications, attachments, proposal] = await Promise.all([
         tx.user.findUnique({ where: { id: record.ownerId }, select: { id: true, name: true } }),
         tx.actionItem.findMany({ where: { improvementId: item }, include: { owner: { select: { id: true, name: true } } }, orderBy: { id: 'asc' } }),
         tx.approvalDecision.findMany({ where: { improvementId: item }, orderBy: { createdAt: 'desc' } }),
@@ -227,6 +236,10 @@ export class Cases {
         manager ? tx.feedback.findMany({ where: { improvementId: item }, orderBy: { submittedAt: 'desc' } }) : [],
         manager || this.approvalScope(user, record, 'PUBLICATION_APPROVER') ? tx.publication.findMany({ where: { improvementId: item } }) : [],
         tx.attachment.findMany({ where: { improvementId: item, readyAt: { not: null }, purgeAt: null }, select: attachmentSummary }),
+        user.departmentId && record.isSynthetic === user.demo ? tx.proposal.findFirst({
+          where: { improvementId: item, departmentId: user.departmentId, isSynthetic: user.demo },
+          select: { id: true, title: true },
+        }) : null,
       ]);
       const people = manager ? await tx.user.findMany({ where: { active: true, departmentId: record.departmentId, role: { in: ['HANDLER', 'MANAGER'] } },
         select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [];
@@ -256,7 +269,7 @@ export class Cases {
       return { ...record, problemId: problem?.id ?? null, owner, actions: actions.map(task => ({ ...task, canUpdate: editable.has(record.status) && (manager || task.ownerId === user.id) })),
         approvals, plan: plan && { ...plan, observations: plan.observations.map(row => ({ ...row, evidence: evidence(row.evidenceIds) })) },
         verification: verification && { ...verification, evidence: evidence(verification.evidenceIds) },
-        sources, problem, events: safeEvents, feedback, publications, people,
+        sources, problem, proposal, events: safeEvents, feedback, publications, people,
         canManageSources: manager && !['REJECTED', 'CANCELED'].includes(record.status),
         amendments, verificationRevisions, eligibleReviewers,
         canRequestAmendment: manager && !!eligibleReviewers.length && !pendingAmendment,
@@ -275,10 +288,20 @@ export class Cases {
     return user.id;
   }
 
-  async createImprovement(user: Principal, raw: unknown) {
+  async createImprovement(user: Principal, raw: unknown, proposalId?: string) {
     if (!this.policy.has(user, 'IMPROVEMENT_OWNER')) throw forbidden();
-    const { appealId, problemId, ownerId, ...input } = parse(improvementInput, raw);
     return atomic(this.db, async tx => {
+      const proposal = proposalId ? await tx.proposal.findFirst({ where: { id: proposalId,
+        departmentId: user.departmentId ?? '', isSynthetic: user.demo } }) : null;
+      if (proposalId && !proposal) throw missing();
+      if (proposal?.improvementId) {
+        const where = { AND: [{ id: proposal.improvementId }, this.policy.improvements(user)] };
+        if (!await tx.improvement.count({ where })) throw invalidState('Предложение уже преобразовано в инициативу.');
+        return { id: proposal.improvementId };
+      }
+      const data = proposal ? { ...parse(improvementInput.pick({ goal: true, scope: true }), raw),
+        title: proposal.title, rationale: proposal.description } : parse(improvementInput, raw);
+      const { appealId, problemId, ownerId, ...input }: z.output<typeof improvementInput> = data;
       const source = appealId && await tx.appeal.findFirst({ where: { AND: [{ id: appealId, ...restrictedSources }, this.policy.staffAppeals(user)] } });
       if (appealId && !source) throw missing();
       const problem = problemId ? await this.problem(tx, user, problemId) : null;
@@ -288,7 +311,8 @@ export class Cases {
       const record = await tx.improvement.create({ data: { ...input, number: await allocate(tx, 'I'), ownerId: targetOwner,
         departmentId, problemId, isSynthetic: user.demo || !!((source && source.isSynthetic) || problem?.isSynthetic),
         ...(source ? { appeals: { create: { appealId: source.id, explanation: 'Основание улучшения.' } } } : {}) } });
-      const event = await audit(tx, 'improvement', record.id, 'CREATED', user.id);
+      if (proposal) await checked(tx.proposal.updateMany({ where: { id: proposal.id, improvementId: null }, data: { improvementId: record.id } }));
+      const event = await audit(tx, 'improvement', record.id, 'CREATED', user.id, false, proposal ? { proposalId: proposal.id } : undefined);
       if (targetOwner !== user.id) await notify(tx, event.id, [targetOwner], 'ASSIGNED', `/improvements/${record.id}`);
       return { id: record.id };
     });
@@ -590,10 +614,10 @@ export class Cases {
         ...(record.problemId ? [{ problems: { some: { problemId: record.problemId } } }] : []),
       ] }] }, select: { authorId: true }, distinct: ['authorId'] });
       const existing = await tx.feedback.findMany({ where: { improvementId: item }, select: { userId: true } });
-      const recipients = sources.filter(source => !existing.some(row => row.userId === source.authorId));
+      const recipients = sources.flatMap(({ authorId }) => authorId && !existing.some(row => row.userId === authorId) ? [authorId] : []);
       if (!recipients.length) throw invalid('Новых доступных авторов для приглашения нет.');
-      await tx.feedback.createMany({ data: recipients.map(row => ({ userId: row.authorId, improvementId: item })), skipDuplicates: true });
-      const invitations = await tx.feedback.findMany({ where: { improvementId: item, userId: { in: recipients.map(row => row.authorId) } } });
+      await tx.feedback.createMany({ data: recipients.map(userId => ({ userId, improvementId: item })), skipDuplicates: true });
+      const invitations = await tx.feedback.findMany({ where: { improvementId: item, userId: { in: recipients } } });
       await this.bump(tx, record);
       const event = await audit(tx, 'improvement', item, 'FEEDBACK_INVITED', user.id);
       for (const invitation of invitations) await notify(tx, event.id, [invitation.userId], 'FEEDBACK_INVITED', `/feedback/${invitation.id}`);
