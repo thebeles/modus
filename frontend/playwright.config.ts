@@ -11,12 +11,30 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: { baseURL, ...devices['Desktop Chrome'], trace: 'retain-on-failure', screenshot: 'only-on-failure' },
-  webServer: process.env.E2E_BASE_URL ? undefined : {
-    command: 'pnpm dev',
-    cwd: fileURLToPath(new URL('..', import.meta.url)),
-    url: baseURL + '/api/v1/health/ready',
-    timeout: 120000,
-    env: { DATABASE_URL: process.env.E2E_DATABASE_URL!, PORT: '4080', VITE_PORT: '4180', WEB_ORIGIN: baseURL,
-      MODUS_API_TARGET: 'http://127.0.0.1:4080', DEMO_MODE: 'true', GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e' },
-  },
+  webServer: process.env.E2E_BASE_URL ? undefined : [
+    {
+      name: 'API',
+      command: 'pnpm dev',
+      cwd: fileURLToPath(new URL('../backend/', import.meta.url)),
+      url: 'http://127.0.0.1:4080/api/v1/health/ready',
+      timeout: 120000,
+      env: { NODE_ENV: 'development', DATABASE_URL: process.env.E2E_DATABASE_URL!, PORT: '4080',
+        WEB_ORIGIN: baseURL, DEMO_MODE: 'true', COOKIE_SECURE: 'false', GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e' },
+    },
+    {
+      name: 'Worker',
+      command: 'pnpm worker',
+      cwd: fileURLToPath(new URL('../backend/', import.meta.url)),
+      wait: { stdout: /Worker started/ },
+      timeout: 120000,
+      env: { NODE_ENV: 'development', DATABASE_URL: process.env.E2E_DATABASE_URL!, GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e' },
+    },
+    {
+      name: 'Vite',
+      command: 'pnpm dev',
+      url: baseURL + '/api/v1/health/ready',
+      timeout: 120000,
+      env: { VITE_PORT: '4180', MODUS_API_TARGET: 'http://127.0.0.1:4080' },
+    },
+  ],
 });

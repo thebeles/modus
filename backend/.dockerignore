@@ -1,0 +1,12 @@
+node_modules
+dist
+.env*
+**/.env*
+.storage
+deploy
+docs
+README.md
+coverage
+playwright-report
+test-results
+*.log

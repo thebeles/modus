@@ -43,7 +43,7 @@ export interface FileStorage {
 
 @Injectable()
 export class LocalStorage implements FileStorage {
-  private directory() { return resolve('..', process.env.STORAGE_DIR || '.storage'); }
+  private directory() { return resolve(process.env.STORAGE_DIR || '.storage'); }
   private path(key: string) {
     if (!/^[a-f0-9-]{36}$/.test(key)) throw unavailable();
     return resolve(this.directory(), key);

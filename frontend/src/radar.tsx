@@ -5,7 +5,7 @@ import { Activity, ArrowRight, BookOpen, CheckCircle2, Clock3, Download, GitPull
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { feedbackChoices, label } from '@modus/api/contracts';
+import { feedbackChoices, label } from './contracts';
 import { api, type AppealRow, type CaseRow, type Catalog, type Change, type Feedback, type LinkRow, type Page, queryString } from './api';
 import { LinkCards } from './appeals';
 import { useSession } from './session';

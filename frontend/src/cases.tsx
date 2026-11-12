@@ -4,7 +4,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullRequest, Layers3, Plus, Search, Sparkles } from './icons';
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { improvementStatuses, label, outcomes, problemStatuses } from '@modus/api/contracts';
+import { improvementStatuses, label, outcomes, problemStatuses } from './contracts';
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,

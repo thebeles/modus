@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Plus, Settings, ShieldCheck } from './icons';
 import { useState } from 'react';
 import { NavLink, useParams } from 'react-router-dom';
-import { label, permissions, priorities, roles, visibilities } from '@modus/api/contracts';
+import { label, permissions, priorities, roles, visibilities } from './contracts';
 import { api } from './api';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options, PageHeading, Section, timestamp } from './ui';
 

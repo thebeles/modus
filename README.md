@@ -2,73 +2,55 @@
 
 Внутренний сервис обратной связи. Сотрудник подаёт обращение и получает ответ. Обработчики исследуют повторяющиеся сигналы, ведут инициативы, проверяют эффект и публикуют согласованные результаты.
 
+- [backend/](backend/README.md) — NestJS API, worker, Prisma, миграции и серверные тесты.
+- [frontend/](frontend/README.md) — React, Vite, Nginx и браузерные тесты.
+- [backend/deploy/](backend/deploy) — конфигурации Docker Compose.
+- [.github/workflows/](.github/workflows) — проверки GitHub Actions.
+
 ## Запуск в Docker
 
-Нужны Docker Engine и Docker Compose.
+Установите Docker Engine с Docker Compose и выполните из корня репозитория:
 
 ```sh
-docker compose up --build
+docker compose -f backend/deploy/docker-compose.yml up --build -d --wait
 ```
 
-- [Веб-приложение](http://localhost:5173)
-- [Проверка готовности API](http://localhost:4000/api/v1/health/ready)
-- [Swagger](http://localhost:4000/api/v1/docs)
+Compose запускает PostgreSQL, применяет миграции и загружает демоданные, затем запускает API, worker и Nginx. Имена проекта и томов прежние. На экране [веб-приложения](http://localhost:5173) можно выбрать демо-профиль. Для ручного входа используйте адрес профиля из [демосценария](backend/docs/DEMO_SCRIPT.md) и пароль новой локальной установки `Modus-Demo-2026!`. Для существующих аккаунтов действует пароль, заданный при создании.
 
-Compose запускает PostgreSQL, применяет миграции и загружает демоданные, затем запускает API, worker и Nginx. Каталог вложений и база сохраняются в отдельных томах. Порты опубликованы на loopback.
+[Готовность API](http://localhost:4000/api/v1/health/ready) · [Swagger](http://localhost:4000/api/v1/docs) · [Production и параметры запуска](backend/docs/OPERATIONS.md)
 
-Если обновляете уже работающий экземпляр под прежним именем проекта Compose, укажите его через `-p`, чтобы подключить существующие тома. Чтобы перейти на новое имя проекта, сначала перенесите данные в тома нового проекта.
-
-## Демо
-
-На экране входа выберите профиль. Для ручного входа в новой локальной установке пароль демо-аккаунтов по умолчанию — `Modus-Demo-2026!`. Для существующих аккаунтов действует пароль, заданный при их создании.
-
-| Профиль | Адрес |
-|---|---|
-| Сотрудник | `employee@demo.local` |
-| Обработчик | `handler@demo.local` |
-| Руководитель | `manager@demo.local` |
-| Администратор | `admin@demo.local` |
-| Другой сотрудник | `other-employee@demo.local` |
-| Обработчик специальной очереди | `sensitive-handler@demo.local` |
-
-Двадцать исходных обращений A-001…A-020 и дополнения `DEMO-*` синтетические. Цифры в радаре вычисляются из доступных записей базы. Демо-вход и демосид отключены при `NODE_ENV=production`. Сценарий показа описан в [DEMO_SCRIPT.md](backend/docs/DEMO_SCRIPT.md).
+Чтобы передать Compose настройки демостенда из `backend/.env`, добавьте `--env-file backend/.env` перед `-f`.
 
 ## Локальная разработка
 
-- [backend/](backend/README.md) — NestJS API, worker, Prisma, серверные тесты и контракт API.
-- [frontend/](frontend/README.md) — React, Vite, Nginx и браузерные тесты.
+Для каждого проекта нужны Node.js 24 и pnpm 11.25.0. Каждый проект устанавливает зависимости по своему lockfile.
 
-У каждого пакета свой `package.json`, TypeScript-конфиг и Dockerfile. Корневой pnpm workspace хранит общий lockfile и команды для всего приложения.
+### Backend
 
-Установите Node.js 24 и pnpm 11.25.0, например через Corepack. Скопируйте `.env.example` в `.env`. Запустите PostgreSQL через Compose либо укажите строку подключения к своему PostgreSQL 17.
+Запустите PostgreSQL командой `docker compose -f backend/deploy/docker-compose.yml up -d postgres` из корня или используйте свой PostgreSQL 17. В `backend/` скопируйте `.env.example` в `.env` и проверьте `DATABASE_URL`. В этой же директории выполните:
 
 ```sh
-docker compose up -d postgres
 pnpm install --frozen-lockfile
 pnpm db:migrate
 pnpm db:seed
 pnpm dev
 ```
 
-Команда `pnpm dev` запускает Vite на порту 5173, API на 4000 и worker. Если Compose уже запустил весь стек, освободите порты API и web перед локальным запуском.
+Запустите `pnpm worker` из `backend/` в отдельном терминале для фоновых задач.
 
-Для раздельной разработки запустите `pnpm dev:api` и `pnpm worker` из корня или `pnpm dev` и `pnpm worker` из `backend/`. Клиент можно запустить командой `pnpm dev` из `frontend/`. Vite передаёт API-запросы на `127.0.0.1:4000`, адрес можно изменить через `MODUS_API_TARGET`.
+### Frontend
+
+В `frontend/` скопируйте `.env.example` в `.env`, затем выполните:
 
 ```sh
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-Для интеграционных и браузерных проверок используйте отдельные базы. Подготовка и команды для PowerShell и POSIX описаны в [TEST_PLAN.md](backend/docs/TEST_PLAN.md).
+Vite слушает порт 5173 и проксирует `/api` на `http://127.0.0.1:4000`. При смене `VITE_PORT` обновите `WEB_ORIGIN` в backend. Адрес API задаёт `MODUS_API_TARGET`.
 
-## Настройки
+## Сборка и тесты
 
-- `WEB_ORIGIN` — точный origin интерфейса для проверки изменяющих запросов. В продуктивной среде требуется HTTPS.
-- `APP_TIMEZONE` — календарь сроков API, по умолчанию `Asia/Almaty`. В базе используются даты UTC.
-- `STORAGE_DIR` — закрытый каталог для вложений.
-- `GROQ_AI_ENABLED` и `GROQ_API_KEY` включают необязательные подсказки. Без ключа обращения, улучшения, радар и библиотека работают через обычные формы и поиск.
-- Для первого администратора вне деморежима предусмотрена команда `pnpm db:admin`. Подробнее в [OPERATIONS.md](backend/docs/OPERATIONS.md).
+В каждой директории приложения доступны `pnpm lint`, `pnpm typecheck`, `pnpm build` и `pnpm test`. В backend `pnpm test` запускает доменные тесты. Во frontend команда запускает Playwright. Подготовка тестовых баз, интеграционные и нагрузочные проверки описаны в [тест-плане](backend/docs/TEST_PLAN.md).
 
-[Документация](backend/docs/README.md) · [Статус требований](backend/docs/TRACEABILITY.md) · [План и результаты проверок](backend/docs/IMPLEMENTATION_PLAN.md)
+[Документация проекта](backend/docs/README.md)

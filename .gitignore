@@ -1,7 +1,9 @@
 node_modules/
 dist/
 .env
-.env.local
+.env.*
+!.env.example
+!.env.production.example
 .storage/
 playwright-report/
 test-results/

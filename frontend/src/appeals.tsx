@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
-import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from '@modus/api/contracts';
+import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';

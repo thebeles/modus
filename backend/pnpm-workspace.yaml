@@ -1,6 +1,3 @@
-packages:
-  - backend
-  - frontend
 packageExtensions:
   '@nestjs/platform-express@11.2.9':
     dependencies:

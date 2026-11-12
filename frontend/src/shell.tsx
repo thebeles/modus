@@ -3,7 +3,7 @@ import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
   GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
-import { label } from '@modus/api/contracts';
+import { label } from './contracts';
 import { api, ApiError, type Session } from './api';
 import { SessionContext, useSession } from './session';
 import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading } from './ui';

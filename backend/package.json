@@ -1,22 +1,20 @@
 {
   "name": "@modus/api",
   "private": true,
-  "exports": {
-    "./contracts": "./src/contracts.ts"
-  },
   "scripts": {
     "postinstall": "prisma generate",
-    "dev": "tsx watch --env-file-if-exists=../.env src/main.ts",
-    "worker": "tsx --env-file-if-exists=../.env src/worker.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
+    "worker": "tsx --env-file-if-exists=.env src/worker.ts",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/domain.test.ts",
-    "test:load": "tsx --env-file-if-exists=../.env tests/load.ts",
-    "test:integration": "tsx --env-file-if-exists=../.env --test tests/integration.test.ts",
-    "db:migrate": "node --env-file-if-exists=../.env ./node_modules/prisma/build/index.js migrate deploy",
-    "db:seed": "tsx --env-file-if-exists=../.env prisma/seed.ts",
-    "ai:check": "tsx --env-file-if-exists=../.env src/ai-check.ts",
-    "db:admin": "tsx --env-file-if-exists=../.env prisma/bootstrap-admin.ts"
+    "test:load": "tsx --env-file-if-exists=.env tests/load.ts",
+    "test:integration": "tsx --env-file-if-exists=.env --test tests/integration.test.ts",
+    "db:migrate": "node --env-file-if-exists=.env ./node_modules/prisma/build/index.js migrate deploy",
+    "db:seed": "tsx --env-file-if-exists=.env prisma/seed.ts",
+    "ai:check": "tsx --env-file-if-exists=.env src/ai-check.ts",
+    "db:admin": "tsx --env-file-if-exists=.env prisma/bootstrap-admin.ts",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
@@ -39,6 +37,13 @@
     "@types/node": "^24.10.0",
     "prisma": "6.19.3",
     "tsx": "^4.20.6",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "typescript-eslint": "^8.46.3"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24"
   }
 }

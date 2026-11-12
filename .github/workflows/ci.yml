@@ -33,23 +33,34 @@ jobs:
         with:
           node-version: "24"
       - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: docker compose config --quiet
-      - run: docker compose -f docker-compose.production.yml config --quiet
+      - name: Locate pnpm store
+        id: pnpm
+        working-directory: backend
+        run: echo "store=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-11.25.0-${{ hashFiles('backend/pnpm-lock.yaml', 'frontend/pnpm-lock.yaml') }}
+      - run: pnpm -C backend install --frozen-lockfile
+      - run: pnpm -C frontend install --frozen-lockfile
+      - run: git diff --no-index --ignore-cr-at-eol backend/src/contracts.ts frontend/src/contracts.ts
+      - run: pnpm -C backend lint && pnpm -C frontend lint
+      - run: pnpm -C backend typecheck && pnpm -C frontend typecheck
+      - run: pnpm -C backend test
+      - run: pnpm -C backend build && pnpm -C frontend build
+      - run: docker compose -f backend/deploy/docker-compose.yml config --quiet
+      - run: docker compose -f backend/deploy/docker-compose.production.yml config --quiet
         env:
           WEB_ORIGIN: https://modus.example.invalid
           DATABASE_URL: postgresql://runtime:validation@db.example.invalid/modus
           MIGRATION_DATABASE_URL: postgresql://migrator:validation@db.example.invalid/modus
-      - run: pnpm db:migrate && pnpm db:seed && pnpm db:seed
-      - run: pnpm test:integration
+      - run: docker compose -f backend/deploy/docker-compose.yml build api web
+      - run: pnpm -C backend db:migrate && pnpm -C backend db:seed && pnpm -C backend db:seed
+      - run: pnpm -C backend test:integration
       - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE modus_ci_load'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-      - run: pnpm db:migrate && pnpm db:seed && pnpm --filter @modus/api test:load
+      - run: pnpm -C backend db:migrate && pnpm -C backend db:seed && pnpm -C backend test:load
         env:
           DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_ci_load?schema=public
           TEST_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_ci_load?schema=public
@@ -57,11 +68,11 @@ jobs:
       - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE modus_e2e'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-      - run: pnpm db:migrate && pnpm db:seed
+      - run: pnpm -C backend db:migrate && pnpm -C backend db:seed
         env:
           DATABASE_URL: ${{ env.E2E_DATABASE_URL }}
-      - run: pnpm --filter @modus/web exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - run: pnpm -C frontend exec playwright install --with-deps chromium
+      - run: pnpm -C frontend test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
