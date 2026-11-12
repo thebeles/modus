@@ -18,7 +18,7 @@ async function session(browser: Browser, role: keyof typeof profileNames) {
 
 async function post<T>(page: Page, path: string, body: object, key?: string): Promise<T> {
   const origin = new URL(page.url()).origin;
-  const csrf = (await page.context().cookies()).find(cookie => cookie.name === 'kontur_csrf')!.value;
+  const csrf = (await page.context().cookies()).find(cookie => cookie.name === 'modus_csrf')!.value;
   const response = await page.request.post('/api/v1' + path, { data: body, headers: { Origin: origin, 'X-CSRF-Token': csrf, ...(key ? { 'Idempotency-Key': key } : {}) } });
   const json = await response.json();
   expect(response.ok(), JSON.stringify(json.error)).toBeTruthy();

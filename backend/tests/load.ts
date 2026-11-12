@@ -8,8 +8,8 @@ import { Database } from '../src/common';
 import { deadlines, deliver } from '../src/worker';
 
 const testUrl = process.env.TEST_DATABASE_URL;
-if (!testUrl || !/^\/kontur_[a-z0-9_]*load$/.test(new URL(testUrl).pathname)) {
-  throw new Error('TEST_DATABASE_URL must point to a fresh, seeded kontur_*load database');
+if (!testUrl || !/^\/modus_[a-z0-9_]*load$/.test(new URL(testUrl).pathname)) {
+  throw new Error('TEST_DATABASE_URL must point to a fresh, seeded modus_*load database');
 }
 const sample = Number(process.env.LOAD_APPEALS ?? 2000);
 if (!Number.isInteger(sample) || sample < 500 || sample > 20000) throw new Error('LOAD_APPEALS must be 500–20000');

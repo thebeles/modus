@@ -1,25 +1,25 @@
 # Проверки
 
-`pnpm lint`, `pnpm typecheck`, `pnpm test` и `pnpm build` выполняются из корня проекта. Модульные проверки используют Node test runner и tsx. Интеграционный тест запускает настоящий NestJS и PostgreSQL. Playwright запускает отдельные API, Vite и worker и открывает Chromium. Для автоматических проверок нужен Chromium из `pnpm --filter @kontur/web exec playwright install chromium`.
+`pnpm lint`, `pnpm typecheck`, `pnpm test` и `pnpm build` выполняются из корня проекта. Модульные проверки используют Node test runner и tsx. Интеграционный тест запускает настоящий NestJS и PostgreSQL. Playwright запускает отдельные API, Vite и worker и открывает Chromium. Для автоматических проверок нужен Chromium из `pnpm --filter @modus/web exec playwright install chromium`.
 
 Создайте две пустые базы. Команды ниже подходят для локального Compose.
 
 ```sh
 docker compose up -d postgres
-docker compose exec -T postgres psql -U modus -d postgres -c 'CREATE DATABASE kontur_integration' -c 'CREATE DATABASE kontur_e2e'
+docker compose exec -T postgres psql -U modus -d postgres -c 'CREATE DATABASE modus_integration' -c 'CREATE DATABASE modus_e2e'
 ```
 
 PowerShell:
 
 ```powershell
-$env:DATABASE_URL = 'postgresql://modus:modus_dev@localhost:5432/kontur_integration?schema=public'
+$env:DATABASE_URL = 'postgresql://modus:modus_dev@localhost:5432/modus_integration?schema=public'
 $env:TEST_DATABASE_URL = $env:DATABASE_URL
 pnpm db:migrate
 pnpm db:seed
 pnpm db:seed
 pnpm test:integration
 
-$env:DATABASE_URL = 'postgresql://modus:modus_dev@localhost:5432/kontur_e2e?schema=public'
+$env:DATABASE_URL = 'postgresql://modus:modus_dev@localhost:5432/modus_e2e?schema=public'
 $env:E2E_DATABASE_URL = $env:DATABASE_URL
 pnpm db:migrate
 pnpm db:seed

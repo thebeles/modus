@@ -1,13 +1,13 @@
-name: modus-kontur
+name: modus
 x-server: &server
-  image: modus-kontur-server
+  image: modus-server
   build:
     context: .
     dockerfile: backend/Dockerfile
   environment: &runtime
     NODE_ENV: development
     PORT: "4000"
-    DATABASE_URL: postgresql://modus:modus_dev@postgres:5432/modus_kontur?schema=public
+    DATABASE_URL: postgresql://modus:modus_dev@postgres:5432/modus?schema=public
     WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5173}
     DEMO_MODE: ${DEMO_MODE:-true}
     SEED_DEMO_USERS: ${SEED_DEMO_USERS:-true}
@@ -26,13 +26,13 @@ services:
     environment:
       POSTGRES_USER: modus
       POSTGRES_PASSWORD: modus_dev
-      POSTGRES_DB: modus_kontur
+      POSTGRES_DB: modus
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - db:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U modus -d modus_kontur"]
+      test: [CMD-SHELL, "pg_isready -U modus -d modus"]
       interval: 3s
       timeout: 3s
       retries: 20

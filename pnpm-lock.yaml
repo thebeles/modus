@@ -89,7 +89,7 @@ importers:
       '@hookform/resolvers':
         specifier: ^5.2.2
         version: 5.9.2(@standard-schema/spec@1.1.0)(effect@3.21.0)(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(zod@4.6.7)
-      '@kontur/api':
+      '@modus/api':
         specifier: workspace:*
         version: link:../backend
       '@radix-ui/react-dialog':

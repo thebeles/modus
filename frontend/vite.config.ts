@@ -7,6 +7,6 @@ export default defineConfig({
   server: {
     port: Number(process.env.VITE_PORT || 5173),
     strictPort: true,
-    proxy: { '/api': process.env.KONTUR_API_TARGET || 'http://127.0.0.1:4000' },
+    proxy: { '/api': process.env.MODUS_API_TARGET || 'http://127.0.0.1:4000' },
   },
 });

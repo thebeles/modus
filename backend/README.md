@@ -1,7 +1,7 @@
 # Backend
 
 - `src/` — NestJS API, доменная логика, политика доступа и worker (`src/worker.ts`).
-- `src/contracts.ts` — публичный контракт `@kontur/api/contracts`, который использует клиент.
+- `src/contracts.ts` — публичный контракт `@modus/api/contracts`, который использует клиент.
 - `prisma/` — схема, миграции, демосид и исходные данные.
 - `tests/` — модульные и интеграционные тесты.
 - [Документация](docs/README.md) · [Исходное ТЗ](docs/reference/prompt.md)

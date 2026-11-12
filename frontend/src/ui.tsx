@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { AlertCircle, ArrowLeft, ArrowRight, Check, CircleDashed, FileText, Inbox, X } from 'lucide-react';
 import { cloneElement, useEffect, useId, useRef, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { label } from '@kontur/api/contracts';
+import { label } from '@modus/api/contracts';
 import { ApiError, type Entity, type EventRow } from './api';
 
 const tones: Record<string, string> = {

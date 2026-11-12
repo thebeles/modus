@@ -1,5 +1,5 @@
 {
-  "name": "@kontur/web",
+  "name": "@modus/web",
   "private": true,
   "type": "module",
   "scripts": {
@@ -20,7 +20,7 @@
     "react-router-dom": "^7.9.5",
     "recharts": "^3.3.0",
     "zod": "^4.1.12",
-    "@kontur/api": "workspace:*"
+    "@modus/api": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.17",

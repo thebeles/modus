@@ -6,18 +6,18 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "concurrently -k -n API,WEB,WORKER \"pnpm dev:api\" \"pnpm --filter @kontur/web dev\" \"pnpm worker\"",
-    "dev:api": "pnpm --filter @kontur/api dev",
-    "worker": "pnpm --filter @kontur/api worker",
-    "build": "pnpm --filter @kontur/api build && pnpm --filter @kontur/web build",
-    "typecheck": "pnpm --filter @kontur/api typecheck && pnpm --filter @kontur/web typecheck",
+    "dev": "concurrently -k -n API,WEB,WORKER \"pnpm dev:api\" \"pnpm --filter @modus/web dev\" \"pnpm worker\"",
+    "dev:api": "pnpm --filter @modus/api dev",
+    "worker": "pnpm --filter @modus/api worker",
+    "build": "pnpm --filter @modus/api build && pnpm --filter @modus/web build",
+    "typecheck": "pnpm --filter @modus/api typecheck && pnpm --filter @modus/web typecheck",
     "lint": "eslint backend frontend",
-    "test": "pnpm --filter @kontur/api test",
-    "test:integration": "pnpm --filter @kontur/api test:integration",
-    "test:e2e": "pnpm --filter @kontur/web test:e2e",
-    "db:migrate": "pnpm --filter @kontur/api db:migrate",
-    "db:seed": "pnpm --filter @kontur/api db:seed",
-    "db:admin": "pnpm --filter @kontur/api db:admin"
+    "test": "pnpm --filter @modus/api test",
+    "test:integration": "pnpm --filter @modus/api test:integration",
+    "test:e2e": "pnpm --filter @modus/web test:e2e",
+    "db:migrate": "pnpm --filter @modus/api db:migrate",
+    "db:seed": "pnpm --filter @modus/api db:seed",
+    "db:admin": "pnpm --filter @modus/api db:admin"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

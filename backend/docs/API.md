@@ -19,7 +19,7 @@ JSON-ответы используют `{ data, requestId }` и `{ error: { code
 
 POST /appeals принимает `Idempotency-Key` и объект с полями `type`, `description`, необязательными `title`, `categoryId`, `processId`, `proposedSolution`, `attachmentIds` и `visibility`. Повтор с тем же телом возвращает прежний ID. Новое тело с уже использованным ключом возвращает 409.
 
-Например, POST /appeals/:id/transition принимает `{ "expectedVersion": 1, "action": "REVIEW" }`. Доступные действия вычисляет сервер. Изменяющие запросы с сессией требуют заголовка `X-CSRF-Token` со значением cookie `kontur_csrf` и совпадения Origin. Страницы списков используют `page` и `limit` с максимумом 100. Экспорт ограничен 1000 строками.
+Например, POST /appeals/:id/transition принимает `{ "expectedVersion": 1, "action": "REVIEW" }`. Доступные действия вычисляет сервер. Изменяющие запросы с сессией требуют заголовка `X-CSRF-Token` со значением cookie `modus_csrf` и совпадения Origin. Страницы списков используют `page` и `limit` с максимумом 100. Экспорт ограничен 1000 строками.
 
 `POST /appeals/:id/reroute` принимает версию, обоснование `text` и необязательные `categoryId` и `processId`. При утрате доступа после перевода возвращает `readable: false`. `controlDueAt` — ближайший контролируемый срок, `lastMeaningfulActionAt` — дата последнего содержательного действия.
 

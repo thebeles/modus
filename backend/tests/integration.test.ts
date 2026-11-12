@@ -26,7 +26,7 @@ type Session = { cookie: string; csrf: string };
 type Envelope<T> = { data: T; error?: { code: string; message: string } };
 type Row = { id: string; number: string; version: number; status: string; description: string; comments: { internal: boolean; body: string }[]; events: { action: string }[]; allowedActions: string[] };
 
-function awaitDirectory() { return mkdtemp(join(tmpdir(), 'kontur-integration-')); }
+function awaitDirectory() { return mkdtemp(join(tmpdir(), 'modus-integration-')); }
 
 before(async () => {
   if (!testUrl || !/test|integration/.test(new URL(testUrl).pathname)) throw new Error('TEST_DATABASE_URL must point to a dedicated seeded test database');
@@ -62,8 +62,8 @@ async function login(profile: string): Promise<Session> {
   const { response } = await request('/auth/demo', { body: { profile } });
   assert.equal(response.status, 201);
   const cookies = response.headers.getSetCookie();
-  assert.ok(cookies.some(value => /kontur_session=.*HttpOnly.*SameSite=Strict/i.test(value)));
-  const csrf = cookies.find(value => value.startsWith('kontur_csrf='))!.split(';')[0].split('=')[1];
+  assert.ok(cookies.some(value => /modus_session=.*HttpOnly.*SameSite=Strict/i.test(value)));
+  const csrf = cookies.find(value => value.startsWith('modus_csrf='))!.split(';')[0].split('=')[1];
   return { cookie: cookies.map(value => value.split(';')[0]).join('; '), csrf };
 }
 
@@ -94,7 +94,7 @@ test('sessions rotate, reject foreign origins and revoke on logout', async () =>
   assert.equal(refreshed.response.status, 201);
   assert.equal((await request('/auth/me', { session })).response.status, 401);
   const cookies = refreshed.response.headers.getSetCookie().map(value => value.split(';')[0]);
-  const replacement = { cookie: cookies.join('; '), csrf: cookies.find(value => value.startsWith('kontur_csrf='))!.split('=')[1] };
+  const replacement = { cookie: cookies.join('; '), csrf: cookies.find(value => value.startsWith('modus_csrf='))!.split('=')[1] };
   assert.equal((await request('/auth/logout', { session: replacement, body: {} })).response.status, 201);
   assert.equal((await request('/auth/me', { session: replacement })).response.status, 401);
 });

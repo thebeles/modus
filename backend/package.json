@@ -1,5 +1,5 @@
 {
-  "name": "@kontur/api",
+  "name": "@modus/api",
   "private": true,
   "exports": {
     "./contracts": "./src/contracts.ts"

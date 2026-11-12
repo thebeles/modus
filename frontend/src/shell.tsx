@@ -3,7 +3,7 @@ import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
   GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from 'lucide-react';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
-import { label } from '@kontur/api/contracts';
+import { label } from '@modus/api/contracts';
 import { api, ApiError, type Session } from './api';
 import { SessionContext, useSession } from './session';
 import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading } from './ui';
@@ -155,8 +155,8 @@ export function App() {
   } });
   useEffect(() => {
     const expired = () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); };
-    window.addEventListener('kontur-session-expired', expired);
-    return () => window.removeEventListener('kontur-session-expired', expired);
+    window.addEventListener('modus-session-expired', expired);
+    return () => window.removeEventListener('modus-session-expired', expired);
   }, [client]);
   if (me.isPending) return <main className="full-center"><Loading /></main>;
   if (me.error) return <main className="full-center"><ErrorBox error={me.error} retry={() => me.refetch()} /></main>;

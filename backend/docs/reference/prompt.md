@@ -76,7 +76,7 @@
 Используй монорепозиторий с `pnpm` workspaces (можно применять Turborepo, но это не необходимо):
 
 ```text
-modus-kontur/
+modus/
   apps/
     web/                    # React + TypeScript + Vite
     api/                    # NestJS + TypeScript REST API
@@ -133,7 +133,7 @@ modus-kontur/
 ```dotenv
 NODE_ENV=development
 PORT=4000
-DATABASE_URL=postgresql://modus:modus_dev@localhost:5432/modus_kontur?schema=public
+DATABASE_URL=postgresql://modus:modus_dev@localhost:5432/modus?schema=public
 WEB_ORIGIN=http://localhost:5173
 PUBLIC_API_URL=http://localhost:4000/api/v1
 JWT_ACCESS_SECRET=CHANGE_ME_LOCAL_ONLY_LONG_RANDOM

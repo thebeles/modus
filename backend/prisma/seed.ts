@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { permissions } from '../src/contracts';
 
 const db = new PrismaClient();
-const demoPassword = 'Kontur-Demo-2026!';
+const demoPassword = 'Modus-Demo-2026!';
 const titles = [
   'Обязательные поля в заявке на закупку', 'Статус проекта для поставщиков', 'Единые обозначения оборудования',
   'Короткие занятия по новым линейкам', 'Статус пакета документов', 'Памятка для межотдельных операций',

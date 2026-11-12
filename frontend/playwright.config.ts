@@ -17,6 +17,6 @@ export default defineConfig({
     url: baseURL + '/api/v1/health/ready',
     timeout: 120000,
     env: { DATABASE_URL: process.env.E2E_DATABASE_URL!, PORT: '4080', VITE_PORT: '4180', WEB_ORIGIN: baseURL,
-      KONTUR_API_TARGET: 'http://127.0.0.1:4080', DEMO_MODE: 'true', GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e' },
+      MODUS_API_TARGET: 'http://127.0.0.1:4080', DEMO_MODE: 'true', GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e' },
   },
 });

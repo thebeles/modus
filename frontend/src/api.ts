@@ -5,7 +5,7 @@ export class ApiError extends Error {
 }
 
 export function csrf() {
-  return document.cookie.split('; ').find(item => item.startsWith('kontur_csrf='))?.split('=')[1] ?? '';
+  return document.cookie.split('; ').find(item => item.startsWith('modus_csrf='))?.split('=')[1] ?? '';
 }
 
 export async function api<T>(path: string, options: { method?: string; body?: unknown; key?: string; signal?: AbortSignal } = {}): Promise<T> {
@@ -24,7 +24,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   }
   const parsed = await response.json().catch(() => null);
   if (!response.ok || !parsed) {
-    if (response.status === 401 && !['/auth/login', '/auth/demo', '/auth/me'].includes(path)) window.dispatchEvent(new Event('kontur-session-expired'));
+    if (response.status === 401 && !['/auth/login', '/auth/demo', '/auth/me'].includes(path)) window.dispatchEvent(new Event('modus-session-expired'));
     throw new ApiError(parsed?.error?.code ?? 'REQUEST_ERROR', parsed?.error?.message ?? 'Не удалось выполнить запрос.', response.status, parsed?.error?.details);
   }
   return parsed.data as T;

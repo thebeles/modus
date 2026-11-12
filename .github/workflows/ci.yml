@@ -11,18 +11,18 @@ jobs:
         env:
           POSTGRES_USER: modus
           POSTGRES_PASSWORD: modus_dev
-          POSTGRES_DB: kontur_integration
+          POSTGRES_DB: modus_integration
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U modus -d kontur_integration"
+          --health-cmd "pg_isready -U modus -d modus_integration"
           --health-interval 3s
           --health-timeout 3s
           --health-retries 20
     env:
-      DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/kontur_integration?schema=public
-      TEST_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/kontur_integration?schema=public
-      E2E_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/kontur_e2e?schema=public
+      DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_integration?schema=public
+      TEST_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_integration?schema=public
+      E2E_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_e2e?schema=public
       WEB_ORIGIN: http://localhost:5173
       DEMO_MODE: "true"
       SEED_DEMO_USERS: "true"
@@ -41,26 +41,26 @@ jobs:
       - run: docker compose config --quiet
       - run: docker compose -f docker-compose.production.yml config --quiet
         env:
-          WEB_ORIGIN: https://kontur.example.invalid
-          DATABASE_URL: postgresql://runtime:validation@db.example.invalid/kontur
-          MIGRATION_DATABASE_URL: postgresql://migrator:validation@db.example.invalid/kontur
+          WEB_ORIGIN: https://modus.example.invalid
+          DATABASE_URL: postgresql://runtime:validation@db.example.invalid/modus
+          MIGRATION_DATABASE_URL: postgresql://migrator:validation@db.example.invalid/modus
       - run: pnpm db:migrate && pnpm db:seed && pnpm db:seed
       - run: pnpm test:integration
-      - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE kontur_ci_load'
+      - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE modus_ci_load'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-      - run: pnpm db:migrate && pnpm db:seed && pnpm --filter @kontur/api test:load
+      - run: pnpm db:migrate && pnpm db:seed && pnpm --filter @modus/api test:load
         env:
-          DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/kontur_ci_load?schema=public
-          TEST_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/kontur_ci_load?schema=public
+          DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_ci_load?schema=public
+          TEST_DATABASE_URL: postgresql://modus:modus_dev@localhost:5432/modus_ci_load?schema=public
           LOAD_P95_MS: "5000"
-      - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE kontur_e2e'
+      - run: docker exec "$POSTGRES_CONTAINER" psql -U modus -d postgres -c 'CREATE DATABASE modus_e2e'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       - run: pnpm db:migrate && pnpm db:seed
         env:
           DATABASE_URL: ${{ env.E2E_DATABASE_URL }}
-      - run: pnpm --filter @kontur/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @modus/web exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
