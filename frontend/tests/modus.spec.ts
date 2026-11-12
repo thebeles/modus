@@ -104,6 +104,46 @@ test('E2E-02 author receives clarification, replies, and restores the previous s
   await handler.close();
 });
 
+test('a handler closes a fallback appeal with an explanation after the author replies', async ({ page, browser }) => {
+  await login(page, 'employee');
+  const item = await create(page, 'Характеристики оборудования ' + randomUUID().slice(0, 8));
+  const handler = await session(browser, 'handler');
+  await handler.page.goto('/work-queue/appeals/' + item.id);
+  await expect(handler.page.getByText('Направлено в резервную очередь')).toBeVisible();
+  await mutation(handler.page, 'Взять на рассмотрение', undefined, 'Подтвердить');
+  await mutation(handler.page, 'Запросить уточнение', async dialog => {
+    await dialog.getByLabel('Вопрос автору').fill('Какие характеристики приходится уточнять чаще всего?');
+  });
+  const close = handler.page.getByRole('button', { name: 'Закрыть с решением', exact: true });
+  await expect(close).toHaveCount(0);
+
+  await page.goto('/appeals/' + item.id);
+  await page.getByLabel('Сообщение в общий диалог').fill('Подготовили пример заявки для уточнения.');
+  await page.getByRole('button', { name: 'Отправить сообщение' }).click();
+  await expect(page.getByText('Подготовили пример заявки для уточнения.', { exact: true })).toBeVisible();
+  await expect(page.locator('.heading-line').getByText('Ожидает уточнения', { exact: true })).toBeVisible();
+  const conversation = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Диалог', exact: true }) });
+  await expect(conversation.getByRole('button', { name: 'Ответить на уточнение', exact: true })).toBeVisible();
+  await mutation(page, 'Ответить на уточнение', async dialog => {
+    await dialog.getByLabel('Ваш ответ').fill('Чаще всего не хватает точной модели и срока поставки.');
+  });
+
+  await handler.page.reload();
+  await expect(handler.page.locator('.heading-line').getByText('На рассмотрении', { exact: true })).toBeVisible();
+  await expect(close).toBeVisible();
+  const explanation = 'Указывайте модель оборудования и желаемый срок поставки.';
+  await mutation(handler.page, 'Закрыть с решением', async dialog => {
+    await dialog.getByLabel('Тип решения').selectOption({ label: 'Дано пояснение' });
+    await dialog.getByLabel('Обоснование').fill(explanation);
+  });
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Итог рассмотрения' })).toBeVisible();
+  await expect(page.getByText('Дано пояснение', { exact: true })).toBeVisible();
+  await expect(page.getByText(explanation, { exact: true })).toBeVisible();
+  await handler.close();
+});
+
 test('E2E-03 a manager must enter a reason for rejection and the author sees it', async ({ page, browser }) => {
   await login(page, 'employee');
   const item = await create(page, 'Мотивированное решение ' + randomUUID().slice(0, 8));

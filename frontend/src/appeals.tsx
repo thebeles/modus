@@ -410,6 +410,8 @@ export function AppealDetail() {
   if (!record) return <><PageHeading title="Обращение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
   const { timing } = record;
   const can = (key: string) => record.allowedActions.includes(key);
+  const awaitingAnswer = can('AUTHOR_RESPONSE');
+  const sideActions = record.allowedActions.filter(item => actionNames[item] && item !== 'EDIT' && item !== 'AUTHOR_RESPONSE');
   const openAction = (operation: string) => {
     update.reset();
     reroute.reset();
@@ -442,13 +444,15 @@ export function AppealDetail() {
       {record.resolutionText && <Section title="Итог рассмотрения" icon={<CheckCircle2 size={18} />} className="resolution-section">
         {record.resolutionType && <Chip value={record.resolutionType} />}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
       </Section>}
-      <Section title="Диалог" icon={<MessageCircle size={18} />}>
+      <Section title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
+        <button className="button primary" disabled={update.isPending} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
         {staff && <div className="tab-strip compact-tabs"><button aria-pressed={!notes} onClick={() => setNotes(false)}>Переписка с автором</button><button aria-pressed={notes} onClick={() => setNotes(true)}>Служебные заметки</button></div>}
         {record.comments.filter(item => item.internal === notes).map(item => <article className={`comment ${item.internal ? 'internal' : ''}`} key={item.id}><header><strong>{item.author.name}</strong><small>{date(item.createdAt, true)}</small></header>
           {item.kind !== 'COMMENT' && <small>{label(item.kind)}</small>}<p className="preserve">{item.body}</p></article>)}
         {!record.comments.some(item => item.internal === notes) && <Empty title={notes ? 'Служебных заметок пока нет' : 'Сообщений пока нет'} />}
         {can('COMMENT') && <form className="form-stack" onSubmit={event => { event.preventDefault(); setNotice(''); update.mutate({ data: { action: 'COMMENT', text: comment, internal: notes } }); }}>
-          <Field label={notes ? 'Заметка только для обработчиков' : 'Сообщение в общий диалог'}>
+          <Field label={notes ? 'Заметка только для обработчиков' : 'Сообщение в общий диалог'}
+            hint={awaitingAnswer ? 'Чтобы возобновить обработку обращения, нажмите «Ответить на уточнение».' : undefined}>
             <textarea rows={3} minLength={5} maxLength={10000} required value={comment} onChange={event => setComment(event.target.value)} /></Field>
           {!action && <ErrorBox error={update.error} retry={() => query.refetch()} />}
           <button className={`button ${notes ? 'secondary' : 'primary'} self-start`} disabled={update.isPending}><Send size={16} />{notes ? 'Сохранить служебную заметку' : 'Отправить сообщение'}</button>
@@ -468,10 +472,10 @@ export function AppealDetail() {
         <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
           <div><dt>Срок</dt><dd>{record.controlDueAt ? date(record.controlDueAt, true) : 'Срок не задан'}</dd></div>
           {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
-        {record.allowedActions.some(item => actionNames[item] && item !== 'EDIT') && <div className="side-actions">
-          {record.allowedActions.filter(item => actionNames[item] && item !== 'EDIT').map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
+        {sideActions.length > 0 && <div className="side-actions">
+          {sideActions.map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
             <Link key={item} className="button secondary" to={`/${item === 'CREATE_PROBLEM' ? 'problems' : 'improvements'}/new?appealId=${record.id}`}>{actionNames[item]}</Link> :
-            <button key={item} className={`button ${['REVIEW', 'AUTHOR_RESPONSE'].includes(item) ? 'primary' : 'secondary'}`} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
+            <button key={item} className={`button ${item === 'REVIEW' ? 'primary' : 'secondary'}`} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
         </div>}
       </Section>
       {(record.improvements.length > 0 || record.problems.length > 0) && <Section title="Связанные записи">
