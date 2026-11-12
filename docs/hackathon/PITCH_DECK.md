@@ -8,7 +8,7 @@
 
 - Внутренняя обратная связь и улучшение процессов
 
-[Снимок](screenshots/employee.png) · [Источник](../../backend/docs/reference/task.md)
+[Снимок](../../frontend/docs/screenshots/home-desktop.png) · [Источник](../../backend/docs/reference/task.md)
 
 ## 2. Где теряется результат
 
@@ -39,7 +39,7 @@
 - Сотрудник — Подаёт обращение и следит за статусом.
 - Обработчик — Видит очередь, срок и следующий шаг.
 
-[Форма сотрудника](screenshots/form.png) · [Очередь обработчика](screenshots/queue.png) · [Источник](../DEMO_RUNBOOK.md)
+[Форма сотрудника](../../frontend/docs/screenshots/form.png) · [Очередь обработчика](../../frontend/docs/screenshots/queue.png) · [Источник](../DEMO_RUNBOOK.md)
 
 ## 5. Радар процессов
 
@@ -48,7 +48,7 @@
 - Руководитель — Видит темы, сроки и сигналы, требующие внимания.
 - Тематические связи — Потенциальное сходство проверяет человек. Первопричина требует исследования.
 
-[Снимок](screenshots/radar.png) · [Источник](../FINAL_ACCEPTANCE.md)
+[Снимок](../../frontend/docs/screenshots/radar.png) · [Источник](../FINAL_ACCEPTANCE.md)
 
 ## 6. Контур улучшений
 
@@ -58,7 +58,7 @@
 - Исполнение — Задачи и фиксация внедрения
 - Проверка — Наблюдения и независимое заключение
 
-[Снимок](screenshots/initiative.png) · [Источник](../DEMO_RUNBOOK.md)
+[Снимок](../../frontend/docs/screenshots/initiative.png) · [Источник](../DEMO_RUNBOOK.md)
 
 ## 7. Проверка эффекта
 
@@ -101,7 +101,7 @@ React  →  NestJS  →  PostgreSQL
 
 - Сотрудник видит итог. Руководитель видит, на каких наблюдениях он основан.
 
-[Снимок](screenshots/publication.png) · [Источник](../DEMO_RUNBOOK.md)
+[Снимок](../../frontend/docs/screenshots/publication.png) · [Источник](../DEMO_RUNBOOK.md)
 
 ## 11. Резерв · Экран результата
 
@@ -109,7 +109,7 @@ DEMO-I-01 · синтетические данные
 
 
 
-[Снимок](screenshots/result.png) · [Источник](../RELEASE_READINESS.md)
+[Снимок](../../frontend/docs/screenshots/result.png) · [Источник](../RELEASE_READINESS.md)
 
 ## 12. Резерв · Недостаточно данных
 
@@ -117,7 +117,7 @@ DEMO-I-02 · синтетические данные
 
 
 
-[Снимок](screenshots/inconclusive.png) · [Источник](../FINAL_ACCEPTANCE.md)
+[Снимок](../../frontend/docs/screenshots/inconclusive.png) · [Источник](../FINAL_ACCEPTANCE.md)
 
 ## 13. Резерв · Границы приёмки
 

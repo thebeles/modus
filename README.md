@@ -6,7 +6,9 @@
 
 [Локальный стенд](http://localhost:5173) · [Запуск в Docker](#запуск-в-docker) · [Демосценарий](#демосценарий) · [REST API](backend/docs/API.md)
 
-![Радар процессов со статистикой обращений и инициатив](frontend/docs/screenshots/radar.jpg)
+![Радар процессов со статистикой обращений и инициатив](frontend/docs/screenshots/radar.png)
+
+[Все скриншоты текущей версии](frontend/docs/UX_SPEC.md#скриншоты)
 
 ## Возможности
 
