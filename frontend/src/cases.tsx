@@ -5,9 +5,9 @@ import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullReq
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { improvementStatuses, label, outcomes, problemStatuses } from './contracts';
-import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
+import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Effect, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
+import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
   PageHeading, Pagination, Section, TableRegion, Timeline, timestamp } from './ui';
 
 type Kind = 'problem' | 'improvement';
@@ -172,14 +172,28 @@ const taskTransitions: Record<string, string[]> = {
   BLOCKED: ['IN_PROGRESS', 'DONE', 'CANCELED'], DONE: ['IN_PROGRESS'], CANCELED: ['TODO'],
 };
 
+function EffectFacts({ effect }: { effect: Effect }) {
+  if (!effect.hasBothObservations) return <p>Недостаточно наблюдений для сравнения.</p>;
+  if (effect.before == null || effect.after == null) return null;
+  const format = (value?: number | null) => value == null ? '—' : new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
+  return <dl className="facts">
+    <div><dt>До и после</dt><dd>{format(effect.before)} → {format(effect.after)} {effect.unit}</dd></div>
+    <div><dt>Изменение</dt><dd>{format(effect.delta)} {effect.unit}{effect.relativePercent != null && ` (${format(effect.relativePercent)}%)`}</dd></div>
+    <div><dt>Цель достигнута</dt><dd>{effect.meetsTarget ? 'Да' : 'Нет'}</dd></div>
+    <div><dt>Исходный уровень</dt><dd>{effect.maintained ? 'Показатель удержан в диапазоне' : effect.improved ? 'Улучшение' : effect.worsened ? 'Ухудшение' : 'Улучшение не зафиксировано'}</dd></div>
+  </dl>;
+}
+
 function PlanForm({ plan }: { plan: Plan | null }) {
   const [method, setMethod] = useState(plan?.method ?? 'QUANTITATIVE');
+  const [direction, setDirection] = useState(plan?.direction ?? 'DECREASE');
   return <><Field label="Метод проверки"><select name="method" value={method} onChange={event => setMethod(event.target.value)}><Options items={['QUANTITATIVE', 'QUALITATIVE', 'MIXED']} /></select></Field>
     {textBox('Гипотеза', 'hypothesis', true, plan?.hypothesis)}{textBox('Критерий успеха', 'criterion', true, plan?.criterion)}
     {method !== 'QUALITATIVE' && <><div className="two-fields"><Field label="Показатель"><input name="metricName" defaultValue={plan?.metricName ?? ''} required /></Field>
       <Field label="Единица измерения"><input name="unit" defaultValue={plan?.unit ?? ''} required /></Field></div>
-      <div className="two-fields"><Field label="Направление"><select name="direction" defaultValue={plan?.direction ?? 'DECREASE'}><Options items={['DECREASE', 'INCREASE', 'TARGET']} /></select></Field>
-        <Field label="Целевое значение"><input name="targetValue" type="number" step="any" defaultValue={plan?.targetValue ?? ''} required /></Field></div></>}
+      <div className="two-fields"><Field label="Направление"><select name="direction" value={direction} onChange={event => setDirection(event.target.value)}><Options items={['DECREASE', 'INCREASE', 'TARGET', 'RANGE']} /></select></Field>
+        <Field label={direction === 'RANGE' ? 'Нижняя граница' : 'Целевое значение'}><input name="targetValue" type="number" step="any" defaultValue={plan?.targetValue ?? ''} required /></Field></div>
+       {direction === 'RANGE' && <Field label="Верхняя граница"><input name="targetMaximum" type="number" step="any" defaultValue={plan?.targetMaximum ?? ''} required /></Field>}</>}
     {method !== 'QUANTITATIVE' && textBox('Протокол качественной проверки', 'protocol', true, plan?.protocol)}
     <fieldset><legend>Сопоставимость наблюдений</legend>
       <div className="two-fields">
@@ -266,18 +280,22 @@ export function ImprovementDetail() {
   const record = query.data;
   const edit = useEditor(id, 'improvement', record?.version);
   const [aiOpen, setAiOpen] = useState(false);
+  const [sourceSearch, setSourceSearch] = useState<string | null>(null);
+  const sourceOptions = useQuery({ queryKey: ['appeals', 'improvement-source', id, sourceSearch], enabled: sourceSearch !== null,
+    queryFn: ({ signal }) => api<Page<AppealRow>>('/work-queue' + queryString({ normalOnly: 'true', q: sourceSearch ?? '', limit: 30 }), { signal }) });
   const [publication, setPublication] = useState<Change | null>(null);
   const pub = useMutation({ mutationFn: (operation: string) => api(`/publications/${publication?.id}/${operation}`, { method: 'POST', body: { expectedVersion: publication?.version } }),
     onSuccess: () => { setPublication(null); void client.invalidateQueries({ queryKey: ['improvement', id] }); void client.invalidateQueries({ queryKey: ['changes'] }); } });
-  const suggestion = useMutation({ mutationFn: () => api<{ suggestion: Record<string, string[] | boolean>; truncated?: boolean }>('/ai/improvement-analysis', {
+  const suggestion = useMutation({ mutationFn: () => api<{ usageId: string; suggestion: Record<string, string[] | boolean>; truncated?: boolean }>('/ai/improvement-analysis', {
     method: 'POST', body: { consent: true, id },
   }) });
   if (!record) return <><PageHeading title="Улучшение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
   const planEditable = record.canEdit && ['DRAFT', 'DEFERRED'].includes(record.status);
   const plan = record.plan;
+  const pendingAmendment = record.amendments?.find(row => !row.resolvedAt);
   const addPlan = () => edit.open({ title: plan ? 'Изменить план проверки' : 'Добавить план проверки', path: path + '/measurement-plan',
     fields: <PlanForm plan={plan} />, body: data => ({ method: field(data, 'method'), hypothesis: field(data, 'hypothesis'), criterion: field(data, 'criterion'),
-      metricName: optional(data, 'metricName'), unit: optional(data, 'unit'), direction: optional(data, 'direction'), targetValue: numeric(data, 'targetValue'), protocol: optional(data, 'protocol'),
+      metricName: optional(data, 'metricName'), unit: optional(data, 'unit'), direction: optional(data, 'direction'), targetValue: numeric(data, 'targetValue'), targetMaximum: numeric(data, 'targetMaximum'), protocol: optional(data, 'protocol'),
       minimumSampleSize: numeric(data, 'minimumSampleSize'), requireSameSource: data.has('requireSameSource'),
       maxPeriodDifferencePercent: numeric(data, 'maxPeriodDifferencePercent') }) });
   const addTask = (task?: Improvement['actions'][number]) => edit.open({ title: task ? 'Редактировать задачу' : 'Добавить задачу',
@@ -327,7 +345,7 @@ export function ImprovementDetail() {
           </Section>
           <Section title="План проверки эффекта" icon={<Activity size={18} />} action={planEditable && <button className="button secondary" onClick={addPlan}>{plan ? 'Изменить' : 'Добавить план'}</button>}>
             {plan ? <dl className="facts"><div><dt>Метод</dt><dd>{label(plan.method)}</dd></div><div><dt>Гипотеза</dt><dd>{plan.hypothesis}</dd></div><div><dt>Критерий успеха</dt><dd>{plan.criterion}</dd></div>
-              {plan.metricName && <div><dt>Целевой показатель</dt><dd>{plan.metricName}: {plan.targetValue} {plan.unit}</dd></div>}{plan.protocol && <div><dt>Протокол</dt><dd>{plan.protocol}</dd></div>}
+              {plan.metricName && <div><dt>Целевой показатель</dt><dd>{plan.metricName}: {plan.targetValue}{plan.direction === 'RANGE' ? ` — ${plan.targetMaximum}` : ''} {plan.unit}</dd></div>}{plan.protocol && <div><dt>Протокол</dt><dd>{plan.protocol}</dd></div>}
               {plan.minimumSampleSize != null && <div><dt>Минимальная выборка</dt><dd>{plan.minimumSampleSize}</dd></div>}
               {plan.requireSameSource && <div><dt>Источник</dt><dd>Одинаковый указанный вид</dd></div>}
               {plan.maxPeriodDifferencePercent != null && <div><dt>Допуск длительности</dt><dd>{plan.maxPeriodDifferencePercent}%</dd></div>}</dl> :
@@ -356,10 +374,34 @@ export function ImprovementDetail() {
             body: data => ({ outcome: field(data, 'outcome'), summary: field(data, 'summary'), limitations: field(data, 'limitations'), evidenceIds: data.getAll('evidenceIds') }),
           })}>Зафиксировать результат</button>}>
             {record.verification ? <div className="inner-stack"><div className="inline-chips"><Chip value={record.verification.outcome} /></div>
+              {record.verification.effect && <EffectFacts effect={record.verification.effect} />}
               <p className="preserve">{record.verification.summary}</p><div><h3>Ограничения</h3><p className="preserve">{record.verification.limitations}</p></div><EvidenceLinks files={record.verification.evidence} />
               <small>{date(record.verification.verifiedAt)} · План v{record.verification.planVersion} · Наблюдений: {record.verification.measurementIds.length}</small></div> :
               <Empty title="Результат ещё не проверен">{plan?.observations.length ? 'Есть предварительные наблюдения.' : 'Добавьте наблюдения и передайте результат на проверку.'}</Empty>}
           </Section>
+          {!!record.verification && record.status === 'COMPLETED' && <Section title="Пересмотр заключения" action={record.canRequestAmendment &&
+            <button className="button secondary" onClick={() => edit.open({
+              title: 'Запросить пересмотр', path: path + '/verification-amendments',
+              fields: <><Field label="Проверяющий"><select name="reviewerId" required><EntityOptions rows={record.eligibleReviewers} /></select></Field>{textBox('Основание', 'reason')}</>,
+              body: data => ({ reviewerId: field(data, 'reviewerId'), reason: field(data, 'reason') }),
+            })}>Запросить пересмотр</button>}>
+            {pendingAmendment && <p>На рассмотрении: {pendingAmendment.reason}</p>}
+            {pendingAmendment && record.canDecideAmendment && <div className="button-row">
+              <button className="button primary" onClick={() => edit.open({
+                title: 'Утвердить новое заключение', path: path + '/verification-amendments/' + pendingAmendment.id + '/accept',
+                description: 'Ранее опубликованный результат будет отозван.',
+                fields: <><Field label="Итог"><select name="outcome"><Options items={outcomes} /></select></Field>{textBox('Вывод', 'summary')}
+                  {textBox('Ограничения и доказательства', 'limitations')}<EvidencePicker onUploading={edit.setUploading} /></>,
+                body: data => ({ outcome: field(data, 'outcome'), summary: field(data, 'summary'), limitations: field(data, 'limitations'), evidenceIds: data.getAll('evidenceIds') }),
+              })}>Утвердить новое заключение</button>
+              <button className="button secondary" onClick={() => edit.open({
+                title: 'Отклонить пересмотр', path: path + '/verification-amendments/' + pendingAmendment.id + '/reject',
+                fields: textBox('Обоснование', 'reason'), body: data => ({ reason: field(data, 'reason') }),
+              })}>Отклонить пересмотр</button>
+            </div>}
+            {!!record.verificationRevisions?.length && <details><summary>Предыдущие заключения</summary>{record.verificationRevisions.map(revision =>
+              <article key={revision.revision}><h3>Версия {revision.revision} · {label(revision.snapshot.outcome)}</h3><p>{revision.snapshot.summary}</p><small>{revision.reason}</small></article>)}</details>}
+          </Section>}
           <Section title="Публикации" icon={<BookOpen size={18} />} action={record.canDraftPublication && <button className="button secondary" onClick={() => edit.open({
             title: 'Подготовить публикацию', path: '/publications/drafts', description: 'Подготовьте отдельное изложение для сотрудников. Уберите частные и коммерческие сведения.',
             fields: <PublicationFields />,
@@ -390,7 +432,24 @@ export function ImprovementDetail() {
           })}>{caption}</button>;
         })}{ai.data?.available && <button className="button subtle" onClick={() => { suggestion.reset(); setAiOpen(true); }}><Sparkles size={16} />Анализ Groq</button>}</div>
       </Section>
-      <Section title="Основания"><References items={record.sources} path="/appeals" />{record.problem && <References items={[record.problem]} path="/problems" />}</Section>
+      <Section title="Основания" action={record.canManageSources && <button className="text-button" onClick={() => setSourceSearch('')}>Добавить источник</button>}>
+        {record.sources.map(source => <div key={source.id} className="task-row"><References items={[source]} path="/appeals" />
+          {record.canManageSources && <button className="text-button" onClick={() => edit.open({ title: 'Отвязать источник', description: source.title,
+            path: path + '/sources', fields: textBox('Причина', 'explanation'),
+            body: data => ({ operation: 'DETACH', appealId: source.id, explanation: field(data, 'explanation') }),
+          })}>Отвязать</button>}</div>)}
+        {record.problem && <References items={[record.problem]} path="/problems" />}
+      </Section>
+      {sourceSearch !== null && <Modal title="Добавить источник" close={() => setSourceSearch(null)}>
+        <Field label="Номер или заголовок"><input value={sourceSearch} onChange={event => setSourceSearch(event.target.value)} /></Field>
+        <ErrorBox error={sourceOptions.error} />
+        {sourceOptions.data?.items.filter(source => !record.sources.some(item => item.id === source.id)).map(source =>
+          <button className="button secondary" key={source.id} onClick={() => { setSourceSearch(null); edit.open({
+            title: 'Связать обращение', description: source.title, path: path + '/sources',
+            fields: textBox('Основание связи', 'explanation'), body: data => ({ appealId: source.id, explanation: field(data, 'explanation') }),
+          }); }}>{source.number} · {source.title}</button>)}
+        {sourceOptions.data?.total === 0 && <Empty title="Доступных обращений нет" />}
+      </Modal>}
     </aside></div>{edit.modal}
     {publication && <Modal title={publication.title} close={() => setPublication(null)}>
       <div className="inline-chips"><span className="chip tone-muted">{publication.audienceId ? 'Подразделение' : 'Все сотрудники'}</span></div>
@@ -418,6 +477,7 @@ export function ImprovementDetail() {
       <ErrorBox error={suggestion.error} />{suggestion.data ? <div className="inner-stack">{suggestion.data.truncated && <p>Часть текста была сокращена.</p>}
         {Object.entries({ hypotheses: 'Гипотезы', possibleActions: 'Возможные действия', risks: 'Риски', proposedMetrics: 'Показатели', limitations: 'Ограничения' }).map(([key, title]) =>
           <div key={key}><h3>{title}</h3>{Array.isArray(suggestion.data.suggestion[key]) && (suggestion.data.suggestion[key] as string[]).map((item, index) => <p key={index}>{item}</p>)}</div>)}
+        <AiDecision usageId={suggestion.data.usageId} onDecide={() => setAiOpen(false)} />
         </div> : <button className="button primary" disabled={suggestion.isPending} onClick={() => suggestion.mutate()}>{suggestion.isPending ? 'Получаем подсказку…' : 'Запросить анализ'}</button>}
     </Modal>}
   </>;

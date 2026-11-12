@@ -91,7 +91,7 @@ export async function throttle(db: Database, name: string, max: number, seconds:
 
 export async function audit(tx: Tx, entity: string, entityId: string, action: string, actorId?: string,
   authorVisible = false, details?: Prisma.InputJsonObject) {
-  return tx.auditEvent.create({ data: { entity, entityId, action, actorId, authorVisible, details } });
+  return tx.auditEvent.create({ data: { entity, entityId, action, actorId, authorVisible, details, origin: actorId ? 'USER_ACTION' : 'SYSTEM' } });
 }
 
 export async function notify(tx: Tx, eventId: string, recipients: (string | null | undefined)[], kind: string, href?: string) {

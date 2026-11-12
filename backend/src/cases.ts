@@ -8,6 +8,7 @@ import { allocate, assertVersion, atomic, audit, bodyText, checked, Database, da
 import { attachmentSummary, claimAttachments } from './files';
 import { Policy, Principal } from './policy';
 import { improvementTransitions, problemTransitions } from './workflow';
+import { assessEffect } from './effect';
 
 const listInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), status: z.string().max(30).optional(), processId: id.optional() });
 const problemInput = z.strictObject({ title, symptoms: bodyText, hypothesis: bodyText.optional(), appealId: id.optional(), explanation: bodyText.optional() });
@@ -15,8 +16,8 @@ const improvementInput = z.strictObject({ title, rationale: bodyText, goal: body
   processId: id.optional(), appealId: id.optional(), problemId: id.optional(), ownerId: id.optional() });
 const taskInput = z.strictObject({ expectedVersion, title, dueAt: dateTime.nullable().optional(), ownerId: id.optional(), blocking: z.boolean().default(true) });
 const planInput = z.strictObject({ expectedVersion, method: z.enum(['QUANTITATIVE', 'QUALITATIVE', 'MIXED']),
-  hypothesis: bodyText, criterion: bodyText, metricName: shortText.optional(), unit: shortText.optional(), direction: z.enum(['DECREASE', 'INCREASE', 'TARGET']).optional(),
-  targetValue: z.number().optional(), protocol: bodyText.optional(),
+  hypothesis: bodyText, criterion: bodyText, metricName: shortText.optional(), unit: shortText.optional(), direction: z.enum(['DECREASE', 'INCREASE', 'TARGET', 'RANGE']).optional(),
+  targetValue: z.number().optional(), targetMaximum: z.number().optional(), protocol: bodyText.optional(),
   minimumSampleSize: z.number().int().min(1).max(100000000).optional(), requireSameSource: z.boolean().default(false),
   maxPeriodDifferencePercent: z.number().int().min(0).max(100).optional(),
 }).superRefine((plan, ctx) => {
@@ -24,9 +25,12 @@ const planInput = z.strictObject({ expectedVersion, method: z.enum(['QUANTITATIV
     ctx.addIssue({ code: 'custom', path: ['metricName'], message: 'Укажите показатель, единицу, направление и целевое значение.' });
   }
   if (plan.method !== 'QUANTITATIVE' && !plan.protocol) ctx.addIssue({ code: 'custom', path: ['protocol'], message: 'Опишите протокол проверки.' });
+  if (plan.direction === 'RANGE' && (plan.targetValue === undefined || plan.targetMaximum === undefined || plan.targetMaximum < plan.targetValue)) {
+    ctx.addIssue({ code: 'custom', path: ['targetMaximum'], message: 'Верхняя граница должна быть не ниже нижней.' });
+  }
 });
 const evidenceIds = z.array(id).max(5).transform(ids => [...new Set(ids)]).default([]);
-const observationInput = z.strictObject({ expectedVersion, phase: z.enum(['BEFORE', 'AFTER']), value: z.number().optional(),
+const observationInput = z.strictObject({ expectedVersion, phase: z.enum(['BEFORE', 'AFTER']), value: z.number().optional(), unit: shortText.optional(),
   periodStart: dateTime, periodEnd: dateTime, sampleSize: z.number().int().min(1).max(100000000).optional(), source: bodyText,
   sourceType: z.enum(['SYSTEM_REPORT', 'MANUAL_SAMPLE', 'INTERVIEW', 'OTHER']).default('OTHER'), evidenceIds,
 });
@@ -39,11 +43,14 @@ const problemEditInput = z.strictObject({ expectedVersion, title: title.optional
 const problemMutationInput = z.strictObject({ expectedVersion, target: z.enum(problemStatuses).optional(),
       text: bodyText, source: shortText.optional() });
 const problemSourceInput = z.strictObject({ expectedVersion, appealId: id, explanation: bodyText });
+const improvementSourceInput = problemSourceInput.extend({ operation: z.enum(['ATTACH', 'DETACH']).default('ATTACH') });
 const improvementEditInput = z.strictObject({ expectedVersion, title: title.optional(), rationale: bodyText.optional(),
       goal: bodyText.optional(), scope: shortText.optional(), risks: bodyText.optional(), ownerId: id.optional(), processId: id.nullable().optional() });
 const improvementTransitionInput = z.strictObject({ expectedVersion, target: z.enum(improvementStatuses), text: bodyText.optional() });
 const taskTransitionInput = z.strictObject({ expectedVersion, target: z.enum(actionStatuses), text: bodyText.optional() });
 const verificationInput = z.strictObject({ expectedVersion, outcome: z.enum(outcomes), summary: bodyText, limitations: bodyText, evidenceIds });
+const requestAmendmentInput = z.strictObject({ expectedVersion, reviewerId: id, reason: bodyText });
+const rejectAmendmentInput = z.strictObject({ expectedVersion, reason: bodyText });
 const invitationInput = z.strictObject({ expectedVersion });
 const feedbackInput = z.strictObject({ expectedVersion, choice: z.enum(feedbackChoices), comment: bodyText.optional() });
 
@@ -214,7 +221,7 @@ export class Cases {
         tx.approvalDecision.findMany({ where: { improvementId: item }, orderBy: { createdAt: 'desc' } }),
         tx.measurementPlan.findUnique({ where: { improvementId: item }, include: { observations: { where: { supersededAt: null }, orderBy: { periodStart: 'asc' } } } }),
         tx.verification.findUnique({ where: { improvementId: item } }),
-        tx.appeal.findMany({ where: { AND: [{ improvements: { some: { improvementId: item } } }, this.policy.staffAppeals(user)] }, select: { id: true, title: true, number: true } }),
+        tx.appeal.findMany({ where: { AND: [{ improvements: { some: { improvementId: item } }, ...restrictedSources }, this.policy.staffAppeals(user)] }, select: { id: true, title: true, number: true } }),
         record.problemId ? tx.problem.findFirst({ where: { AND: [{ id: record.problemId }, this.policy.problems(user)] }, select: { id: true, title: true, number: true } }) : null,
         this.history(tx, 'improvement', item),
         manager ? tx.feedback.findMany({ where: { improvementId: item }, orderBy: { submittedAt: 'desc' } }) : [],
@@ -225,10 +232,35 @@ export class Cases {
         select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [];
       const byId = new Map(attachments.map(file => [file.id, file]));
       const evidence = (ids: string[]) => ids.flatMap(id => byId.get(id) ?? []);
+      const sourceEvents = events.flatMap(event => {
+        if (!['SOURCE_ATTACHED', 'SOURCE_DETACHED'].includes(event.action) || !event.details || typeof event.details !== 'object' || Array.isArray(event.details)) return [];
+        return typeof event.details.appealId === 'string' ? [event.details.appealId] : [];
+      });
+      const readableSources = new Set((await tx.appeal.findMany({
+        where: { AND: [{ id: { in: sourceEvents }, ...restrictedSources }, this.policy.staffAppeals(user)] }, select: { id: true },
+      })).map(row => row.id));
+      const safeEvents = events.flatMap(event => {
+        if (!['SOURCE_ATTACHED', 'SOURCE_DETACHED'].includes(event.action)) return [event];
+        const detail = event.details;
+        return detail && typeof detail === 'object' && !Array.isArray(detail) && typeof detail.appealId === 'string' && readableSources.has(detail.appealId) ? [event] : [];
+      });
+      const [amendments, verificationRevisions, eligibleReviewers] = verification && record.status === 'COMPLETED' ? await Promise.all([
+        tx.verificationAmendment.findMany({ where: { improvementId: item }, orderBy: { requestedAt: 'desc' } }),
+        tx.verificationRevision.findMany({ where: { improvementId: item }, orderBy: { revision: 'desc' } }),
+        manager && record.departmentId ? tx.user.findMany({ where: {
+          active: true, departmentId: record.departmentId, id: { notIn: [record.ownerId, user.id] },
+          role: { in: ['HANDLER', 'MANAGER'] }, permissions: { has: 'RESULT_VERIFIER' },
+        }, select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [],
+      ]) : [[], [], []];
+      const pendingAmendment = amendments.find(row => row.resolvedAt === null);
       return { ...record, problemId: problem?.id ?? null, owner, actions: actions.map(task => ({ ...task, canUpdate: editable.has(record.status) && (manager || task.ownerId === user.id) })),
         approvals, plan: plan && { ...plan, observations: plan.observations.map(row => ({ ...row, evidence: evidence(row.evidenceIds) })) },
         verification: verification && { ...verification, evidence: evidence(verification.evidenceIds) },
-        sources, problem, events, feedback, publications, people,
+        sources, problem, events: safeEvents, feedback, publications, people,
+        canManageSources: manager && !['REJECTED', 'CANCELED'].includes(record.status),
+        amendments, verificationRevisions, eligibleReviewers,
+        canRequestAmendment: manager && !!eligibleReviewers.length && !pendingAmendment,
+        canDecideAmendment: pendingAmendment?.reviewerId === user.id && this.approvalScope(user, record, 'RESULT_VERIFIER'),
         canEdit: manager && editable.has(record.status), canMeasure: manager && ['IN_PROGRESS', 'IMPLEMENTED', 'VERIFYING'].includes(record.status) && !verification,
         canVerify: record.status === 'VERIFYING' && !verification && this.approvalScope(user, record, 'RESULT_VERIFIER'),
         canInvite: manager && !!record.implementedAt, canDraftPublication: manager && record.status === 'COMPLETED' && !!verification,
@@ -260,6 +292,31 @@ export class Cases {
       if (targetOwner !== user.id) await notify(tx, event.id, [targetOwner], 'ASSIGNED', `/improvements/${record.id}`);
       return { id: record.id };
     });
+  }
+
+  async changeImprovementSource(user: Principal, item: string, raw: unknown) {
+    const { expectedVersion: version, appealId, explanation, operation } = parse(improvementSourceInput, raw);
+    await atomic(this.db, async tx => {
+      const record = await this.improvement(tx, user, item);
+      if (!this.manages(user, record) || ['REJECTED', 'CANCELED'].includes(record.status)) throw forbidden();
+      assertVersion(record.version, version);
+      const source = await tx.appeal.findFirst({ where: { AND: [{ id: appealId, ...restrictedSources }, this.policy.staffAppeals(user)] } });
+      if (!source) throw missing();
+      const where = { improvementId: item, appealId };
+      if (operation === 'ATTACH') {
+        if (source.isSynthetic && !record.isSynthetic) throw invalidState('Демонстрационный источник нельзя добавить к рабочему улучшению.');
+        const inserted = await tx.improvementAppeal.createMany({ data: { ...where, explanation }, skipDuplicates: true });
+        if (!inserted.count) return;
+      } else {
+        if (source.resolutionType === 'ACCEPTED_FOR_IMPROVEMENT' && await tx.improvementAppeal.count({ where: { appealId } }) <= 1) {
+          throw invalidState('Сначала зафиксируйте другое улучшение для принятого обращения.');
+        }
+        if (!(await tx.improvementAppeal.deleteMany({ where })).count) throw missing();
+      }
+      await this.bump(tx, record);
+      await audit(tx, 'improvement', item, operation === 'ATTACH' ? 'SOURCE_ATTACHED' : 'SOURCE_DETACHED', user.id, false, { appealId, explanation });
+    });
+    return this.improvementDetail(user, item);
   }
 
   private bump(tx: Tx, record: Improvement, data: Prisma.ImprovementUncheckedUpdateManyInput = {}) {
@@ -382,7 +439,8 @@ export class Cases {
       if (!this.manages(user, record) || !['DRAFT', 'DEFERRED'].includes(record.status)) throw forbidden();
       if (await tx.measurement.count({ where: { improvementId: item } })) throw invalidState('Есть наблюдения по текущему плану.');
       const plan = { ...data, metricName: data.metricName ?? null, unit: data.unit ?? null,
-        direction: data.direction ?? null, targetValue: data.targetValue ?? null, protocol: data.protocol ?? null,
+        direction: data.direction ?? null, targetValue: data.targetValue ?? null, targetMaximum: data.direction === 'RANGE' ? data.targetMaximum : null,
+        protocol: data.protocol ?? null,
         minimumSampleSize: data.minimumSampleSize ?? null, maxPeriodDifferencePercent: data.maxPeriodDifferencePercent ?? null };
       await tx.measurementPlan.upsert({ where: { improvementId: item }, create: { improvementId: item, ...plan }, update: { ...plan, version: { increment: 1 } } });
       await this.bump(tx, record);
@@ -392,13 +450,14 @@ export class Cases {
   }
 
   async measure(user: Principal, item: string, raw: unknown) {
-    const { expectedVersion: version, ...data } = parse(observationInput, raw);
+    const { expectedVersion: version, unit, ...data } = parse(observationInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
       if (!this.manages(user, record) || !['IN_PROGRESS', 'IMPLEMENTED', 'VERIFYING'].includes(record.status)) throw forbidden();
       const plan = await tx.measurementPlan.findUnique({ where: { improvementId: item } });
       if (!plan || await tx.verification.findUnique({ where: { improvementId: item } })) throw invalidState();
+      if (unit !== undefined && unit !== plan.unit) throw invalid('Единица измерения должна совпадать с утверждённым планом.');
       if (data.periodStart >= data.periodEnd || data.periodEnd > new Date()) throw invalid('Укажите завершившийся период измерения.');
       if (plan.method !== 'QUALITATIVE' && data.value === undefined) throw invalid('Введите измеренное значение.');
       if (data.phase === 'AFTER' && (!record.implementedAt || data.periodStart < record.implementedAt)) {
@@ -408,20 +467,58 @@ export class Cases {
         throw invalid('Исходный период должен закончиться до внедрения.');
       }
       await claimAttachments(tx, user.id, data.evidenceIds, { improvementId: item });
-      await tx.measurement.create({ data: { ...data, planVersion: plan.version, improvementId: item, recordedBy: user.id, isSynthetic: record.isSynthetic } });
+      await tx.measurement.create({ data: { ...data, planVersion: plan.version, improvementId: item, recordedBy: user.id, origin: 'USER_ACTION', isSynthetic: record.isSynthetic } });
       await this.bump(tx, record);
       await audit(tx, 'improvement', item, 'MEASUREMENT', user.id);
     });
     return this.improvementDetail(user, item);
   }
 
-  async verify(user: Principal, item: string, raw: unknown) {
+  async requestAmendment(user: Principal, item: string, raw: unknown) {
+    const { expectedVersion: version, reviewerId, reason } = parse(requestAmendmentInput, raw);
+    await atomic(this.db, async tx => {
+      const record = await this.improvement(tx, user, item);
+      assertVersion(record.version, version);
+      if (!this.manages(user, record)) throw forbidden();
+      if (record.status !== 'COMPLETED' || !await tx.verification.findUnique({ where: { improvementId: item } })) throw invalidState();
+      if (await tx.verificationAmendment.count({ where: { improvementId: item, resolvedAt: null } })) throw invalidState('Запрос уже рассматривается.');
+      const reviewer = await tx.user.findFirst({ where: { id: reviewerId, active: true } });
+      if (!reviewer || reviewer.id === user.id || !this.approvalScope(reviewer, record, 'RESULT_VERIFIER')) throw forbidden();
+      await this.bump(tx, record);
+      const request = await tx.verificationAmendment.create({ data: { improvementId: item, requestedBy: user.id, reviewerId, reason } });
+      const event = await audit(tx, 'improvement', item, 'VERIFICATION_AMENDMENT_REQUESTED', user.id, false, { amendmentId: request.id, reason });
+      await notify(tx, event.id, [reviewerId], 'VERIFICATION_AMENDMENT_REQUESTED', `/improvements/${item}`);
+    });
+    return this.improvementDetail(user, item);
+  }
+
+  async rejectAmendment(user: Principal, item: string, amendmentId: string, raw: unknown) {
+    const { expectedVersion: version, reason } = parse(rejectAmendmentInput, raw);
+    await atomic(this.db, async tx => {
+      const record = await this.improvement(tx, user, item);
+      assertVersion(record.version, version);
+      if (!this.approvalScope(user, record, 'RESULT_VERIFIER')) throw forbidden();
+      const request = await tx.verificationAmendment.findFirst({ where: { id: amendmentId, improvementId: item, reviewerId: user.id, resolvedAt: null } });
+      if (!request) throw missing();
+      await this.bump(tx, record);
+      await tx.verificationAmendment.update({ where: { id: request.id }, data: { resolvedAt: new Date(), approved: false, decision: reason } });
+      const event = await audit(tx, 'improvement', item, 'VERIFICATION_AMENDMENT_REJECTED', user.id, false, { reason });
+      await notify(tx, event.id, [request.requestedBy], 'VERIFICATION_AMENDMENT_REJECTED', `/improvements/${item}`);
+    });
+    return this.improvementDetail(user, item);
+  }
+
+  async verify(user: Principal, item: string, raw: unknown, amendmentId?: string) {
     const { expectedVersion: version, ...input } = parse(verificationInput, raw);
     await atomic(this.db, async tx => {
       const record = await this.improvement(tx, user, item);
       assertVersion(record.version, version);
       if (!this.approvalScope(user, record, 'RESULT_VERIFIER')) throw forbidden();
-      if (record.status !== 'VERIFYING' || await tx.verification.findUnique({ where: { improvementId: item } })) throw invalidState();
+      const previous = await tx.verification.findUnique({ where: { improvementId: item } });
+      const amendment = amendmentId ? await tx.verificationAmendment.findFirst({ where: {
+        id: amendmentId, improvementId: item, reviewerId: user.id, resolvedAt: null,
+      } }) : null;
+      if (amendmentId ? !amendment || !previous || record.status !== 'COMPLETED' : record.status !== 'VERIFYING' || previous) throw invalidState();
       const plan = await tx.measurementPlan.findUnique({ where: { improvementId: item } });
       if (!plan) throw invalidState('Сначала задайте план проверки.');
       const observations = await tx.measurement.findMany({
@@ -430,34 +527,52 @@ export class Cases {
       });
       const before = observations.find(row => row.phase === 'BEFORE');
       const afterObservation = observations.find(row => row.phase === 'AFTER');
+      const effect = plan.method === 'QUALITATIVE' ? null : assessEffect(plan, before?.value ?? null, afterObservation?.value ?? null);
+      const hasBothObservations = !!before && !!afterObservation;
+      const sampleSize = plan.minimumSampleSize;
+      const sufficientSample = hasBothObservations && (!sampleSize || [before, afterObservation].every(row => (row.sampleSize ?? 0) >= sampleSize));
+      const comparableSource = hasBothObservations && (!plan.requireSameSource || (before.sourceType !== 'OTHER' && before.sourceType === afterObservation.sourceType));
+      const periodLimit = plan.maxPeriodDifferencePercent;
+      const comparablePeriods = hasBothObservations && (() => {
+        const base = before.periodEnd.getTime() - before.periodStart.getTime();
+        const comparison = afterObservation.periodEnd.getTime() - afterObservation.periodStart.getTime();
+        return base > 0 && comparison > 0 && (periodLimit === null || Math.abs(comparison - base) * 100 <= base * periodLimit);
+      })();
       if (input.outcome !== 'INCONCLUSIVE') {
-        if (!before || !afterObservation) throw invalidState('Для вывода об эффекте нужны наблюдения до и после внедрения.');
-        if (plan.minimumSampleSize && [before, afterObservation].some(row => (row.sampleSize ?? 0) < plan.minimumSampleSize!)) {
+        if (!hasBothObservations) throw invalidState('Для вывода об эффекте нужны наблюдения до и после внедрения.');
+        if (!sufficientSample) {
           throw invalidState('Выборки меньше минимума, заданного планом. Добавьте наблюдения либо укажите недостаточность данных.');
         }
-        if (plan.requireSameSource && (before.sourceType === 'OTHER' || before.sourceType !== afterObservation.sourceType)) {
+        if (!comparableSource) {
           throw invalidState('В плане требуется один указанный вид источника до и после внедрения.');
         }
-        if (plan.maxPeriodDifferencePercent !== null) {
-          const base = before.periodEnd.getTime() - before.periodStart.getTime();
-          const comparison = afterObservation.periodEnd.getTime() - afterObservation.periodStart.getTime();
-          if (base <= 0 || Math.abs(comparison - base) * 100 > base * plan.maxPeriodDifferencePercent) {
-            throw invalidState('Длительность периодов различается сильнее, чем допускает план.');
-          }
-        }
+        if (!comparablePeriods) throw invalidState('Длительность периодов различается сильнее, чем допускает план.');
       }
-      if (input.outcome === 'VERIFIED' && plan.method !== 'QUALITATIVE') {
-        const after = afterObservation?.value;
-        const goal = plan.targetValue;
-        const meetsTarget = after != null && goal != null &&
-          (plan.direction === 'DECREASE' ? after <= goal : plan.direction === 'INCREASE' ? after >= goal : after === goal);
-        if (!meetsTarget) throw invalidState('Последнее измерение не достигло целевого значения. Укажите подходящий итог.');
+      if (input.outcome === 'VERIFIED' && effect) {
+        if (!effect.meetsTarget) throw invalidState('Последнее измерение не достигло целевого значения. Укажите подходящий итог.');
+        if (!effect.improved && !effect.maintained) throw invalidState('Достигнутый порог сам по себе не подтверждает улучшение относительно исходного уровня.');
       }
       await claimAttachments(tx, user.id, input.evidenceIds, { improvementId: item });
-      await tx.verification.create({ data: { ...input, planVersion: plan.version, measurementIds: [before?.id, afterObservation?.id].filter((value): value is string => !!value),
-        improvementId: item, verifierId: user.id, isSynthetic: record.isSynthetic } });
+      const updated = { ...input, planVersion: plan.version, measurementIds: [before?.id, afterObservation?.id].filter((value): value is string => !!value),
+        effect: { ...effect, method: plan.method, unit: plan.unit, hypothesis: plan.hypothesis,
+          hasBothObservations, sufficientSample, comparableSource, comparablePeriods, evaluatedAsDeterminate: input.outcome !== 'INCONCLUSIVE' },
+        verifierId: user.id, origin: 'USER_ACTION' as const, isSynthetic: record.isSynthetic };
+      if (previous && amendment) {
+        const now = new Date();
+        await tx.verificationRevision.create({ data: { improvementId: item, revision: previous.revision, reason: amendment.reason,
+          snapshot: { ...previous, verifiedAt: previous.verifiedAt.toISOString() } } });
+        await tx.verification.update({ where: { improvementId: item }, data: { ...updated, verifiedAt: now, revision: { increment: 1 } } });
+        await tx.verificationAmendment.update({ where: { id: amendment.id }, data: { approved: true, resolvedAt: now, decision: input.summary } });
+        const publications = await tx.publication.findMany({ where: { improvementId: item, state: { in: ['DRAFT', 'APPROVED', 'PUBLISHED'] } } });
+        for (const publication of publications) {
+          const retracted = await tx.publication.update({ where: { id: publication.id }, data: { state: 'RETRACTED', version: { increment: 1 } } });
+          await tx.publicationRevision.create({ data: { publicationId: retracted.id, version: retracted.version,
+            actorId: user.id, action: 'VERIFICATION_AMENDED', snapshot: { ...retracted, publishedAt: retracted.publishedAt?.toISOString() ?? null } } });
+          await audit(tx, 'publication', publication.id, 'VERIFICATION_AMENDED', user.id, false, { previousState: publication.state });
+        }
+      } else await tx.verification.create({ data: { ...updated, improvementId: item } });
       await this.bump(tx, record);
-      const event = await audit(tx, 'improvement', item, 'VERIFICATION', user.id, false, { outcome: input.outcome });
+      const event = await audit(tx, 'improvement', item, amendment ? 'VERIFICATION_AMENDED' : 'VERIFICATION', user.id, false, { outcome: input.outcome });
       await notify(tx, event.id, [record.ownerId], 'VERIFICATION', `/improvements/${item}`);
     });
     return this.improvementDetail(user, item);
@@ -470,7 +585,7 @@ export class Cases {
       assertVersion(record.version, version);
       if (!this.manages(user, record)) throw forbidden();
       if (!record.implementedAt) throw invalidState('Приглашения доступны после внедрения.');
-      const sources = await tx.appeal.findMany({ where: { AND: [this.policy.staffAppeals(user), { OR: [
+      const sources = await tx.appeal.findMany({ where: { AND: [this.policy.staffAppeals(user), { ...restrictedSources, OR: [
         { improvements: { some: { improvementId: item } } },
         ...(record.problemId ? [{ problems: { some: { problemId: record.problemId } } }] : []),
       ] }] }, select: { authorId: true }, distinct: ['authorId'] });
@@ -487,7 +602,7 @@ export class Cases {
   }
 
   async feedback(user: Principal, item: string) {
-    const row = await this.db.feedback.findFirst({ where: { id: item, userId: user.id, improvement: { implementedAt: { not: null } } },
+    const row = await this.db.feedback.findFirst({ where: { id: item, ...this.policy.feedback(user) },
       select: { id: true, choice: true, comment: true, version: true, submittedAt: true } });
     if (!row) throw missing();
     return row;
@@ -496,7 +611,7 @@ export class Cases {
   async respond(user: Principal, item: string, raw: unknown) {
     const { expectedVersion: version, ...data } = parse(feedbackInput, raw);
     await atomic(this.db, async tx => {
-      const invite = await tx.feedback.findFirst({ where: { id: item, userId: user.id, improvement: { implementedAt: { not: null } } },
+      const invite = await tx.feedback.findFirst({ where: { id: item, ...this.policy.feedback(user) },
         include: { improvement: { select: { ownerId: true } } } });
       if (!invite) throw missing();
       await checked(tx.feedback.updateMany({ where: { id: item, version }, data: { ...data, comment: data.comment ?? null, submittedAt: new Date(), version: { increment: 1 } } }));
@@ -522,6 +637,8 @@ export class CasesController {
   @Post('improvements') @JsonBody(improvementInput) create(@Req() req: AuthRequest, @Body() data: unknown) { return this.cases.createImprovement(req.user, data); }
   @Get('improvements/:id') detail(@Req() req: AuthRequest, @Param('id') id: string) { return this.cases.improvementDetail(req.user, id); }
   @Patch('improvements/:id') @JsonBody(improvementEditInput) edit(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.editImprovement(req.user, id, data); }
+  @Post('improvements/:id/sources') @JsonBody(improvementSourceInput)
+  improvementSource(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.changeImprovementSource(req.user, id, data); }
   @Post('improvements/:id/transition') @JsonBody(improvementTransitionInput) transition(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data); }
   @Post('improvements/:id/approve') @JsonBody(improvementTransitionInput.omit({ target: true }).required({ text: true })) approve(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'APPROVED'); }
   @Post('improvements/:id/defer') @JsonBody(improvementTransitionInput.omit({ target: true }).required({ text: true })) defer(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.transition(req.user, id, data, 'DEFERRED'); }
@@ -534,6 +651,16 @@ export class CasesController {
   @Post('improvements/:id/measurement-plan') @JsonBody(planInput) savePlan(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.savePlan(req.user, id, data); }
   @Post('improvements/:id/measurements') @JsonBody(observationInput) measure(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.measure(req.user, id, data); }
   @Post('improvements/:id/verification') @JsonBody(verificationInput) verify(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.verify(req.user, id, data); }
+  @Post('improvements/:id/verification-amendments') @JsonBody(requestAmendmentInput)
+  requestAmendment(@Req() req: AuthRequest, @Param('id') id: string, @Body() data: unknown) { return this.cases.requestAmendment(req.user, id, data); }
+  @Post('improvements/:id/verification-amendments/:amendmentId/accept') @JsonBody(verificationInput)
+  acceptAmendment(@Req() req: AuthRequest, @Param('id') id: string, @Param('amendmentId') amendmentId: string, @Body() data: unknown) {
+    return this.cases.verify(req.user, id, data, amendmentId);
+  }
+  @Post('improvements/:id/verification-amendments/:amendmentId/reject') @JsonBody(rejectAmendmentInput)
+  rejectAmendment(@Req() req: AuthRequest, @Param('id') id: string, @Param('amendmentId') amendmentId: string, @Body() data: unknown) {
+    return this.cases.rejectAmendment(req.user, id, amendmentId, data);
+  }
   @Get('improvements/:id/result') async result(@Req() req: AuthRequest, @Param('id') id: string) {
     const { verification, plan, implementedAt } = await this.cases.improvementDetail(req.user, id);
     return { verification, plan, implementedAt };

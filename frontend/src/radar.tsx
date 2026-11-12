@@ -17,8 +17,9 @@ type RadarData = {
   total: number; closed: number; documented: number; firstResponse: { count: number; hours: number | null };
   overdue: number; stale: number; waiting: number; improved: number; verified: number; verifiedSuccess: number; verifiedDeterminate: number; topics: number; recurrenceCandidates: number;
   types: MetricGroup[]; statuses: MetricGroup[]; outcomes: MetricGroup[]; processes: Bucket[]; categories: Bucket[];
-  attention: AppealRow[]; improvements: CaseRow[]; topicItems: LinkRow[]; minGroup: number;
+  attention: (AppealRow & { reasons: string[] })[]; improvements: CaseRow[]; topicItems: LinkRow[]; minGroup: number;
 };
+const attentionReason: Record<string, string> = { HIGH_PRIORITY: 'Высокий приоритет', OVERDUE: 'Просрочено', DUE_SOON: 'Срок в ближайшие сутки', NO_NEXT_OWNER: 'Нет владельца следующего действия', POSSIBLE_RECURRENCE: 'Возможный повтор' };
 const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
 const ratio = (numerator: number, denominator: number) => denominator ? `${number.format(numerator / denominator * 100)}%` : '—';
 
@@ -30,7 +31,8 @@ function Metric({ label, value, detail, icon, to }: { label: string; value: numb
 
 export function RadarPage() {
   const { user, demoMode } = useSession();
-  const [filters, setFilters] = useState({ processId: '', departmentId: '', from: '', to: '' });
+  const defaults = { processId: '', departmentId: '', from: '', to: '', origin: demoMode ? 'DEMO' : 'LIVE', evidence: 'OBSERVED' };
+  const [filters, setFilters] = useState(defaults);
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const dateBoundary = (day: string, inclusiveEnd = false) => {
     if (!day) return undefined;
@@ -54,20 +56,27 @@ export function RadarPage() {
   const toQueue = (extra: Record<string, string> = {}) => '/work-queue' + queryString({ ...scope, normalOnly: 'true', ...extra });
   return <><PageHeading title="Радар процессов" subtitle="Сигналы, сроки и результаты изменений по доступным вам записям."
     action={user.permissions.includes('EXPORT_DATA') && <a className="button secondary" href={'/api/v1/analytics/export' + query}><Download size={17} />Выгрузить CSV</a>} />
-    {demoMode && <div className="info-box"><Activity size={18} /> В деморежиме примеры и результаты измерений синтетические.</div>}
+    {demoMode && <div className="info-box"><Activity size={18} /> Демонстрационные карточки содержат синтетические данные. Действия в приложении и подготовленные примеры считаются отдельно.</div>}
     <div className="surface filter-bar">
+      <Field label="Карточки"><select value={filters.origin} onChange={event => updateFilters({ ...filters, origin: event.target.value })}>
+        <option value="LIVE">Рабочие</option><option value="DEMO">Демонстрационные</option><option value="ORIGINAL">Исходный набор</option>
+      </select></Field>
+      <Field label="Доказательства"><select value={filters.evidence} onChange={event => updateFilters({ ...filters, evidence: event.target.value })}>
+        <option value="OBSERVED">Действия в приложении и подтверждённый импорт</option><option value="DEMO_FIXTURE">Синтетические примеры</option><option value="UNKNOWN">Неустановленное происхождение</option>
+      </select></Field>
       <Field label="Подразделение"><select value={filters.departmentId} onChange={event => updateFilters({ ...filters, departmentId: event.target.value })}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все доступные" /></select></Field>
       <Field label="Процесс"><select value={filters.processId} onChange={event => updateFilters({ ...filters, processId: event.target.value })}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select></Field>
       <Field label="Создано с"><DatePicker type="date" value={filters.from} max={filters.to || undefined} onValueChange={value => updateFilters({ ...filters, from: value })} /></Field>
       <Field label="Создано по"><DatePicker type="date" value={filters.to} min={filters.from || undefined} onValueChange={value => updateFilters({ ...filters, to: value })} /></Field>
-      {Object.values(filters).some(Boolean) && <button type="button" className="button subtle" onClick={() => updateFilters({ processId: '', departmentId: '', from: '', to: '' })}>Сбросить</button>}
+      {Object.keys(defaults).some(key => filters[key as keyof typeof filters] !== defaults[key as keyof typeof defaults]) && <button type="button" className="button subtle" onClick={() => updateFilters(defaults)}>Сбросить</button>}
     </div>
+    <p className="muted">Период, подразделение и процесс применяются к карточке каждого типа. Фильтры обращения уточняют выборку улучшений по доступным источникам.</p>
     <ErrorBox error={data.error || catalog.error} retry={() => { void data.refetch(); void catalog.refetch(); }} />{data.isPending && <Loading />}
     {values && <>
       <div className="metric-grid">
-        <Metric label="Обращения" value={values.total} detail="Созданы в выбранном периоде" icon={<Inbox size={19} />} to={toQueue()} />
+        <Metric label="Обращения" value={values.total} detail="Карточки выбранного происхождения и периода" icon={<Inbox size={19} />} to={toQueue()} />
         <Metric label="Просрочено" value={values.overdue} detail="Истёк срок первого ответа или следующего действия" icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
-        <Metric label="Без активности" value={values.stale} detail="Три суток без действий или нет ответственного" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
+        <Metric label="Без активности" value={values.stale} detail="Истёк порог активности или нет ответственного" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
         <Metric label="Тематические связи" value={values.topics} detail="Связи, включая возможные повторы" icon={<GitPullRequest size={19} />} />
       </div>
       <Tabs.Root value={tab} onValueChange={setTab}>
@@ -76,11 +85,11 @@ export function RadarPage() {
         ].map(([key, title]) => <Tabs.Trigger key={key} value={key}>{title}</Tabs.Trigger>)}</Tabs.List>
         <Tabs.Content value="attention" className="inner-stack">
           <div className="detail-grid">
-            <Section title="Обращения к проверке" icon={<TriangleAlert size={19} />}>{values.attention.length ? values.attention.map(item => <div className="task-row" key={item.id}>
-              <div><Link to={`/work-queue/appeals/${item.id}`}>{item.title}</Link><small>{item.number} · {item.controlDueAt ? date(item.controlDueAt) : 'Срок не задан'}</small></div><Chip value={item.status} />
+            <Section title="Обращения к проверке" icon={<TriangleAlert size={19} />} action={<Link to={toQueue()}>Вся очередь</Link>}>{values.attention.length ? values.attention.map(item => <div className="task-row" key={item.id}>
+              <div><Link to={`/work-queue/appeals/${item.id}`}>{item.title}</Link><small>{item.number} · {item.controlDueAt ? date(item.controlDueAt) : 'Срок не задан'}</small><small>{item.reasons.length ? item.reasons.map(reason => attentionReason[reason]).join(' · ') : 'Превышен порог активности'}</small></div><Chip value={item.status} />
             </div>) : <Empty title="Нет обращений к проверке" />}</Section>
             <Section title="Рассмотрение" icon={<Activity size={19} />}><dl className="facts">
-              <div><dt>Закрыты из созданных</dt><dd><Link to={toQueue({ status: 'CLOSED' })}>{ratio(values.closed, values.total)} · {values.closed} из {values.total}</Link></dd></div>
+              <div><dt>Закрыты по выбранным доказательствам</dt><dd><Link to={toQueue({ metric: 'closed' })}>{ratio(values.closed, values.total)} · {values.closed} из {values.total}</Link></dd></div>
               <div><dt>С итогом среди закрытых</dt><dd><Link to={toQueue({ metric: 'documented' })}>{ratio(values.documented, values.closed)} · {values.documented} из {values.closed}</Link></dd></div>
               <div><dt>До первого ответа</dt><dd>{values.firstResponse.hours === null ? 'Нет данных' : <Link to={toQueue({ metric: 'responded' })}>{number.format(values.firstResponse.hours)} ч · N = {values.firstResponse.count}</Link>}</dd></div>
               <div><dt>Ждут уточнения</dt><dd><Link to={toQueue({ tab: 'waiting' })}>{values.waiting}</Link></dd></div>
@@ -113,7 +122,7 @@ export function RadarPage() {
         <Tabs.Content value="outcomes" className="inner-stack"><div className="metric-grid three">
           <Metric label="Внедрено" value={values.improved} detail="Внедрено, проверяется или завершено" icon={<Layers3 size={19} />} />
           <Metric label="Есть проверка" value={ratio(values.verified, values.improved)} detail={`${values.verified} из ${values.improved} внедрённых`} icon={<CheckCircle2 size={19} />} />
-          <Metric label="Эффект подтверждён" value={ratio(values.verifiedSuccess, values.verifiedDeterminate)} detail={`${values.verifiedSuccess} из ${values.verifiedDeterminate} с определённым итогом`} icon={<Activity size={19} />} />
+          <Metric label="Критерий проверки выполнен" value={ratio(values.verifiedSuccess, values.verifiedDeterminate)} detail={`${values.verifiedSuccess} из ${values.verifiedDeterminate} с определённым итогом`} icon={<Activity size={19} />} />
         </div><Section title="Итоги проверки">
           <Field label="Исход проверки"><select value={outcome} onChange={event => { setOutcome(event.target.value); setOutcomePage(1); }}>
             <option value="">Все внедрённые</option>{values.outcomes.map(row => <option key={row.key} value={row.key}>{label(row.key)} · {row.count}</option>)}

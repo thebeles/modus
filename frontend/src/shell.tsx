@@ -4,9 +4,9 @@ import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
 import { label } from './contracts';
-import { api, ApiError, type Session } from './api';
+import { api, ApiError, queryString, type Page, type Session } from './api';
 import { SessionContext, useSession } from './session';
-import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading } from './ui';
+import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading, Pagination } from './ui';
 import { AppealDetail, AppealList, Home, NewAppeal } from './appeals';
 const CaseList = lazy(() => import('./cases').then(module => ({ default: module.CaseList })));
 const CreateCase = lazy(() => import('./cases').then(module => ({ default: module.CreateCase })));
@@ -76,7 +76,7 @@ function Layout() {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [mobile, setMobile] = useState(false);
-  const notices = useQuery({ queryKey: ['notifications'], queryFn: () => api<{ unread: number }>('/notifications'), refetchInterval: 5000 });
+  const notices = useQuery({ queryKey: ['notifications'], queryFn: () => api<{ unread: number }>('/notifications?limit=1'), refetchInterval: 5000 });
   const logout = useMutation({ mutationFn: () => api('/auth/logout', { method: 'POST' }),
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
   const nav = navigation[user.role];
@@ -110,13 +110,16 @@ function Layout() {
 
 export function Notifications() {
   const client = useQueryClient();
-  const rows = useQuery({ queryKey: ['notifications'], queryFn: () => api<{ unread: number; items: { id: string; href?: string; kind: string; readAt?: string; createdAt: string }[] }>('/notifications') });
+  const [page, setPage] = useState(1);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const rows = useQuery({ queryKey: ['notifications', page, unreadOnly], queryFn: ({ signal }) => api<Page<{ id: string; href?: string; kind: string; readAt?: string; createdAt: string }> & { unread: number }>(
+    '/notifications' + queryString({ page, unreadOnly: unreadOnly ? 'true' : undefined }), { signal }), refetchInterval: 3000 });
   const [settings, setSettings] = useState(false);
   const preferences = useQuery({ queryKey: ['notification-preferences'], queryFn: () => api<{ notifyRegistration: boolean }>('/notification-preferences'), enabled: settings });
   const updatePreferences = useMutation({ mutationFn: (notifyRegistration: boolean) => api<{ notifyRegistration: boolean }>('/notification-preferences', {
     method: 'PATCH', body: { notifyRegistration },
   }), onSuccess: value => { client.setQueryData(['notification-preferences'], value); setSettings(false); } });
-  const read = useMutation({ mutationFn: (path: string) => api(path, { method: 'POST' }), onSuccess: () => client.invalidateQueries({ queryKey: ['notifications'] }) });
+  const read = useMutation({ mutationFn: (path: string) => api(path, { method: 'POST' }), onSuccess: () => { if (unreadOnly) setPage(1); return client.invalidateQueries({ queryKey: ['notifications'] }); } });
   return <><PageHeading title="Уведомления" subtitle="Ответы, решения и приглашения к обратной связи." action={<div className="button-row"><button className="button secondary" onClick={() => { updatePreferences.reset(); setSettings(true); }}><Settings size={16} />Настройки</button>
     {rows.data?.unread ? <button className="button secondary" disabled={read.isPending} onClick={() => read.mutate('/notifications/read-all')}>Отметить все прочитанными</button> : null}</div>} />
     {settings && <Modal title="Настройки уведомлений" close={() => setSettings(false)} description="Уточнения, назначения и решения приходят всегда.">
@@ -125,11 +128,12 @@ export function Notifications() {
         <label className="checkbox-line"><input type="checkbox" name="notifyRegistration" defaultChecked={preferences.data.notifyRegistration} /> Подтверждения регистрации моих обращений</label>
       </ActionForm>}
     </Modal>}
+    <label className="checkbox-line"><input type="checkbox" checked={unreadOnly} onChange={event => { setUnreadOnly(event.target.checked); setPage(1); }} /> Только непрочитанные</label>
     <ErrorBox error={rows.error || read.error} retry={() => rows.refetch()} />{rows.isPending && <Loading />}
     {rows.data && <div className="surface">{rows.data.items.length ? rows.data.items.map(item => <div className={`notification-row ${item.readAt ? '' : 'unread'}`} key={item.id}>
       <span className="row-icon"><Bell size={18} /></span><div>{item.href ? <Link to={item.href} onClick={() => { if (!item.readAt) read.mutate(`/notifications/${item.id}/read`); }}>{label(item.kind)}</Link> : <strong>{label(item.kind)}</strong>}
       <small>{date(item.createdAt, true)}</small></div>{!item.readAt && <button className="icon-button" aria-label="Отметить прочитанным" onClick={() => read.mutate(`/notifications/${item.id}/read`)}><X size={17} /></button>}
-    </div>) : <Empty title="Новых событий нет" />}</div>}</>;
+    </div>) : <Empty title="Новых событий нет" />}</div>}{rows.data && <Pagination {...rows.data} onChange={setPage} />}</>;
 }
 
 function Help() {

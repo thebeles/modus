@@ -3,9 +3,13 @@ import { AppError } from './common';
 
 const unavailable = () => new AppError('SCANNER_UNAVAILABLE', 'Проверка файлов временно недоступна.', 503);
 
+export function attachmentScanMode() {
+  return process.env.NODE_ENV === 'production' ? 'required' : process.env.ATTACHMENT_SCAN_MODE ?? 'disabled';
+}
+
 export async function scanUpload(bytes: Buffer) {
-  const mode = process.env.ATTACHMENT_SCAN_MODE ?? 'disabled';
-  if (mode === 'disabled') return;
+  const mode = attachmentScanMode();
+  if (mode === 'disabled') return false;
   const path = process.env.CLAMD_SOCKET;
   const host = process.env.CLAMD_HOST;
   const port = Number(process.env.CLAMD_PORT ?? 3310);
@@ -38,4 +42,5 @@ export async function scanUpload(bytes: Buffer) {
       socket.destroy();
     });
   });
+  return true;
 }

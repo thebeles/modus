@@ -36,11 +36,13 @@ const strictModels = new Set(['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'qwen
 const adviceInput = z.strictObject({ consent: z.literal(true), id: id.optional(), text: bodyText.optional(),
       visibility: z.enum(['NORMAL_INTERNAL', 'RESTRICTED', 'SPECIAL']).optional(), categoryId: id.optional() });
 const decisionInput = z.strictObject({ decision: z.enum(['APPLIED', 'DISMISSED']) });
+const templateVersion = 'ru-1';
+const modelName = () => process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 
 @Injectable()
 export class Groq implements AiProvider {
   private settings() {
-    const model = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+    const model = modelName();
     const mode = process.env.GROQ_OUTPUT_MODE || 'json_schema';
     const key = process.env.GROQ_API_KEY?.trim();
     const supported = mode === 'json_object' || (mode === 'json_schema' && strictModels.has(model));
@@ -131,6 +133,18 @@ export class Ai {
 
   capabilities() { return { available: this.provider.available(), confidential: false, fallback: 'Ручное заполнение и поиск по категории, процессу и заголовку.' }; }
 
+  private async organizationId(departmentId: string | null) {
+    if (!departmentId) return null;
+    const [root] = await this.db.$queryRaw<{ id: string }[]>`
+      WITH RECURSIVE ancestors AS (
+        SELECT id, "parentId" FROM "OrganizationUnit" WHERE id = ${departmentId}
+        UNION
+        SELECT u.id, u."parentId" FROM "OrganizationUnit" u JOIN ancestors a ON u.id = a."parentId"
+      )
+      SELECT id FROM ancestors WHERE "parentId" IS NULL LIMIT 1`;
+    return root?.id ?? null;
+  }
+
   async advise(user: Principal, feature: keyof typeof scopes, raw: unknown) {
     if (user.role === 'ADMIN') throw forbidden();
     const base = parse(adviceInput, raw);
@@ -186,6 +200,10 @@ export class Ai {
     const { input, packed, truncated } = packContext(context, limit);
     const ids = (name: string) => new Set(z.array(z.object({ id })).parse(packed[name] ?? []).map(row => row.id));
     if (fallback && !ids('candidates').size) return { mode: 'RULE', candidates: fallback };
+    const organizationId = await this.organizationId(user.departmentId);
+    const configuredLimit = Number(process.env.GROQ_ORG_HOURLY_LIMIT ?? 240);
+    const limitPerOrganization = Number.isSafeInteger(configuredLimit) && configuredLimit >= 1 ? configuredLimit : 240;
+    await throttle(this.db, `ai-org:${organizationId ?? 'unassigned'}`, limitPerOrganization, 3600);
     let result: unknown;
     try {
       result = schema.parse(await this.provider.complete(feature, `${guidelines} ${scopes[feature]}`, input, schema));
@@ -206,21 +224,33 @@ export class Ai {
       if (fallback) return { mode: 'RULE', candidates: fallback };
       throw unavailable();
     }
-    const usage = await this.db.aiUsage.create({ data: { userId: user.id, feature, inputLength: input.length, state: 'OK' } });
-    return { mode: 'GROQ', truncated, usageId: usage.id, suggestion: result };
+    const expiresAt = new Date(Date.now() + 30 * 60000);
+    const usage = await this.db.aiUsage.create({ data: {
+      userId: user.id, feature, inputLength: input.length, state: 'OK',
+      suggestion: { create: { organizationId, templateVersion, provider: 'GROQ', model: modelName(), expiresAt } },
+    } });
+    return { mode: 'GROQ', truncated, usageId: usage.id, expiresAt, suggestion: result };
   }
 
   async decide(user: Principal, usageId: string, raw: unknown) {
     const { decision } = parse(decisionInput, raw);
-    return atomic(this.db, async tx => {
-      const usage = await tx.aiUsage.findFirst({ where: { id: usageId, userId: user.id } });
-      if (!usage) throw missing();
-      if (usage.state === decision) return { ok: true };
-      if (usage.state !== 'OK' || usage.feature !== 'appeal-assist') throw invalidState();
-      await tx.aiUsage.update({ where: { id: usage.id }, data: { state: decision } });
-      await audit(tx, 'ai-usage', usage.id, decision, user.id);
-      return { ok: true };
+    const state = decision === 'APPLIED' ? 'ACCEPTED' : 'REJECTED';
+    const result = await atomic(this.db, async tx => {
+      const usage = await tx.aiUsage.findFirst({ where: { id: usageId, userId: user.id }, include: { suggestion: true } });
+      if (!usage?.suggestion) throw missing();
+      const suggestion = usage.suggestion;
+      if (suggestion.status === state) return state;
+      if (suggestion.status === 'EXPIRED') return 'EXPIRED';
+      if (suggestion.status !== 'PENDING') throw invalidState();
+      const now = new Date();
+      const status = suggestion.expiresAt <= now ? 'EXPIRED' : state;
+      await tx.aiSuggestion.update({ where: { usageId }, data: { status, decidedAt: now } });
+      await tx.aiUsage.update({ where: { id: usage.id }, data: { state: status === 'EXPIRED' ? status : decision } });
+      await audit(tx, 'ai-usage', usage.id, status, user.id);
+      return status;
     });
+    if (result === 'EXPIRED') throw invalidState('Срок действия подсказки истёк. Получите новую подсказку или продолжите вручную.');
+    return { ok: true, status: result };
   }
 }
 

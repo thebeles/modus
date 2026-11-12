@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Appeal, AppealStatus, AppealType, PrismaClient, Priority, Resolution, Role, Visibility } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import { readFile } from 'node:fs/promises';
+import { assessEffect } from '../src/effect';
 import { permissions } from '../src/contracts';
 
 const db = new PrismaClient();
@@ -97,21 +98,23 @@ async function seed() {
         row.rawStatus === 'Отклонено' ? 'REJECTED' : row.rawStatus === 'Закрыто' ? 'POSITIVE_FEEDBACK_RECORDED' : 'RESOLVED' : undefined;
       const resolutionText = closedAt ? `Синтетический результат. ${row.rawSuggestedNextAction}` +
         (row.rawStatus === 'Реализовано' ? ' Исходная отметка перенесена для демонстрации. Подтверждённых данных о внедрении нет.' : '') : undefined;
+      const resolutionBy = closedAt ? (resolutionType === 'REJECTED' ? manager.id : handler.id) : null;
       const record = await tx.appeal.upsert({ where: { sourceId: row.sourceId }, update: {}, create: {
         sourceId: row.sourceId, number: row.sourceId, title: titles[index], description: row.rawDescription, descriptionOriginal: row.rawDescription,
         sourceSnapshot: { ...row }, type: typeMap[row.rawType], status, priority, authorId: author.id, departmentId: author.departmentId,
         assigneeId: handler.id, queueId: categoryQueue.id, categoryId: categories.get(row.rawCategory), processId: processes[sourceProcesses[index]].id,
-        resolutionType, resolutionText, resolutionBy: closedAt ? (resolutionType === 'REJECTED' ? manager.id : handler.id) : null,
+        resolutionType, resolutionText, resolutionBy, resolutionOrigin: closedAt ? 'DEMO_FIXTURE' : null,
         closedAt, waitingSince, resumeState: waitingSince ? 'REVIEW' : null, createdAt, lastMeaningfulActionAt: closedAt ?? waitingSince ?? createdAt, updatedAt: date(28 - index),
-        firstHumanResponseAt: status === 'NEW' ? null : date(28 - index), seedOrigin: 'ORIGINAL_DOCX', isSynthetic: true,
+        seedOrigin: 'ORIGINAL_DOCX', isSynthetic: true,
       } });
       appeals.push(record);
       await tx.auditEvent.upsert({ where: { id: `seed-created-${row.sourceId}` }, update: {}, create: {
         id: `seed-created-${row.sourceId}`, entity: 'appeal', entityId: record.id, actorId: author.id,
-        action: 'CREATED', authorVisible: true, createdAt, details: { seedOrigin: 'DEMO_SYNTHETIC' },
+        action: 'CREATED', origin: 'DEMO_FIXTURE', authorVisible: true, createdAt, details: { seedOrigin: 'DEMO_SYNTHETIC' },
       } });
       if (closedAt) await tx.auditEvent.upsert({ where: { id: `seed-result-${row.sourceId}` }, update: {}, create: {
-        id: `seed-result-${row.sourceId}`, entity: 'appeal', entityId: record.id, actorId: handler.id, action: 'RESOLVED_EVENT', authorVisible: true, createdAt: closedAt,
+        id: `seed-result-${row.sourceId}`, entity: 'appeal', entityId: record.id, actorId: resolutionBy, action: 'RESOLVED_EVENT', origin: 'DEMO_FIXTURE', authorVisible: true, createdAt: closedAt,
+        details: { seedOrigin: 'DEMO_SYNTHETIC' },
       } });
       if (waitingSince) {
         const question = row.sourceId === 'A-005' ? 'Какие виды документов и этапы согласования нужно отобразить?' : 'Какие форматы спецификаций и версии файлов нужно сравнивать?';
@@ -121,9 +124,9 @@ async function seed() {
           ['CLARIFICATION', handler.id, 'Пришлите пример, когда он будет готов. Какие поля следует сравнить в первую очередь?', date(28 - index, 10)],
         ] as const) {
           const commentId = `seed-${row.sourceId}-${at.getUTCHours()}`;
-          await tx.comment.upsert({ where: { id: commentId }, update: {}, create: { id: commentId, appealId: record.id, authorId, body, kind: event, createdAt: at } });
+          await tx.comment.upsert({ where: { id: commentId }, update: {}, create: { id: commentId, appealId: record.id, authorId, body, kind: event, origin: 'DEMO_FIXTURE', createdAt: at } });
           await tx.auditEvent.upsert({ where: { id: commentId }, update: {}, create: { id: commentId, entity: 'appeal', entityId: record.id,
-            action: event, authorVisible: true, actorId: authorId, createdAt: at, details: { seedOrigin: 'DEMO_SYNTHETIC' } } });
+            action: event, origin: 'DEMO_FIXTURE', authorVisible: true, actorId: authorId, createdAt: at, details: { seedOrigin: 'DEMO_SYNTHETIC' } } });
         }
       }
     }
@@ -138,7 +141,7 @@ async function seed() {
         seedOrigin: 'DEMO_SYNTHETIC', isSynthetic: true } });
       const eventId = `seed-created-${number}`;
       await tx.auditEvent.upsert({ where: { id: eventId }, update: {}, create: { id: eventId, entity: 'appeal', entityId: record.id,
-        action: visibility === 'NORMAL_INTERNAL' ? 'ROUTING_FALLBACK' : 'CREATED', authorVisible: true, createdAt: date(22) } });
+        action: visibility === 'NORMAL_INTERNAL' ? 'ROUTING_FALLBACK' : 'CREATED', origin: 'DEMO_FIXTURE', authorVisible: true, createdAt: date(22) } });
     }
     for (const [first, second, explanation] of [
       [1, 15, 'В обоих обращениях не хватает исходных данных при постановке задачи. Причины могут отличаться.'],
@@ -180,15 +183,17 @@ async function seed() {
         ...(index !== 3 ? { plan: { create: { method: 'QUANTITATIVE', hypothesis: goal, criterion: 'Сопоставить две выборки с одинаковым определением показателя.',
           metricName: index === 1 ? 'Заявки с уточнениями' : 'Пакеты с дополнительными вопросами', unit: '%', direction: 'DECREASE', targetValue: 25,
           observations: { create: index === 1 ? [
-            { phase: 'BEFORE', value: 50, periodStart: date(6), periodEnd: date(12), sampleSize: 20, source: 'Синтетическая выборка. 10 заявок из 20.', recordedBy: handler.id, isSynthetic: true },
-            { phase: 'AFTER', value: 20, periodStart: date(16), periodEnd: date(23), sampleSize: 20, source: 'Синтетическая выборка. 4 заявки из 20.', recordedBy: handler.id, isSynthetic: true },
+            { phase: 'BEFORE', value: 50, periodStart: date(6), periodEnd: date(12), sampleSize: 20, source: 'Синтетическая выборка. 10 заявок из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
+            { phase: 'AFTER', value: 20, periodStart: date(16), periodEnd: date(23), sampleSize: 20, source: 'Синтетическая выборка. 4 заявки из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
           ] : [] } } } } : {}),
         ...(status === 'COMPLETED' ? { verification: { create: { outcome: index === 1 ? 'VERIFIED' : 'INCONCLUSIVE',
           summary: index === 1 ? 'В тестовой выборке наблюдалось снижение с 50% до 20%.' : 'Данных для вывода об эффекте недостаточно.',
-          limitations: 'Синтетические данные, малая выборка. Причинная связь не проверялась.', verifierId: manager.id, isSynthetic: true, verifiedAt: date(24) } } } : {}),
+          limitations: 'Синтетические данные, малая выборка. Причинная связь не проверялась.',
+          effect: { ...assessEffect({ direction: 'DECREASE', targetValue: 25, targetMaximum: null }, 50, 20),
+            method: 'QUANTITATIVE', unit: '%', hasBothObservations: true, evaluatedAsDeterminate: true }, verifierId: manager.id, origin: 'DEMO_FIXTURE', isSynthetic: true, verifiedAt: date(24) } } } : {}),
       } });
       await tx.auditEvent.upsert({ where: { id: `seed-${number}` }, update: {}, create: {
-        id: `seed-${number}`, entity: 'improvement', entityId: improvement.id, actorId: handler.id, action: status, createdAt: date(24), details: { seedOrigin: 'DEMO_SYNTHETIC' },
+        id: `seed-${number}`, entity: 'improvement', entityId: improvement.id, actorId: handler.id, origin: 'DEMO_FIXTURE', action: status, createdAt: date(24), details: { seedOrigin: 'DEMO_SYNTHETIC' },
       } });
       if (index === 1) {
         const publication = await tx.publication.upsert({ where: { id: 'a0200000-1aaa-4ccc-8aaa-000000000001' }, update: {}, create: {

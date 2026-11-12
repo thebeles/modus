@@ -8,7 +8,7 @@ import { AuthRequest } from './auth';
 import { AppError, allocate, assertVersion, atomic, audit, bodyText, checked, Database, dateTime, digest, expectedVersion, forbidden, id, invalid, invalidState, notify, pagination, parse, throttle, title, Tx } from './common';
 import { attachmentSummary, claimAttachments } from './files';
 import { Policy, Principal, principalSelect } from './policy';
-import { eligibleStaff, queueStaff, Routing } from './routing';
+import { eligibleStaff, notifyRoutingPending, queueStaff, Routing } from './routing';
 import { activeAppeal, appealTransitions, businessDeadline, clarificationKey } from './workflow';
 
 export const appealListInput = z.strictObject({
@@ -18,7 +18,9 @@ export const appealListInput = z.strictObject({
   tab: z.enum(['mine', 'new', 'waiting', 'risk', 'overdue', 'stale', 'all']).optional(),
   own: z.enum(['true', 'false']).optional(), normalOnly: z.enum(['true']).optional(), sort: z.enum(['recent', 'oldest', 'due']).default('recent'),
   from: dateTime.optional(), to: dateTime.optional(), dueFrom: dateTime.optional(), dueTo: dateTime.optional(),
-  metric: z.enum(['documented', 'responded']).optional(),
+  metric: z.enum(['closed', 'documented', 'responded']).optional(),
+  origin: z.enum(['LIVE', 'DEMO', 'ORIGINAL']).optional(),
+  evidence: z.enum(['OBSERVED', 'DEMO_FIXTURE', 'UNKNOWN']).default('OBSERVED'),
 }).refine(({ from, to }) => !from || !to || from < to, { path: ['to'], message: 'Конец периода должен быть позже начала.' })
   .refine(({ dueFrom, dueTo }) => !dueFrom || !dueTo || dueFrom < dueTo, { path: ['dueTo'], message: 'Конец интервала должен быть позже начала.' });
 const createInput = z.strictObject({
@@ -37,7 +39,19 @@ const mutationInput = z.strictObject({
 });
 type Mutation = z.output<typeof mutationInput>;
 const active: Prisma.AppealWhereInput = { status: { notIn: ['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'] } };
+
+export function appealMetrics(evidence: z.output<typeof appealListInput>['evidence']) {
+  const origins = evidence === 'OBSERVED' ? ['USER_ACTION', 'IMPORTED'] as const : [evidence];
+  const closed = { status: 'CLOSED', resolutionOrigin: { in: [...origins] } } satisfies Prisma.AppealWhereInput;
+  return {
+    closed,
+    documented: { ...closed, resolutionType: { not: null }, resolutionText: { not: null } },
+    responded: { firstResponseSeconds: { not: null }, firstResponseOrigin: { in: [...origins] } },
+  } satisfies Record<string, Prisma.AppealWhereInput>;
+}
 export function appealQueueFilters(user: Principal, now: Date) {
+  const hours = Number(process.env.APPEAL_STALE_HOURS ?? 72);
+  const staleHours = Number.isFinite(hours) && hours >= 1 && hours <= 720 ? hours : 72;
   const liveOwner = (visibility: Appeal['visibility']): Prisma.AppealWhereInput => ({
     visibility, OR: [
       { assignee: eligibleStaff(visibility) },
@@ -54,7 +68,7 @@ export function appealQueueFilters(user: Principal, now: Date) {
     risk: { controlDueAt: { gte: now, lte: new Date(now.getTime() + 86400000) } },
     overdue: { controlDueAt: { lt: now } },
     stale: { AND: [active, { OR: [
-      { lastMeaningfulActionAt: { lt: new Date(now.getTime() - 3 * 86400000) } },
+      { lastMeaningfulActionAt: { lt: new Date(now.getTime() - staleHours * 3600000) } },
       { NOT: { OR: visibilities.map(liveOwner) } },
     ] }] },
   } satisfies Record<string, Prisma.AppealWhereInput>;
@@ -71,6 +85,10 @@ const summary = {
 
 const rerouteInput = z.strictObject({ expectedVersion, text: bodyText,
       categoryId: id.nullable().optional(), processId: id.nullable().optional() });
+const resolutionTargetsInput = z.strictObject({
+  ...pagination, q: z.string().trim().max(150).optional(),
+  type: z.enum(['LINKED_TO_EXISTING_CASE', 'ALREADY_ADDRESSED', 'TRANSFERRED']),
+});
 
 @Injectable()
 export class Appeals {
@@ -78,7 +96,7 @@ export class Appeals {
     @Inject(Routing) private readonly routing: Routing) {}
 
   where(user: Principal, filters: z.output<typeof appealListInput>, staff = false, now = new Date()): Prisma.AppealWhereInput {
-    const { status, type, priority, categoryId, departmentId, processId, assigneeId, q, own, normalOnly, tab, from, to, dueFrom, dueTo, metric } = filters;
+    const { status, type, priority, categoryId, departmentId, processId, assigneeId, q, own, normalOnly, tab, from, to, dueFrom, dueTo, metric, origin, evidence } = filters;
     const tabs = appealQueueFilters(user, now);
     return { AND: [
       staff ? this.policy.staffAppeals(user) : this.policy.appeals(user),
@@ -87,8 +105,8 @@ export class Appeals {
       normalOnly === 'true' ? { visibility: 'NORMAL_INTERNAL' } : {},
       tab ? tabs[tab] : {},
       dueFrom || dueTo ? { controlDueAt: { gte: dueFrom, lt: dueTo } } : {},
-      metric === 'documented' ? { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } } : {},
-      metric === 'responded' ? { firstResponseSeconds: { not: null } } : {},
+      metric ? appealMetrics(evidence)[metric] : {},
+      origin === 'ORIGINAL' ? { seedOrigin: 'ORIGINAL_DOCX' } : origin ? { isSynthetic: origin === 'DEMO' } : {},
       q ? { OR: ['title', 'description', 'number'].map(field => ({ [field]: { contains: q, mode: 'insensitive' } })) } : {},
     ] };
   }
@@ -112,6 +130,43 @@ export class Appeals {
     if (!this.policy.isStaff(user)) throw forbidden();
     return this.db.user.findMany({ where: { assigned: { some: this.policy.staffAppeals(user) } },
       select: { id: true, name: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }] });
+  }
+
+  async resolutionTargets(user: Principal, item: string, input: unknown) {
+    const { q, page, limit, type } = parse(resolutionTargetsInput, input);
+    return this.db.$transaction(async tx => {
+      const source = await this.policy.appeal(tx, user, item);
+      if (!await this.policy.handles(tx, user, item)) throw forbidden();
+      const where: Prisma.AppealWhereInput = {
+        AND: [this.policy.staffAppeals(user), { id: { not: item } },
+          q ? { OR: [{ title: { contains: q, mode: 'insensitive' } }, { number: { contains: q, mode: 'insensitive' } }] } : {}],
+      };
+      if (type === 'TRANSFERRED') {
+        const owner: Prisma.UserWhereInput = {
+          ...eligibleStaff(source.visibility),
+          OR: [
+            { id: source.authorId },
+            ...(source.assigneeId ? [{ id: source.assigneeId }] : []),
+            ...(source.queueId ? queueStaff(source.queueId).OR ?? [] : []),
+            ...(source.visibility === 'NORMAL_INTERNAL' && source.departmentId ? [{ role: 'MANAGER' as const, departmentId: source.departmentId }] : []),
+          ],
+        };
+        Object.assign(where, {
+          status: { notIn: ['CLOSED', 'WITHDRAWN'] }, visibility: source.visibility,
+          queueId: source.visibility === 'NORMAL_INTERNAL' ? { not: null } : source.queueId,
+          OR: [
+            { NOT: { authorId: { equals: tx.appeal.fields.assigneeId } }, assignee: owner },
+            { assigneeId: null, queue: { coordinator: owner } },
+          ],
+        } satisfies Prisma.AppealWhereInput);
+      }
+      const [items, total] = await Promise.all([
+        tx.appeal.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], skip: (page - 1) * limit, take: limit,
+          select: { id: true, number: true, title: true } }),
+        tx.appeal.count({ where }),
+      ]);
+      return { items, total, page, limit };
+    }, { isolationLevel: 'RepeatableRead' });
   }
 
   private actions(user: Principal, record: Pick<Appeal, 'authorId' | 'status' | 'visibility' | 'resumeState'>, staff: boolean, pending?: ReviewRequestKind) {
@@ -150,9 +205,10 @@ export class Appeals {
     return this.db.$transaction(async tx => {
       const record = await tx.appeal.findFirst({
         where: { AND: [{ id: appealId }, this.policy.appeals(user)] },
-        select: { ...summary, description: true, proposedSolution: true, resolutionType: true, resolutionText: true, waitingSince: true,
-          resumeState: true, queueId: true, closedAt: true, withdrawnAt: true,
-          assignee: { select: { name: true } }, queue: { select: { name: true } } },
+        select: { ...summary, description: true, proposedSolution: true, resolutionType: true, resolutionText: true, resolutionOrigin: true, waitingSince: true,
+          resumeState: true, queueId: true, routingRetryAt: true, closedAt: true, withdrawnAt: true,
+          assignee: { select: { name: true } }, queue: { select: { name: true } },
+          nextActions: { orderBy: { revision: 'desc' }, take: 30 } },
       });
       if (!record) throw new AppError('NOT_FOUND', 'Обращение не найдено или недоступно.', 404);
       const staff = await this.policy.handles(tx, user, appealId);
@@ -181,12 +237,25 @@ export class Appeals {
           FROM "AppealWorkPeriod" WHERE "appealId" = ${appealId} GROUP BY phase`,
       ]);
       const allowedActions = this.actions(user, record, staff, reviews.find(review => !review.decidedAt)?.kind);
-      return { ...record, assignee: hideAssignment ? null : record.assignee, queue: hideAssignment ? null : record.queue,
+      const authorImprovements = record.authorId === user.id && record.visibility === 'NORMAL_INTERNAL' ?
+        await tx.improvement.findMany({
+          where: { visibility: 'NORMAL_INTERNAL', OR: [
+            { appeals: { some: { appealId } } }, { problem: { appeals: { some: { appealId } } } },
+          ] },
+          select: { number: true, status: true }, orderBy: { number: 'asc' }, take: 20,
+        }) : [];
+      const nextActionHistory = record.nextActions.map(({ kind, state, assignedAt, dueAt, reason, ownerId, queueId }) => ({
+        kind, state, assignedAt, dueAt, reason: !internal && kind === 'ROUTING' ? 'ROUTING_UNAVAILABLE' : reason,
+        ...(internal ? { ownerId, queueId } : {}),
+      }));
+      return { ...record, routingPending: record.routingRetryAt !== null, routingRetryAt: undefined,
+        nextActions: undefined, nextAction: nextActionHistory[0] ?? null, nextActionHistory,
+        assignee: hideAssignment ? null : record.assignee, queue: hideAssignment ? null : record.queue,
         assigneeId: hideAssignment ? null : record.assigneeId,
         queueId: internal ? record.queueId : undefined, resumeState: undefined, comments, events, attachments, reviews,
         timing: { periods, activeSeconds: elapsed.find(row => row.phase === 'ACTIVE')?.seconds ?? 0,
           waitingSeconds: elapsed.find(row => row.phase === 'WAITING_AUTHOR')?.seconds ?? 0 },
-        problems, improvements, publications, links: internal ? links : [], allowedActions };
+        problems, improvements, authorImprovements, publications, links: internal ? links : [], allowedActions };
     }, { isolationLevel: 'RepeatableRead' });
   }
 
@@ -204,7 +273,7 @@ export class Appeals {
     return atomic(this.db, async tx => {
       const existing = await tx.idempotencyKey.findUnique({ where: { userId_route_key: identity } });
       if (existing) return replay(existing);
-      const route = await this.routing.route(tx, { ...data, authorId: user.id, departmentId: user.departmentId });
+      const route = await this.routing.find(tx, { ...data, authorId: user.id, departmentId: user.departmentId });
       const sla = await tx.slaPolicy.findFirst({ where: { priority: 'MEDIUM', active: true } });
       const createdAt = new Date();
       const record = await tx.appeal.create({ data: {
@@ -212,6 +281,7 @@ export class Appeals {
         type: data.type, title: data.title ?? (data.description.slice(0, 85).split('\n')[0].trim() || 'Новое обращение'),
         descriptionOriginal: data.description, description: data.description, proposedSolution: data.proposedSolution,
         categoryId: data.categoryId, processId: data.processId, visibility: route.visibility, assigneeId: route.assigneeId, queueId: route.queueId,
+        ...(route.queueId === null ? { routingReason: route.reason, routingRetryAt: createdAt } : {}),
         dueAt: sla ? businessDeadline(createdAt, sla.nextActionHours) : null,
         firstResponseDueAt: sla ? businessDeadline(createdAt, sla.firstResponseHours) : null, slaVersion: sla?.version,
       } });
@@ -230,7 +300,12 @@ export class Appeals {
         }), skipDuplicates: true });
       }
       const event = await audit(tx, 'appeal', record.id, 'CREATED', user.id, true);
-      if (route.reason !== 'MATCH') await audit(tx, 'appeal', record.id, route.reason === 'SPECIAL_ROUTE' ? 'ASSIGNED' : 'ROUTING_FALLBACK', user.id, false, { reason: route.reason });
+      if (route.queueId === null) {
+        await audit(tx, 'appeal', record.id, 'ROUTING_PENDING', user.id, true, { reason: route.reason });
+        await notifyRoutingPending(tx, record);
+      } else if (route.reason !== 'MATCH') {
+        await audit(tx, 'appeal', record.id, route.reason === 'SPECIAL_ROUTE' ? 'ASSIGNED' : 'ROUTING_FALLBACK', user.id, false, { reason: route.reason });
+      }
       await notify(tx, event.id, [user.id], 'REGISTRATION_CONFIRMED', `/appeals/${record.id}`);
       await notify(tx, event.id, [route.assigneeId ?? route.coordinatorId], 'CREATED', `/appeals/${record.id}`);
       await tx.idempotencyKey.create({ data: { ...identity, requestHash, resourceId: record.id } });
@@ -290,6 +365,7 @@ export class Appeals {
           (record.visibility !== 'NORMAL_INTERNAL' && record.queueId !== other.queueId)) {
           throw invalid('Передача возможна в активное обращение с совместимым классом доступа.');
         }
+        if (!other.queueId) throw invalid('Целевое обращение ожидает назначения.');
         const queue = await tx.workQueue.findUniqueOrThrow({ where: { id: other.queueId } });
         const owner = await tx.user.findFirst({ where: { id: other.assigneeId ?? queue.coordinatorId,
           ...eligibleStaff(other.visibility), ...queueStaff(other.queueId) }, select: principalSelect });
@@ -320,8 +396,8 @@ export class Appeals {
       let event: string = input.action;
       let visible = true;
       let comment = false;
-      const queue = await tx.workQueue.findUniqueOrThrow({ where: { id: record.queueId } });
-      let recipients: (string | null)[] = [staff ? record.authorId : record.assigneeId ?? queue.coordinatorId];
+      const queue = record.queueId ? await tx.workQueue.findUniqueOrThrow({ where: { id: record.queueId } }) : null;
+      let recipients: (string | null | undefined)[] = [staff ? record.authorId : record.assigneeId ?? queue?.coordinatorId];
       switch (input.action) {
         case 'COMMENT':
           if (!input.text || (input.internal && !staff)) throw forbidden();
@@ -350,7 +426,7 @@ export class Appeals {
         case 'RESOLVE':
           if (pending?.kind === 'WITHDRAWAL') throw invalidState('Сначала рассмотрите запрос на отзыв.');
           await this.resolution(tx, user, record, input);
-          Object.assign(data, { status: 'CLOSED', resolutionType: input.resolutionType, resolutionText: input.text,
+          Object.assign(data, { status: 'CLOSED', resolutionType: input.resolutionType, resolutionText: input.text, resolutionOrigin: 'USER_ACTION',
             resolutionBy: user.id, closedAt: now, waitingSince: null, resumeState: null });
           event = 'RESOLVED_EVENT';
           break;
@@ -377,11 +453,12 @@ export class Appeals {
           if (input.approve && withdrawal) {
             Object.assign(data, { status: 'WITHDRAWN', withdrawnAt: now, waitingSince: null, resumeState: null });
           } else if (input.approve) {
-            Object.assign(data, { status: 'REVIEW', closedAt: null, withdrawnAt: null, resolutionType: null, resolutionText: null, resolutionBy: null });
+            Object.assign(data, { status: 'REVIEW', closedAt: null, withdrawnAt: null, resolutionType: null, resolutionText: null, resolutionBy: null, resolutionOrigin: null });
           }
           break;
         }
         case 'ASSIGN': {
+          if (!record.queueId || !queue) throw invalidState('Обращение ожидает маршрутизации.');
           if (!input.text || input.assigneeId === undefined) throw invalid('Укажите ответственного и причину назначения.');
           if (input.assigneeId) {
             const target = await tx.user.findFirst({ where: { id: input.assigneeId, ...eligibleStaff(record.visibility), ...queueStaff(record.queueId) } });
@@ -394,15 +471,19 @@ export class Appeals {
           break;
         }
       }
+      if (data.status === 'WITHDRAWN' && !record.queueId) data.routingRetryAt = null;
       if (comment || data.status) data.lastMeaningfulActionAt = now;
-      if (staff && visible && input.text && (comment || input.action === 'RESOLVE') && !record.firstHumanResponseAt) data.firstHumanResponseAt = now;
+      if (staff && visible && input.text && (comment || input.action === 'RESOLVE') && (!record.firstHumanResponseAt || record.firstResponseOrigin === 'DEMO_FIXTURE' || record.firstResponseOrigin === 'UNKNOWN')) {
+        data.firstHumanResponseAt = now;
+        data.firstResponseOrigin = 'USER_ACTION';
+      }
       if (data.status && data.status !== 'WAITING_AUTHOR' && data.status !== 'CLOSED' && data.status !== 'WITHDRAWN') {
         const sla = await tx.slaPolicy.findFirst({ where: { priority: record.priority, active: true } });
         data.dueAt = sla ? businessDeadline(now, sla.nextActionHours) : null;
         data.slaVersion = sla?.version ?? null;
       }
       await checked(tx.appeal.updateMany({ where: { id: appealId, version: input.expectedVersion }, data }));
-      if (comment && input.text) await tx.comment.create({ data: { appealId, authorId: user.id, body: input.text, internal: !visible, kind: event } });
+      if (comment && input.text) await tx.comment.create({ data: { appealId, authorId: user.id, body: input.text, internal: !visible, kind: event, origin: 'USER_ACTION' } });
       const entry = await audit(tx, 'appeal', appealId, event, user.id, visible, { previous: record.status,
         next: typeof data.status === 'string' ? data.status : record.status,
         ...(input.text && !comment ? { reason: input.text } : {}) });
@@ -436,7 +517,7 @@ export class Appeals {
     let people: { id: string; name: string }[] = [];
     if (appealId && await this.policy.handles(this.db, user, appealId)) {
       const record = await this.policy.appeal(this.db, user, appealId);
-      people = await this.db.user.findMany({
+      if (record.queueId) people = await this.db.user.findMany({
         where: { id: { not: record.authorId }, ...eligibleStaff(record.visibility), ...queueStaff(record.queueId) },
         select: { id: true, name: true }, orderBy: { name: 'asc' },
       });
@@ -462,6 +543,8 @@ export class AppealsController {
   @ApiHeader({ name: 'Idempotency-Key', required: true })
   create(@Req() req: AuthRequest, @Body() input: unknown, @Headers('idempotency-key') key?: string) { return this.service.create(req.user, input, key); }
   @Get('appeals/:id') detail(@Req() req: AuthRequest, @Param('id') item: string) { return this.service.detail(req.user, item); }
+  @Get('appeals/:id/resolution-targets') @QueryFields(resolutionTargetsInput)
+  resolutionTargets(@Req() req: AuthRequest, @Param('id') item: string, @Query() query: unknown) { return this.service.resolutionTargets(req.user, item, query); }
   @Patch('appeals/:id') @JsonBody(editInput) edit(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.edit(req.user, item, input); }
   @Post('appeals/:id/transition') @JsonBody(mutationInput) mutate(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.mutate(req.user, item, input); }
   @Post('appeals/:id/reroute') @JsonBody(rerouteInput) reroute(@Req() req: AuthRequest, @Param('id') item: string, @Body() input: unknown) { return this.service.reroute(req.user, item, input); }

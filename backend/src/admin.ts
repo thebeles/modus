@@ -8,6 +8,7 @@ import { permissions, priorities, roles, visibilities } from './contracts';
 import { AuthRequest } from './auth';
 import { atomic, audit, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, missing, notify, parse, shortText, Tx } from './common';
 import { Principal, principalSelect } from './policy';
+import { attachmentScanMode } from './attachment-scan';
 import { eligibleStaff, queueStaff, Routing } from './routing';
 
 const name = shortText;
@@ -39,14 +40,20 @@ export class Admin {
   async workerStatus(user: Principal) {
     this.check(user);
     const pending = { deliveredAt: null, discardedAt: null, deadAt: null };
-    const [heartbeat, oldest, pendingCount, deadCount] = await this.db.$transaction([
+    const [heartbeat, oldest, pendingCount, deadCount, routingPendingCount, protection] = await this.db.$transaction([
       this.db.workerHeartbeat.findUnique({ where: { id: 'outbox' } }),
       this.db.outboxJob.findFirst({ where: pending, orderBy: { availableAt: 'asc' }, select: { availableAt: true } }),
       this.db.outboxJob.count({ where: pending }),
       this.db.outboxJob.count({ where: { deadAt: { not: null } } }),
+      this.db.appeal.count({ where: { routingRetryAt: { not: null } } }),
+      this.db.workerHeartbeat.findMany({ where: { id: { in: ['attachment-scan', 'attachment-scan-failure', 'attachment-storage-failure'] } } }),
     ]);
     return { lastCheckAt: heartbeat?.checkedAt ?? null, healthy: !!heartbeat && Date.now() - heartbeat.checkedAt.getTime() < 90000,
-      oldestAvailableAt: oldest?.availableAt ?? null, pendingCount, deadCount };
+      oldestAvailableAt: oldest?.availableAt ?? null, pendingCount, deadCount, routingPendingCount, attachmentProtection: { mode: attachmentScanMode(),
+        lastCleanAt: protection.find(row => row.id === 'attachment-scan')?.checkedAt ?? null,
+        scanFailureAt: protection.find(row => row.id === 'attachment-scan-failure')?.checkedAt ?? null,
+        storageFailureAt: protection.find(row => row.id === 'attachment-storage-failure')?.checkedAt ?? null,
+      } };
   }
 
   async retryNotification(user: Principal, item: string) {
@@ -95,13 +102,13 @@ export class Admin {
         queue: { select: { coordinatorId: true } } } });
     for (const row of assignments) {
       const active = row.status !== 'CLOSED' && row.status !== 'WITHDRAWN';
-      const route = active && row.queue.coordinatorId === row.authorId ?
+      const route = active && row.queue?.coordinatorId === row.authorId ?
         await this.routing.route(tx, { visibility: row.visibility, authorId: row.authorId }) : null;
       await tx.appeal.update({ where: { id: row.id }, data: {
         queueId: route?.queueId ?? row.queueId, assigneeId: route?.assigneeId ?? null, version: { increment: 1 },
       } });
       const event = await audit(tx, 'appeal', row.id, 'ASSIGNED', actor.id, true, { reason, previousAssigneeId: row.assigneeId });
-      if (active) await notify(tx, event.id, [route?.assigneeId ?? route?.coordinatorId ?? row.queue.coordinatorId], 'ASSIGNED', `/appeals/${row.id}`);
+      if (active) await notify(tx, event.id, [route?.assigneeId ?? route?.coordinatorId ?? row.queue?.coordinatorId], 'ASSIGNED', `/appeals/${row.id}`);
     }
   }
 

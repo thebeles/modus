@@ -1,9 +1,21 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import { useMutation } from '@tanstack/react-query';
 import { AlertCircle, ArrowLeft, ArrowRight, Check, CircleDashed, FileText, Inbox, X } from './icons';
 import { cloneElement, useEffect, useId, useRef, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { label } from './contracts';
-import { ApiError, type Entity, type EventRow } from './api';
+import { api, ApiError, type Entity, type EventRow } from './api';
+
+export function AiDecision({ usageId, onDecide }: { usageId: string; onDecide: () => void }) {
+  const decision = useMutation({
+    mutationFn: (value: 'APPLIED' | 'DISMISSED') => api(`/ai/usage/${usageId}/decision`, { method: 'POST', body: { decision: value } }),
+    onSuccess: onDecide,
+  });
+  return <><ErrorBox error={decision.error} /><div className="button-row">
+    <button className="button secondary" disabled={decision.isPending} onClick={() => decision.mutate('APPLIED')}>Отметить полезной</button>
+    <button className="button subtle" disabled={decision.isPending} onClick={() => decision.mutate('DISMISSED')}>Отклонить</button>
+  </div></>;
+}
 
 const tones: Record<string, string> = {
   NEW: 'blue', REVIEW: 'violet', WAITING_AUTHOR: 'amber', IN_PROGRESS: 'blue', CLOSED: 'green', WITHDRAWN: 'muted',

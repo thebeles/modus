@@ -7,6 +7,26 @@ import { Policy, type Principal } from '../src/policy';
 import { Groq, packContext, redact } from '../src/ai';
 import { z } from 'zod';
 import { fileType } from '../src/files';
+import { assessEffect } from '../src/effect';
+
+test('effect distinguishes improvement, goal attainment and a maintained range', () => {
+  const metric = { direction: 'DECREASE', targetValue: 25, targetMaximum: null };
+  const cases = [[50, 20, true, true], [50, 30, true, false], [20, 24, false, true],
+    [20, 20, false, true], [20, 15, true, true]] as const;
+  for (const [before, after, improved, meetsTarget] of cases) {
+    assert.deepEqual(assessEffect(metric, before, after), {
+      before, after, delta: after - before, relativePercent: 100 * ((after - before) / before),
+      meetsTarget, improved, worsened: after > before, maintained: false, direction: 'DECREASE', target: 25, maximum: null,
+    });
+  }
+  assert.equal(assessEffect(metric, 0, -1).relativePercent, null);
+  assert.equal(assessEffect(metric, -20, -24).relativePercent, -20);
+  assert.equal(assessEffect(metric, null, 4).improved, null);
+  assert.equal(assessEffect(metric, 4, null).meetsTarget, null);
+  assert.equal(assessEffect({ ...metric, direction: 'INCREASE' }, 30, 40).improved, true);
+  assert.equal(assessEffect({ ...metric, direction: 'TARGET' }, 30, 25).improved, true);
+  assert.equal(assessEffect({ direction: 'RANGE', targetValue: 10, targetMaximum: 25 }, 20, 24).maintained, true);
+});
 
 test('workflow keeps early closure and terminal improvement changes unavailable', () => {
   assert.deepEqual(appealTransitions.NEW, ['REVIEW', 'WITHDRAWN']);
@@ -109,4 +129,13 @@ test('attachment quarantine accepts a clean framed response and rejects an infec
   await assert.rejects(scanUpload(body), { code: 'ATTACHMENT_REJECTED' });
   process.env.CLAMD_HOST = '';
   await assert.rejects(scanUpload(body), { code: 'SCANNER_UNAVAILABLE' });
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  process.env.ATTACHMENT_SCAN_MODE = 'disabled';
+  try {
+    await assert.rejects(scanUpload(body), { code: 'SCANNER_UNAVAILABLE' });
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
 });

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Visibility } from '@prisma/client';
-import { AppError, Tx } from './common';
+import { AppError, invalid, notify, Tx } from './common';
 
 export function eligibleStaff(visibility: Visibility): Prisma.UserWhereInput {
   return { active: true, role: { in: ['HANDLER', 'MANAGER'] },
@@ -11,10 +11,32 @@ export function queueStaff(queueId: string): Prisma.UserWhereInput {
   return { OR: [{ queues: { some: { queueId } } }, { coordinates: { some: { id: queueId } } }] };
 }
 
+export async function notifyRoutingPending(tx: Tx, appeal: {
+  id: string; visibility: Visibility; departmentId: string | null; authorId: string;
+}) {
+  const queue = { visibility: appeal.visibility };
+  const recipients = await tx.user.findMany({
+    where: {
+      ...eligibleStaff(appeal.visibility),
+      id: { not: appeal.authorId },
+      permissions: appeal.visibility === 'NORMAL_INTERNAL' ? { has: 'ROUTING_COORDINATOR' } :
+        { hasEvery: ['ROUTING_COORDINATOR', 'SENSITIVE_CASE_HANDLER'] },
+      OR: [
+        { coordinates: { some: queue } },
+        { queues: { some: { queue } } },
+        ...(appeal.visibility === 'NORMAL_INTERNAL' && appeal.departmentId ? [{ departmentId: appeal.departmentId }] : []),
+      ],
+    },
+    select: { id: true },
+  });
+  await notify(tx, `routing-pending:${appeal.id}`, recipients.map(user => user.id), 'ROUTING_PENDING');
+}
+
 @Injectable()
 export class Routing {
-  async route(tx: Tx, input: { categoryId?: string | null; departmentId?: string | null; processId?: string | null; visibility: Visibility; authorId?: string }) {
+  async find(tx: Tx, input: { categoryId?: string | null; departmentId?: string | null; processId?: string | null; visibility: Visibility; authorId?: string }) {
     const category = input.categoryId ? await tx.category.findUnique({ where: { id: input.categoryId } }) : null;
+    if (input.categoryId && !category) throw invalid('Выбранная категория недоступна.');
     const visibility = category?.sensitive ? 'SPECIAL' : input.visibility;
     const responsible = async (queue: { id: string; coordinatorId: string }, assigneeId: string | null) => {
       if (assigneeId) {
@@ -48,7 +70,7 @@ export class Routing {
           if (assignee) return result(ownQueue, assignee, reason);
         }
       }
-      throw new AppError('ROUTING_UNAVAILABLE', 'Нет доступной очереди. Обратитесь к администратору.', 503);
+      return { queueId: null, assigneeId: null, coordinatorId: null, visibility, reason };
     };
     if (visibility !== 'NORMAL_INTERNAL') return fallback('SPECIAL_ROUTE');
     if (!category) return fallback('NO_RULE');
@@ -69,5 +91,11 @@ export class Routing {
     const assignee = await responsible(first.queue, first.assigneeId);
     if (assignee === undefined) return fallback('ASSIGNEE_UNAVAILABLE');
     return result(first.queue, assignee, 'MATCH');
+  }
+
+  async route(tx: Tx, input: Parameters<Routing['find']>[1]) {
+    const route = await this.find(tx, input);
+    if (route.queueId === null) throw new AppError('ROUTING_UNAVAILABLE', 'Нет доступной очереди. Обратитесь к администратору.', 503);
+    return route;
   }
 }

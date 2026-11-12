@@ -39,7 +39,7 @@ function AdminResource({ resource }: { resource: Resource }) {
   const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: resource !== 'ai' });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean; fallback: string }>('/ai/capabilities'), enabled: resource === 'ai' });
   const monitor = useQuery({ queryKey: ['admin', 'worker-status'], enabled: resource === 'outbox-failures', refetchInterval: 15000,
-    queryFn: () => api<{ healthy: boolean; lastCheckAt: string | null; oldestAvailableAt: string | null; pendingCount: number; deadCount: number }>('/admin/worker-status') });
+    queryFn: () => api<{ healthy: boolean; lastCheckAt: string | null; oldestAvailableAt: string | null; pendingCount: number; deadCount: number; routingPendingCount: number; attachmentProtection: { mode: string; lastCleanAt: string | null; scanFailureAt: string | null; storageFailureAt: string | null } }>('/admin/worker-status') });
   const retry = useMutation({ mutationFn: (id: string) => api(`/admin/outbox-failures/${id}/retry`, { method: 'POST', body: {} }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['admin'] }) });
   const users = useQuery({ queryKey: ['admin', 'users'], queryFn: () => api<Row[]>('/admin/users'), enabled: !!editor || preview });
@@ -84,6 +84,10 @@ function AdminResource({ resource }: { resource: Resource }) {
         {resource === 'outbox-failures' && monitor.data && <dl className="facts">
           <div><dt>Worker</dt><dd>{monitor.data.healthy ? 'Работает' : 'Нет свежего сигнала'} · {monitor.data.lastCheckAt ? date(monitor.data.lastCheckAt, true) : 'Нет данных'}</dd></div>
           <div><dt>Ожидают</dt><dd>{monitor.data.pendingCount}{monitor.data.oldestAvailableAt ? ` · с ${date(monitor.data.oldestAvailableAt, true)}` : ''}</dd></div>
+          <div><dt>Проверка файлов</dt><dd>{monitor.data.attachmentProtection.mode === 'required' ? 'Обязательна' : 'Отключена для демо'} · {monitor.data.attachmentProtection.lastCleanAt ? date(monitor.data.attachmentProtection.lastCleanAt, true) : 'Нет успешной проверки'}</dd></div>
+          {monitor.data.attachmentProtection.scanFailureAt && <div><dt>Последняя ошибка сканирования</dt><dd>{date(monitor.data.attachmentProtection.scanFailureAt, true)}</dd></div>}
+          {monitor.data.attachmentProtection.storageFailureAt && <div><dt>Последняя ошибка хранилища</dt><dd>{date(monitor.data.attachmentProtection.storageFailureAt, true)}</dd></div>}
+          <div><dt>Ожидают маршрутизации</dt><dd>{monitor.data.routingPendingCount}</dd></div>
           <div><dt>Исчерпали попытки</dt><dd>{monitor.data.deadCount}</dd></div>
         </dl>}
         <ErrorBox error={monitor.error || retry.error} />

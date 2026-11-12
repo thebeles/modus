@@ -1,6 +1,6 @@
 # Проверки
 
-`pnpm lint`, `pnpm typecheck`, `pnpm test` и `pnpm build` доступны в каждом проекте. Интеграционные тесты используют NestJS и PostgreSQL. Playwright запускает отдельные API, Vite и worker для тестовой базы. Установите зависимости обоих проектов и Chromium командой `pnpm -C frontend exec playwright install chromium`.
+`pnpm lint`, `pnpm typecheck`, `pnpm test` и `pnpm build` доступны в каждом проекте. Интеграционные тесты используют NestJS и PostgreSQL. Playwright запускает отдельные API, Vite и worker для тестовой базы. Для изолированного запущенного стенда укажите `E2E_BASE_URL`. В наборе есть проверка регистрации до назначения, пересмотр опубликованного заключения и контрпример порога без улучшения. Установите зависимости обоих проектов и Chromium командой `pnpm -C frontend exec playwright install chromium`.
 
 Создайте две пустые базы. Команды ниже выполняются из корня репозитория.
 

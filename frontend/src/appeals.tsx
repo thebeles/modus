@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';
+import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';
 
 const kinds = [
   { code: 'PROBLEM', name: 'Сообщить о проблеме', description: 'Расскажите, что мешает работе.', icon: TriangleAlert, tone: 'peach' },
@@ -76,7 +76,7 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
     queryFn: () => api<{ id: string; name: string }[]>('/work-queue/assignees') });
   const tab = params.get('tab') ?? 'all';
   const page = Number(params.get('page')) || 1;
-  const filter = Object.fromEntries(['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to', 'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric'].map(key => [key, params.get(key) ?? undefined]));
+  const filter = Object.fromEntries(['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to', 'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric', 'origin', 'evidence'].map(key => [key, params.get(key) ?? undefined]));
   const endpoint = (staff ? '/work-queue' : '/appeals') + queryString({ ...filter, tab: staff ? tab : undefined, own: staff ? undefined : 'true', page, limit: 15 });
   const rows = useQuery({ queryKey: ['appeals', endpoint], queryFn: ({ signal }) => api<Page<AppealRow>>(endpoint, { signal }), placeholderData: keepPreviousData });
   const apply = (key: string, value: string) => {
@@ -333,7 +333,7 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
   const [candidate, setCandidate] = useState<Reference | null>(null);
   const similar = useQuery({ queryKey: ['similar', record.id], queryFn: () => api<(Reference & { explanation: string })[]>(`/object-links/similar/${record.id}`), enabled: show });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean }>('/ai/capabilities') });
-  const suggestion = useMutation({ mutationFn: (feature: string) => api<{ mode: 'GROQ' | 'RULE'; suggestion?: Record<string, unknown>; candidates?: (Reference & { explanation: string })[] }>(`/ai/${feature}`, { method: 'POST', body: { id: record.id, consent: true } }) });
+  const suggestion = useMutation({ mutationFn: (feature: string) => api<{ mode: 'GROQ' | 'RULE'; usageId?: string; suggestion?: Record<string, unknown>; candidates?: (Reference & { explanation: string })[] }>(`/ai/${feature}`, { method: 'POST', body: { id: record.id, consent: true } }) });
   const [aiFeature, setAiFeature] = useState<string | null>(null);
   const create = useMutation({ mutationFn: (data: FormData) => api('/object-links/suggest-or-create', { method: 'POST', body: {
     fromId: record.id, toId: candidate?.id, relation: field(data, 'relation'), explanation: field(data, 'explanation'),
@@ -367,6 +367,7 @@ function RelatedAppeals({ record, reload }: { record: Appeal; reload: () => void
           const event = record.events.find(row => row.id === id);
           return event ? [<a key={event.id} href={`#event-${event.id}`} onClick={() => setAiFeature(null)}>{label(event.action)} · {date(event.createdAt, true)}</a>] : [];
         })}
+        {suggestion.data.usageId && <AiDecision usageId={suggestion.data.usageId} onDecide={() => setAiFeature(null)} />}
       </div> :
         <button className="button primary" disabled={suggestion.isPending} onClick={() => suggestion.mutate(aiFeature)}>{suggestion.isPending ? 'Получаем подсказку…' : 'Запросить подсказку'}</button>}
     </Modal>}
@@ -384,11 +385,14 @@ export function AppealDetail() {
   const [notes, setNotes] = useState(false);
   const [comment, setComment] = useState('');
   const [resolution, setResolution] = useState('RESOLVED');
+  const [targetSearch, setTargetSearch] = useState('');
+  const [targetPage, setTargetPage] = useState(1);
   const [notice, setNotice] = useState('');
   const record = query.data;
   const staff = !!record && record.authorId !== user.id;
   const catalog = useQuery({ queryKey: ['catalog', id], queryFn: () => api<Catalog>(`/catalog?appealId=${id}`), enabled: !!action && ['EDIT', 'ASSIGN', 'REROUTE'].includes(action) });
-  const targets = useQuery({ queryKey: ['appeals', 'resolution-targets'], queryFn: () => api<Page<AppealRow>>('/work-queue?limit=100'),
+  const targets = useQuery({ queryKey: ['appeals', id, 'resolution-targets', resolution, targetSearch, targetPage],
+    queryFn: ({ signal }) => api<Page<Reference>>(`/appeals/${id}/resolution-targets` + queryString({ type: resolution, q: targetSearch, page: targetPage }), { signal }),
     enabled: action === 'RESOLVE' && ['LINKED_TO_EXISTING_CASE', 'ALREADY_ADDRESSED', 'TRANSFERRED'].includes(resolution) });
   const update = useMutation({ mutationFn: ({ data, edit }: { data: Record<string, unknown>; edit?: boolean }) => api<Appeal>(
     `/appeals/${id}${edit ? '' : '/transition'}`, { method: edit ? 'PATCH' : 'POST', body: { expectedVersion: action ? actionVersion : record?.version, ...data } }),
@@ -427,13 +431,17 @@ export function AppealDetail() {
     update.reset();
     reroute.reset();
   };
-  const next = record.status === 'WAITING_AUTHOR' ? 'Ответ автора' : ['CLOSED', 'WITHDRAWN'].includes(record.status) ? 'Рассмотрение завершено' :
+  const actionLabels: Record<string, string> = { NONE: 'Рассмотрение завершено', TRIAGE: 'Первичное рассмотрение', DECISION: 'Рассмотрение и решение', EXECUTION: 'Работа над обращением', AUTHOR_RESPONSE: 'Ответ автора', ROUTING: 'Назначение ответственного' };
+  const fallbackNext = record.routingPending ? 'Назначение ответственного' : record.status === 'WAITING_AUTHOR' ? 'Ответ автора' : ['CLOSED', 'WITHDRAWN'].includes(record.status) ? 'Рассмотрение завершено' :
     record.status === 'NEW' ? 'Первичное рассмотрение' : 'Рассмотрение и решение';
+  const next = record.nextAction ? actionLabels[record.nextAction.kind] ?? fallbackNext : fallbackNext;
+  const nextDue = record.nextAction ? record.nextAction.dueAt : record.controlDueAt;
   const plain = ['REVIEW', 'IN_PROGRESS'].includes(action ?? '') && record.status !== 'IN_PROGRESS';
   return <><PageHeading title={record.title} subtitle={`${record.number} · ${label(record.type)} · ${date(record.createdAt)}`}
     back={{ to: staff ? '/work-queue' : '/my/appeals', label: staff ? 'Очередь' : 'Мои обращения' }}
     action={<Chip value={record.status} />} />
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
+    {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
     <div className="detail-grid"><div className="detail-main">
       <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
         <div className="inline-chips"><Chip value={record.priority} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
@@ -442,7 +450,7 @@ export function AppealDetail() {
         {record.attachments.map(file => <a className="file-line" key={file.id} href={`/api/v1/attachments/${file.id}/download`}><Paperclip size={16} />{file.name}<small>{Math.max(1, Math.ceil(file.bytes / 1024))} КБ</small></a>)}
       </Section>
       {record.resolutionText && <Section title="Итог рассмотрения" icon={<CheckCircle2 size={18} />} className="resolution-section">
-        {record.resolutionType && <Chip value={record.resolutionType} />}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
+        {record.resolutionType && <Chip value={record.resolutionType} />}{record.resolutionOrigin === 'DEMO_FIXTURE' && <small>Демонстрационный пример решения</small>}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
       </Section>}
       <Section title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
         <button className="button primary" disabled={update.isPending} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
@@ -470,8 +478,11 @@ export function AppealDetail() {
     </div><aside className="detail-side">
       <Section title="Следующий шаг" icon={<ArrowRight size={18} />}>
         <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
-          <div><dt>Срок</dt><dd>{record.controlDueAt ? date(record.controlDueAt, true) : 'Срок не задан'}</dd></div>
+          <div><dt>Срок</dt><dd>{nextDue ? date(nextDue, true) : 'Срок не задан'}</dd></div>
           {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
+        {!!record.nextActionHistory?.length && <details><summary>История следующих действий</summary><ul>
+          {record.nextActionHistory.map((step, index) => <li key={index}>{date(step.assignedAt, true)} · {actionLabels[step.kind] ?? step.kind}</li>)}
+        </ul></details>}
         {sideActions.length > 0 && <div className="side-actions">
           {sideActions.map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
             <Link key={item} className="button secondary" to={`/${item === 'CREATE_PROBLEM' ? 'problems' : 'improvements'}/new?appealId=${record.id}`}>{actionNames[item]}</Link> :
@@ -481,6 +492,9 @@ export function AppealDetail() {
       {(record.improvements.length > 0 || record.problems.length > 0) && <Section title="Связанные записи">
         {record.problems.map(item => <Link key={item.id} className="inline-reference" to={`/problems/${item.id}`}><small>{item.number}</small>{item.title}</Link>)}
         {record.improvements.map(item => <Link key={item.id} className="inline-reference" to={`/improvements/${item.id}`}><small>{item.number}</small>{item.title}</Link>)}
+      </Section>}
+      {!!record.authorImprovements?.length && <Section title="Работа по вашему обращению">
+        {record.authorImprovements.map(item => <div className="task-row" key={item.number}><span>{item.number}</span><Chip value={item.status} /></div>)}
       </Section>}
       {record.publications.length > 0 && <Section title="Опубликованные результаты" icon={<BookOpen size={18} />}>
         {record.publications.map(item => <article key={item.id} className="comment">
@@ -512,9 +526,14 @@ export function AppealDetail() {
           <Field label="Процесс"><select name="processId" key={catalog.data?.processes.length ?? 0} defaultValue={record.processId ?? ''}><EntityOptions rows={catalog.data?.processes ?? []} blank="Не выбран" /></select></Field>
           {staff && <Field label="Приоритет"><select name="priority" defaultValue={record.priority}><Options items={priorities} /></select></Field>}
         </> : <>
-          {action === 'RESOLVE' && <Field label="Тип решения"><select value={resolution} onChange={event => setResolution(event.target.value)}><Options items={record.status === 'WAITING_AUTHOR' ? ['INSUFFICIENT_INFO'] : resolutions.filter(item => item !== 'INSUFFICIENT_INFO' && (item !== 'REJECTED' || user.role === 'MANAGER'))} /></select></Field>}
+          {action === 'RESOLVE' && <Field label="Тип решения"><select value={resolution} onChange={event => { setResolution(event.target.value); setTargetSearch(''); setTargetPage(1); }}><Options items={record.status === 'WAITING_AUTHOR' ? ['INSUFFICIENT_INFO'] : resolutions.filter(item => item !== 'INSUFFICIENT_INFO' && (item !== 'REJECTED' || user.role === 'MANAGER'))} /></select></Field>}
           {action === 'RESOLVE' && ['ACCEPTED_FOR_IMPROVEMENT', 'LINKED_TO_EXISTING_CASE', 'ALREADY_ADDRESSED', 'TRANSFERRED'].includes(resolution) &&
-            <Field label="Связанная запись"><select name="relatedId" required><EntityOptions rows={(resolution === 'ACCEPTED_FOR_IMPROVEMENT' ? record.improvements : targets.data?.items ?? []).filter(item => item.id !== record.id).map(item => ({ id: item.id, name: `${item.number} · ${item.title}` }))} /></select></Field>}
+            <>{resolution !== 'ACCEPTED_FOR_IMPROVEMENT' && <>
+              <Field label="Поиск цели по номеру или заголовку"><input value={targetSearch} onChange={event => { setTargetSearch(event.target.value); setTargetPage(1); }} /></Field>
+              <ErrorBox error={targets.error} />{targets.data?.total === 0 && <small>Доступных целей не найдено. Для передачи нужна активная запись с совместимым доступом и действующим ответственным.</small>}
+              {targets.data && <Pagination {...targets.data} onChange={setTargetPage} />}
+            </>}
+            <Field label="Связанная запись"><select name="relatedId" required><EntityOptions rows={(resolution === 'ACCEPTED_FOR_IMPROVEMENT' ? record.improvements : targets.data?.items ?? []).filter(item => item.id !== record.id).map(item => ({ id: item.id, name: `${item.number} · ${item.title}` }))} /></select></Field></>}
           {action === 'ASSIGN' && <Field label="Ответственный"><select name="assigneeId" key={catalog.data?.people.length ?? 0} defaultValue={record.assigneeId ?? ''}><EntityOptions rows={catalog.data?.people ?? []} blank="Координатор очереди" /></select></Field>}
           {action === 'REVIEW_DECISION' && <Field label="Решение"><select name="decision"><option value="yes">Одобрить запрос</option><option value="no">Отклонить запрос</option></select></Field>}
           {!plain && <Field label={action === 'CLARIFICATION' ? 'Вопрос автору' : action === 'AUTHOR_RESPONSE' ? 'Ваш ответ' : 'Обоснование'}>

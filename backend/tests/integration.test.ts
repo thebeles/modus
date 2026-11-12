@@ -14,7 +14,7 @@ import { Policy, principalSelect } from '../src/policy';
 import { Radar } from '../src/radar';
 import { Cases } from '../src/cases';
 import { LocalStorage, purgeUploads } from '../src/files';
-import { deadlines, deliver } from '../src/worker';
+import { deadlines, deliver, retryRouting } from '../src/worker';
 
 const origin = 'http://localhost:5173';
 const testUrl = process.env.TEST_DATABASE_URL;
@@ -28,6 +28,14 @@ type Row = { id: string; number: string; version: number; status: string; descri
 
 function awaitDirectory() { return mkdtemp(join(tmpdir(), 'modus-integration-')); }
 
+async function startApi() {
+  app = await createApp();
+  await app.listen(0, '127.0.0.1');
+  const address = app.getHttpServer().address() as AddressInfo;
+  base = `http://127.0.0.1:${address.port}/api/v1`;
+  db = app.get(Database);
+}
+
 before(async () => {
   if (!testUrl || !/test|integration/.test(new URL(testUrl).pathname)) throw new Error('TEST_DATABASE_URL must point to a dedicated seeded test database');
   process.env.DATABASE_URL = testUrl;
@@ -35,11 +43,7 @@ before(async () => {
   process.env.DEMO_MODE = 'true';
   process.env.GROQ_AI_ENABLED = 'false';
   process.env.STORAGE_DIR = await storage;
-  app = await createApp();
-  await app.listen(0, '127.0.0.1');
-  const address = app.getHttpServer().address() as AddressInfo;
-  base = `http://127.0.0.1:${address.port}/api/v1`;
-  db = app.get(Database);
+  await startApi();
 });
 
 after(async () => {
@@ -82,6 +86,33 @@ test('seed preserves exactly the original source IDs, provenance and mapped tota
   assert.equal(records.filter(row => row.priority === 'LOW').length, 7);
   assert.equal(records.filter(row => row.priority === 'HIGH').length, 4);
   assert.ok(records.every(row => row.isSynthetic && row.sourceSnapshot && row.descriptionOriginal));
+  assert.ok(records.every(row => row.firstHumanResponseAt === null));
+  for (const row of records.filter(row => row.status === 'CLOSED')) {
+    const event = await db.auditEvent.findUniqueOrThrow({ where: { id: `seed-result-${row.sourceId}` } });
+    assert.equal(event.actorId, row.resolutionBy);
+    assert.deepEqual(event.createdAt, row.closedAt);
+    assert.equal(event.origin, 'DEMO_FIXTURE');
+    assert.equal(row.resolutionOrigin, 'DEMO_FIXTURE');
+  }
+});
+
+test('radar keeps observed responses and synthetic decisions in separate evidence slices', async () => {
+  const manager = await login('manager');
+  const observed = success(await request<{ documented: number; firstResponse: { count: number; hours: number | null } }>(
+    '/radar/overview?origin=ORIGINAL&evidence=OBSERVED', { session: manager }));
+  assert.equal(observed.documented, 0);
+  assert.deepEqual(observed.firstResponse, { count: 0, hours: null });
+  const demo = success(await request<{ documented: number; firstResponse: { count: number; hours: number | null } }>(
+    '/radar/overview?origin=ORIGINAL&evidence=DEMO_FIXTURE', { session: manager }));
+  assert.ok(demo.documented > 0);
+  assert.deepEqual(demo.firstResponse, { count: 0, hours: null });
+  const rows = success(await request<{ total: number }>('/work-queue?origin=ORIGINAL&evidence=DEMO_FIXTURE&metric=documented&normalOnly=true', { session: manager }));
+  assert.equal(rows.total, demo.documented);
+  const exportResponse = await request('/analytics/export?origin=ORIGINAL&evidence=DEMO_FIXTURE&metric=documented', { session: manager });
+  assert.equal(exportResponse.response.status, 200);
+  const csv = (await exportResponse.response.text()).trim().split(/\r?\n/);
+  assert.equal(csv.length, demo.documented + 1);
+  assert.ok(csv.slice(1).every(line => line.includes('ORIGINAL_DOCX') && line.endsWith('DEMO_FIXTURE')));
 });
 
 test('sessions rotate, reject foreign origins and revoke on logout', async () => {
@@ -225,10 +256,16 @@ test('workflow verifies a linked improvement before separate publication approva
   await step('/measurements', { ...after, periodEnd: new Date().toISOString(), sampleSize: 20, sourceType: 'OTHER' });
   assert.equal((await attempt()).response.status, 409);
   await step('/measurements', { ...after, periodEnd: new Date().toISOString(), sampleSize: 20, sourceType: 'MANUAL_SAMPLE' });
+  await step('/measurements', { phase: 'BEFORE', value: 19, periodStart: ago(48), periodEnd: ago(23), sampleSize: 20,
+    source: 'Демонстрационная контрольная выборка до внедрения.', sourceType: 'MANUAL_SAMPLE' });
+  assert.equal((await attempt()).response.status, 409);
+  await step('/measurements', { phase: 'BEFORE', value: 40, periodStart: ago(48), periodEnd: ago(22), sampleSize: 20,
+    source: 'Скорректированная демонстрационная выборка.', sourceType: 'MANUAL_SAMPLE' });
   await step('/verification', verification, manager);
   const recorded = await db.verification.findUniqueOrThrow({ where: { improvementId: item.id } });
   assert.equal(recorded.measurementIds.length, 2);
   assert.equal(recorded.planVersion, 1);
+  assert.equal((recorded.effect as { delta: number }).delta, -20);
   await step('/transition', { target: 'COMPLETED' });
   assert.equal((await db.appeal.findUniqueOrThrow({ where: { id: source.id } })).status, source.status);
   const content = {
@@ -259,6 +296,33 @@ test('workflow verifies a linked improvement before separate publication approva
   const invite = await db.feedback.findFirstOrThrow({ where: { improvementId: item.id } });
   success(await request(`/feedback/${invite.id}/respond`, { session: employee, body: { expectedVersion: 1, choice: 'PARTLY', comment: 'Помогло частично.' } }));
   assert.equal((await db.verification.findUniqueOrThrow({ where: { improvementId: item.id } })).outcome, 'VERIFIED');
+  const other = await login('other-employee');
+  const second = success(await request<{ id: string }>('/appeals', { session: other, key: randomUUID(), body: {
+    type: 'PROBLEM', description: 'Второй синтетический сигнал того же процесса.',
+  } }));
+  const link = { appealId: second.id, explanation: 'Два независимых сигнала.', operation: 'ATTACH' };
+  await step('/sources', link);
+  await step('/sources', link);
+  assert.equal(await db.improvementAppeal.count({ where: { improvementId: item.id } }), 2);
+  await step('/feedback-invitations', {});
+  const secondAuthor = await db.user.findUniqueOrThrow({ where: { email: 'other-employee@demo.local' } });
+  const secondInvite = await db.feedback.findUniqueOrThrow({ where: { improvementId_userId: { improvementId: item.id, userId: secondAuthor.id } } });
+  assert.equal((await request('/feedback/' + secondInvite.id, { session: other })).response.status, 200);
+  await step('/sources', { ...link, operation: 'DETACH' });
+  assert.equal((await request('/feedback/' + secondInvite.id, { session: other })).response.status, 404);
+  assert.equal(await db.appeal.count({ where: { id: second.id } }), 1);
+  const reviewer = await db.user.findUniqueOrThrow({ where: { email: 'manager@demo.local' } });
+  await step('/verification-amendments', { reviewerId: reviewer.id, reason: 'Нужно исправить интерпретацию опубликованной выборки.' });
+  const amendment = await db.verificationAmendment.findFirstOrThrow({ where: { improvementId: item.id } });
+  const newConclusion = { outcome: 'INCONCLUSIVE', summary: 'Причинность требует отдельного исследования.', limitations: 'Нет независимой контрольной группы.' };
+  assert.equal((await request(path + '/verification-amendments/' + amendment.id + '/accept', {
+    session: handler, body: { expectedVersion: current.version, ...newConclusion },
+  })).response.status, 403);
+  await step('/verification-amendments/' + amendment.id + '/accept', newConclusion, manager);
+  assert.equal((await db.verification.findUniqueOrThrow({ where: { improvementId: item.id } })).outcome, 'INCONCLUSIVE');
+  const archived = await db.verificationRevision.findFirstOrThrow({ where: { improvementId: item.id } });
+  assert.equal((archived.snapshot as { outcome: string }).outcome, 'VERIFIED');
+  assert.equal((await request(publicationPath, { session: employee })).response.status, 404);
 });
 
 test('AI mock rejects invalid output and prevents confidential payloads reaching the provider', async () => {
@@ -291,7 +355,13 @@ test('AI mock rejects invalid output and prevents confidential payloads reaching
   assert.ok(suggested.usageId);
   await trusted.decide(user, suggested.usageId, { decision: 'APPLIED' });
   await trusted.decide(user, suggested.usageId, { decision: 'APPLIED' });
-  assert.equal(await db.auditEvent.count({ where: { entityId: suggested.usageId, action: 'APPLIED' } }), 1);
+  assert.equal(await db.auditEvent.count({ where: { entityId: suggested.usageId, action: 'ACCEPTED' } }), 1);
+  assert.equal((await db.aiSuggestion.findUniqueOrThrow({ where: { usageId: suggested.usageId } })).status, 'ACCEPTED');
+  const expired = await trusted.advise(user, 'appeal-assist', { ...body, visibility: 'NORMAL_INTERNAL' });
+  assert.ok(expired.usageId);
+  await db.aiSuggestion.update({ where: { usageId: expired.usageId }, data: { expiresAt: new Date(0) } });
+  await assert.rejects(trusted.decide(user, expired.usageId, { decision: 'APPLIED' }), { code: 'INVALID_STATE_TRANSITION' });
+  assert.equal((await db.aiSuggestion.findUniqueOrThrow({ where: { usageId: expired.usageId } })).status, 'EXPIRED');
 
 });
 
@@ -322,6 +392,73 @@ test('department read does not grant handling, and a matched route works without
   assert.equal((await request(path + '/transition', { session: manager, body: { expectedVersion: view.version, action: 'REVIEW' } })).response.status, 409);
   const handlerSession = await login('handler');
   assert.equal(success(await request<Row>(path + '/transition', { session: handlerSession, body: { expectedVersion: view.version, action: 'REVIEW' } })).status, 'REVIEW');
+});
+
+test('intake survives unavailable queues and concurrent recovery preserves visibility and history', async () => {
+  const employee = await login('employee');
+  const manager = await login('manager');
+  const author = await db.user.findUniqueOrThrow({ where: { email: 'employee@demo.local' } });
+  const queues = await db.workQueue.findMany({ where: { fallback: true } });
+  const ids = queues.map(queue => queue.id);
+  const normalQueue = queues.find(queue => queue.visibility === 'NORMAL_INTERNAL')!;
+  const originalCoordinator = normalQueue.coordinatorId;
+  const sensitive = await db.category.findFirstOrThrow({ where: { sensitive: true } });
+  const appeals: { id: string; visibility: string }[] = [];
+  await db.workQueue.updateMany({ where: { id: { in: ids } }, data: { fallback: false } });
+  // A fallback pointing at a non-handler must be treated as unavailable too.
+  await db.workQueue.update({ where: { id: normalQueue.id }, data: { fallback: true, coordinatorId: author.id } });
+  try {
+    for (const visibility of ['NORMAL_INTERNAL', 'RESTRICTED', 'SPECIAL']) {
+      const key = randomUUID();
+      const body = { type: 'PROBLEM', description: 'Synthetic registration while the route is unavailable.',
+        visibility: visibility === 'SPECIAL' ? 'NORMAL_INTERNAL' : visibility,
+        ...(visibility === 'SPECIAL' ? { categoryId: sensitive.id } : {}) };
+      const registered = await request<{ id: string; number: string }>('/appeals', { session: employee, key, body });
+      assert.equal(registered.response.status, 201);
+      const item = registered.data;
+      appeals.push({ id: item.id, visibility });
+      assert.match(item.number, /^A-\d+$/);
+      const repeated = success(await request<{ id: string; replayed: boolean }>('/appeals', { session: employee, key, body }));
+      assert.equal(repeated.id, item.id);
+      assert.equal(repeated.replayed, true);
+      const path = '/appeals/' + item.id;
+      assert.equal(success(await request<{ routingPending: boolean }>(path, { session: employee })).routingPending, true);
+      assert.equal((await request(path, { session: manager })).response.status, 404);
+      const stored = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
+      assert.equal(stored.visibility, visibility);
+      assert.equal(stored.queueId, null);
+      assert.ok(stored.routingRetryAt);
+      assert.equal(await db.auditEvent.count({ where: { entityId: item.id, action: 'ROUTING_PENDING' } }), 1);
+      assert.equal(await db.outboxJob.count({ where: { href: path, kind: 'REGISTRATION_CONFIRMED' } }), 1);
+    }
+    await retryRouting(db, new Date(Date.now() + 1000));
+    for (const item of appeals) {
+      assert.equal((await db.appeal.findUniqueOrThrow({ where: { id: item.id } })).routingAttempts, 1);
+    }
+  } finally {
+    await db.workQueue.update({ where: { id: normalQueue.id }, data: { coordinatorId: originalCoordinator } });
+    await db.workQueue.updateMany({ where: { id: { in: ids } }, data: { fallback: true } });
+  }
+  await app.close();
+  await startApi();
+  for (const item of appeals) {
+    assert.equal(success(await request<{ routingPending: boolean }>('/appeals/' + item.id, { session: employee })).routingPending, true);
+  }
+  const anotherWorker = new Database();
+  try {
+    const now = new Date(Date.now() + 300000);
+    await Promise.all([retryRouting(db, now), retryRouting(anotherWorker, now)]);
+    for (const item of appeals) {
+      const assigned = await db.appeal.findUniqueOrThrow({ where: { id: item.id }, include: { queue: true } });
+      assert.equal(assigned.queue?.visibility, item.visibility);
+      assert.equal(assigned.routingRetryAt, null);
+      assert.equal(await db.auditEvent.count({ where: { entityId: item.id, action: 'ROUTING_RECOVERED' } }), 1);
+      assert.deepEqual((await db.appealNextAction.findMany({ where: { appealId: item.id }, orderBy: { revision: 'asc' } })).map(row => row.kind), ['ROUTING', 'TRIAGE']);
+      assert.equal(success(await request<{ routingPending: boolean }>('/appeals/' + item.id, { session: employee })).routingPending, false);
+    }
+  } finally {
+    await anotherWorker.$disconnect();
+  }
 });
 
 test('removing a queue member releases assigned work and suppresses their pending notifications', async () => {
@@ -397,11 +534,14 @@ test('radar uses the same deadline and meaningful activity filters as its queue 
   assert.equal((await queue('overdue')).total, values.overdue);
   assert.equal((await queue('stale')).total, values.stale);
   const record = await db.appeal.findUniqueOrThrow({ where: { id: item.id } });
-  await db.appeal.update({ where: { id: item.id }, data: { firstHumanResponseAt: new Date(record.createdAt.getTime() + 90 * 60000) } });
+  await db.appeal.update({ where: { id: item.id }, data: { firstHumanResponseAt: new Date(record.createdAt.getTime() + 90 * 60000), firstResponseOrigin: 'USER_ACTION' } });
   values = await overview();
   assert.deepEqual(values.firstResponse, { count: 1, hours: 1.5 });
   assert.equal(values.overdue, 0);
   assert.equal(values.stale, 1);
+  await db.appeal.update({ where: { id: item.id }, data: { priority: 'HIGH', lastMeaningfulActionAt: new Date(), dueAt: new Date(now + 5 * 86400000) } });
+  const attention = success(await request<{ attention: { id: string; reasons: string[] }[] }>('/radar/overview' + q, { session: manager }));
+  assert.deepEqual(attention.attention.find(row => row.id === item.id)?.reasons, ['HIGH_PRIORITY']);
 });
 
 test('a transfer requires an active target and informs its current recipient', async () => {
@@ -418,9 +558,44 @@ test('a transfer requires an active target and informs its current recipient', a
   await step(closedTarget.id, 2, 'RESOLVE', { resolutionType: 'RESOLVED', text: 'Работа завершена с подтверждением.' }).then(success);
   const transfer = (relatedId: string) => step(source.id, 2, 'RESOLVE',
     { resolutionType: 'TRANSFERRED', relatedId, text: 'Дальнейшая работа идёт по целевому обращению.' });
+  const active = await db.appeal.findUniqueOrThrow({ where: { id: activeTarget.id } });
+  const marker = randomUUID();
+  await db.appeal.update({ where: { id: active.id }, data: { title: 'Архивная цель ' + marker } });
+  await db.appeal.createMany({ data: Array.from({ length: 101 }, (_, index) => ({
+    title: 'Более свежая цель', number: `FILL-${active.id}-${index}`, type: 'PROBLEM', description: 'Синтетическая строка.',
+    descriptionOriginal: 'Синтетическая строка.', queueId: active.queueId, authorId: active.authorId,
+    departmentId: active.departmentId, isSynthetic: true, createdAt: new Date(Date.now() + 60000),
+  })) });
+  const matches = success(await request<{ total: number; items: { id: string }[] }>(
+    '/appeals/' + source.id + '/resolution-targets?type=TRANSFERRED&q=' + marker, { session: handler }));
+  assert.equal(matches.total, 1);
+  assert.equal(matches.items[0].id, active.id);
   assert.equal((await transfer(closedTarget.id)).response.status, 400);
   assert.equal(success(await transfer(activeTarget.id)).status, 'CLOSED');
   assert.equal(await db.outboxJob.count({ where: { href: '/appeals/' + activeTarget.id, kind: 'TRANSFER_RECEIVED' } }), 1);
+});
+
+test('notification pagination includes the oldest unread entry and hides a removed target', async () => {
+  const session = await login('other-employee');
+  const user = await db.user.findUniqueOrThrow({ where: { email: 'other-employee@demo.local' } });
+  await db.notification.updateMany({ where: { userId: user.id, readAt: null }, data: { readAt: new Date() } });
+  const key = randomUUID();
+  const oldest = await db.notification.create({ data: { userId: user.id, kind: 'CLARIFICATION', key,
+    href: '/appeals/' + randomUUID(), createdAt: new Date(0) } });
+  await db.notification.createMany({ data: Array.from({ length: 50 }, (_, index) => ({
+    userId: user.id, kind: 'CREATED', key: key + index, createdAt: new Date(Date.now() + index), readAt: new Date(),
+  })) });
+  const list = (params: string) => request<{ total: number; unread: number; items: { id: string; kind: string; href: string | null }[] }>(
+    '/notifications?' + params, { session }).then(success);
+  assert.ok((await list('limit=50')).items.every(row => row.id !== oldest.id));
+  const unread = await list('unreadOnly=true');
+  assert.equal(unread.total, 1);
+  assert.equal(unread.unread, 1);
+  assert.equal(unread.items[0].id, oldest.id);
+  assert.equal(unread.items[0].kind, 'NOTIFICATION_UNAVAILABLE');
+  assert.equal(unread.items[0].href, null);
+  assert.equal((await request('/notifications/' + oldest.id + '/read', { session, body: {} })).response.status, 201);
+  assert.equal((await list('unreadOnly=true')).unread, 0);
 });
 
 test('expired detached uploads are removed from storage and cannot be reused', async () => {
@@ -576,4 +751,11 @@ test('parallel uploads reserve quota without exceeding the pending limit', async
     if (previous === undefined) delete process.env.ATTACHMENT_PENDING_QUOTA_BYTES;
     else process.env.ATTACHMENT_PENDING_QUOTA_BYTES = previous;
   }
+});
+
+test('PostgreSQL audit guard rejects mutations even for the migration owner', async () => {
+  const event = await db.auditEvent.findFirstOrThrow();
+  await assert.rejects(db.$executeRaw`UPDATE "AuditEvent" SET action = action WHERE id = ${event.id}`);
+  await assert.rejects(db.$executeRaw`DELETE FROM "AuditEvent" WHERE id = ${event.id}`);
+  assert.ok(await db.auditEvent.findUnique({ where: { id: event.id } }));
 });

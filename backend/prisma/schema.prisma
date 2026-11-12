@@ -248,6 +248,14 @@ model SlaPolicy {
   version Int @default(1)
 }
 
+enum EvidenceOrigin {
+  USER_ACTION
+  DEMO_FIXTURE
+  IMPORTED
+  SYSTEM
+  UNKNOWN
+}
+
 model Appeal {
   id String @id @default(uuid())
   number String @unique
@@ -257,8 +265,11 @@ model Appeal {
   department OrganizationUnit? @relation(fields: [departmentId], references: [id])
   assigneeId String?
   assignee User? @relation("Assignee", fields: [assigneeId], references: [id])
-  queueId String
-  queue WorkQueue @relation(fields: [queueId], references: [id], onDelete: Restrict)
+  queueId String?
+  queue WorkQueue? @relation(fields: [queueId], references: [id], onDelete: Restrict)
+  routingReason String?
+  routingRetryAt DateTime?
+  routingAttempts Int @default(0)
   title String
   descriptionOriginal String
   description String
@@ -274,11 +285,13 @@ model Appeal {
   resolutionType Resolution?
   resolutionText String?
   resolutionBy String?
+  resolutionOrigin EvidenceOrigin?
   closedAt DateTime?
   withdrawnAt DateTime?
   waitingSince DateTime?
   resumeState AppealStatus?
   firstHumanResponseAt DateTime?
+  firstResponseOrigin EvidenceOrigin?
   controlDueAt DateTime? @default(dbgenerated())
   firstResponseSeconds Float? @default(dbgenerated())
   lastMeaningfulActionAt DateTime @default(now())
@@ -305,11 +318,27 @@ model Appeal {
   @@index([authorId])
   @@index([assigneeId])
   @@index([queueId])
+  @@index([routingRetryAt])
   @@index([departmentId])
   @@index([categoryId])
   @@index([priority])
   @@index([processId])
   workPeriods AppealWorkPeriod[]
+  nextActions AppealNextAction[]
+}
+
+model AppealNextAction {
+  appealId String
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  revision Int
+  kind String
+  state String
+  ownerId String?
+  queueId String?
+  dueAt DateTime?
+  reason String?
+  assignedAt DateTime @default(now())
+  @@id([appealId, revision])
 }
 
 enum AppealWorkPhase {
@@ -335,6 +364,7 @@ model Comment {
   body String
   internal Boolean @default(false)
   kind String @default("COMMENT")
+  origin EvidenceOrigin @default(UNKNOWN)
   createdAt DateTime @default(now())
   @@index([appealId, createdAt])
 }
@@ -353,6 +383,7 @@ model Attachment {
   mediaType String
   bytes Int
   storageKey String @unique
+  scannedAt DateTime?
   createdAt DateTime @default(now())
   @@index([appealId])
   @@index([uploaderId])
@@ -527,6 +558,7 @@ model MeasurementPlan {
   unit String?
   direction String?
   targetValue Float?
+  targetMaximum Float?
   protocol String?
   minimumSampleSize Int?
   requireSameSource Boolean @default(false)
@@ -549,6 +581,7 @@ model Measurement {
   planVersion Int @default(1)
   evidenceIds String[] @default([])
   recordedBy String
+  origin EvidenceOrigin @default(UNKNOWN)
   isSynthetic Boolean @default(false)
   createdAt DateTime @default(now())
   @@index([improvementId, phase])
@@ -562,10 +595,39 @@ model Verification {
   limitations String
   planVersion Int @default(1)
   measurementIds String[] @default([])
+  effect Json?
+  origin EvidenceOrigin @default(UNKNOWN)
   evidenceIds String[] @default([])
   verifierId String
   isSynthetic Boolean @default(false)
   verifiedAt DateTime @default(now())
+  revision Int @default(1)
+  amendments VerificationAmendment[]
+  revisions VerificationRevision[]
+}
+
+model VerificationAmendment {
+  id String @id @default(uuid())
+  improvementId String
+  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict)
+  requestedBy String
+  reviewerId String
+  reason String
+  requestedAt DateTime @default(now())
+  resolvedAt DateTime?
+  approved Boolean?
+  decision String?
+  @@index([improvementId, requestedAt])
+}
+
+model VerificationRevision {
+  improvementId String
+  verification Verification @relation(fields: [improvementId], references: [improvementId], onDelete: Restrict)
+  revision Int
+  snapshot Json
+  reason String
+  archivedAt DateTime @default(now())
+  @@id([improvementId, revision])
 }
 
 model Feedback {
@@ -624,6 +686,7 @@ model AuditEvent {
   actorId String?
   actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
   authorVisible Boolean @default(false)
+  origin EvidenceOrigin @default(UNKNOWN)
   details Json?
   createdAt DateTime @default(now())
   @@index([entity, entityId, createdAt])
@@ -691,5 +754,27 @@ model AiUsage {
   inputLength Int
   state String
   createdAt DateTime @default(now())
+  suggestion AiSuggestion?
   @@index([userId, createdAt])
+}
+
+enum AiSuggestionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model AiSuggestion {
+  usageId String @id
+  usage AiUsage @relation(fields: [usageId], references: [id], onDelete: Restrict)
+  organizationId String?
+  templateVersion String
+  provider String
+  model String
+  status AiSuggestionStatus @default(PENDING)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  decidedAt DateTime?
+  @@index([status, expiresAt])
 }

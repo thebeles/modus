@@ -193,6 +193,13 @@ test('E2E-05 independent approval, implementation and verification through the i
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   const url = page.url();
   const id = new URL(url).pathname.split('/').pop()!;
+  await page.getByRole('button', { name: 'Добавить источник' }).click();
+  await page.getByRole('dialog').getByLabel('Номер или заголовок').fill('A-004');
+  await page.getByRole('dialog').getByRole('button', { name: /A-004/ }).click();
+  await page.getByRole('dialog').getByLabel('Основание связи').fill('Дополнительный синтетический сигнал.');
+  await page.getByRole('dialog').getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.getByRole('link', { name: /A-004/ })).toBeVisible();
   await page.getByRole('tab', { name: 'План' }).click();
   await mutation(page, 'Задача', dialog => dialog.getByLabel('Название').fill('Согласовать новые поля шаблона'));
   await mutation(page, 'Добавить план', async dialog => {
@@ -218,7 +225,7 @@ test('E2E-05 independent approval, implementation and verification through the i
   await mutation(page, 'Измерение', async dialog => {
     await dialog.getByLabel('Начало периода (UTC)').fill(iso(2));
     await dialog.getByLabel('Конец периода (UTC)').fill(iso(1));
-    await dialog.getByLabel('Значение', { exact: true }).fill('50');
+    await dialog.getByLabel('Значение', { exact: true }).fill('19');
     await dialog.getByLabel('Размер выборки').fill('20');
     await dialog.getByLabel('Источник и способ сбора').fill('Тестовая выборка до изменения.');
   });
@@ -227,6 +234,20 @@ test('E2E-05 independent approval, implementation and verification through the i
   const record = await get<{ version: number; implementedAt: string }>(page, `/improvements/${id}`);
   await post(page, `/improvements/${id}/measurements`, { expectedVersion: record.version, phase: 'AFTER', value: 20,
     periodStart: record.implementedAt, periodEnd: new Date().toISOString(), sampleSize: 20, source: 'Тестовая выборка после изменения.' });
+  await manager.page.reload();
+  await manager.page.getByRole('tab', { name: 'Результат' }).click();
+  await manager.page.getByRole('button', { name: 'Зафиксировать результат', exact: true }).click();
+  const invalidVerification = manager.page.getByRole('dialog');
+  await invalidVerification.getByLabel('Вывод').fill('Порог достигнут, показатель вырос.');
+  await invalidVerification.getByLabel('Ограничения и доказательства').fill('Учебный контрпример для проверки направления.');
+  await invalidVerification.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(invalidVerification.getByText(/порог сам по себе не подтверждает улучшение/)).toBeVisible();
+  await manager.page.keyboard.press('Escape');
+  const current = await get<{ version: number }>(page, '/improvements/' + id);
+  const day = 86400000;
+  await post(page, `/improvements/${id}/measurements`, { expectedVersion: current.version, phase: 'BEFORE', value: 50,
+    periodStart: new Date(Date.now() - 2 * day).toISOString(), periodEnd: new Date(Date.now() - day / 2).toISOString(),
+    sampleSize: 20, source: 'Уточнённая учебная выборка до изменения.' });
   await manager.page.reload();
   await manager.page.getByRole('tab', { name: 'Результат' }).click();
   await mutation(manager.page, 'Зафиксировать результат', async dialog => {
@@ -245,7 +266,7 @@ test('E2E-06 radar uses live database counts and supports human review of a them
   const employee = await session(browser, 'employee');
   await create(employee.page, 'Обращение для радара ' + randomUUID().slice(0, 8));
   await page.reload();
-  await expect(page.getByRole('link', { name: /Обращения.*Созданы в выбранном периоде/ })).toContainText(String(before.total + 1));
+  await expect(page.getByRole('link', { name: /Обращения.*Карточки выбранного происхождения и периода/ })).toContainText(String(before.total + 1));
   await page.getByRole('tab', { name: 'Темы' }).click();
   const card = page.locator('.link-card').filter({ hasText: 'A-001' }).filter({ hasText: 'A-015' });
   await expect(card.getByText('Похожая тема', { exact: true })).toBeVisible();
@@ -258,6 +279,38 @@ test('E2E-06 radar uses live database counts and supports human review of a them
   await page.getByRole('link', { name: /Просрочено/ }).click();
   await expect(page).toHaveURL(/tab=overdue/);
   await employee.close();
+});
+
+test('registers in the browser before a route is available and assigns after recovery', async ({ page, browser }) => {
+  const admin = await session(browser, 'admin');
+  const queues = await get<{ id: string; name: string; visibility: string; fallback: boolean; coordinatorId: string; members: { userId: string }[] }[]>(admin.page, '/admin/work-queues');
+  const fallback = queues.find(queue => queue.fallback && queue.visibility === 'NORMAL_INTERNAL')!;
+  const configure = async (memberIds: string[]) => {
+    const origin = new URL(admin.page.url()).origin;
+    const csrf = (await admin.page.context().cookies()).find(cookie => cookie.name === 'modus_csrf')!.value;
+    const response = await admin.page.request.patch('/api/v1/admin/work-queues/' + fallback.id, {
+      headers: { Origin: origin, 'X-CSRF-Token': csrf },
+      data: { name: fallback.name, visibility: fallback.visibility, fallback: true,
+        coordinatorId: fallback.coordinatorId, memberIds },
+    });
+    expect(response.ok(), await response.text()).toBeTruthy();
+  };
+  const originalMembers = fallback.members.map(row => row.userId);
+  await login(page, 'handler');
+  await configure([]);
+  try {
+    const item = await create(page, 'Регистрация без маршрута ' + randomUUID().slice(0, 8));
+    await page.goto('/appeals/' + item.id);
+    await expect(page.getByText('Обращение зарегистрировано. Назначение будет повторено автоматически.')).toBeVisible();
+    await expect(page.getByText(new RegExp(item.number + ' · Предложение'))).toBeVisible();
+    await configure(originalMembers);
+    await expect.poll(async () => (await get<{ routingPending: boolean }>(page, '/appeals/' + item.id)).routingPending, { timeout: 30000 }).toBe(false);
+    await page.reload();
+    await expect(page.getByText('Маршрут восстановлен')).toBeVisible();
+  } finally {
+    await configure(originalMembers);
+    await admin.close();
+  }
 });
 
 test('E2E-07 draft is private until approval and publishing, and employee reads edited content', async ({ page, browser }) => {
@@ -301,6 +354,49 @@ test('E2E-07 draft is private until approval and publishing, and employee reads 
   await employee.page.getByRole('textbox', { name: 'Поиск публикаций' }).fill(title);
   await employee.page.getByRole('link', { name: title, exact: true }).click();
   await expect(employee.page.getByText('В тестовом примере уточнений стало меньше.', { exact: true })).toBeVisible();
+  const publishedUrl = employee.page.url();
+  await page.reload();
+  await page.getByRole('tab', { name: 'Результат' }).click();
+  await mutation(page, 'Запросить пересмотр', async dialog => {
+    await dialog.getByLabel('Проверяющий').selectOption({ index: 1 });
+    await dialog.getByLabel('Основание').fill('Нужна проверка границ интерпретации наблюдений.');
+  });
+  await manager.page.reload();
+  await manager.page.getByRole('tab', { name: 'Результат' }).click();
+  await mutation(manager.page, 'Утвердить новое заключение', async dialog => {
+    await dialog.getByLabel('Итог').selectOption('INCONCLUSIVE');
+    await dialog.getByLabel('Вывод').fill('Недостаточно данных для оценки эффекта.');
+    await dialog.getByLabel('Ограничения и доказательства').fill('Учебная выборка без контрольной группы.');
+  });
+  await manager.page.getByText('Предыдущие заключения', { exact: true }).click();
+  await expect(manager.page.getByRole('heading', { name: /Версия 1 ·/ })).toBeVisible();
+  await employee.page.goto(publishedUrl);
+  await expect(employee.page.getByRole('alert')).toContainText('недоступна');
+  await page.reload();
+  await page.getByRole('tab', { name: 'Результат' }).click();
+  const correctedTitle = title + ' · уточнение';
+  await mutation(page, 'Подготовить публикацию', async dialog => {
+    await dialog.getByLabel('Название').fill(correctedTitle);
+    await dialog.getByLabel('Что решали').fill('В учебном примере не хватало данных.');
+    await dialog.getByLabel('Что изменили').fill('Уточнили требования к форме.');
+    await dialog.getByLabel('Как проверили').fill('Повторно оценили данные учебного наблюдения.');
+    await dialog.getByLabel('Результат', { exact: true }).fill('Недостаточно данных для оценки эффекта.');
+    await dialog.getByLabel('Ограничения').fill('Контрольная группа отсутствовала.');
+    await dialog.getByLabel('Аудитория').selectOption('INTERNAL');
+  });
+  await manager.page.reload();
+  await manager.page.getByRole('tab', { name: 'Результат' }).click();
+  const correctedPublication = manager.page.getByRole('button', { name: correctedTitle, exact: true });
+  const correctedRow = manager.page.locator('.task-row').filter({ has: correctedPublication });
+  for (const [operation, status] of [['Согласовать публикацию', 'Согласовано'], ['Опубликовать', 'Опубликовано']]) {
+    await correctedPublication.click();
+    await manager.page.getByRole('dialog').getByRole('button', { name: operation, exact: true }).click();
+    await expect(correctedRow.getByText(status, { exact: true })).toBeVisible();
+  }
+  await employee.page.goto('/changes');
+  await employee.page.getByRole('textbox', { name: 'Поиск публикаций' }).fill(correctedTitle);
+  await employee.page.getByRole('link', { name: correctedTitle, exact: true }).click();
+  await expect(employee.page.getByText('Недостаточно данных для оценки эффекта.')).toBeVisible();
   await manager.close();
   await employee.close();
 });

@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 import { z } from 'zod';
 import { outcomes, relations } from './contracts';
-import { Appeals, appealListInput, appealQueueFilters } from './appeals';
+import { Appeals, appealListInput, appealMetrics, appealQueueFilters } from './appeals';
 import { AuthRequest } from './auth';
 import { atomic, audit, bodyText, checked, Database, expectedVersion, forbidden, id, invalid, invalidState, missing, pagination, parse } from './common';
 import { Policy, Principal } from './policy';
@@ -109,9 +109,20 @@ export class Radar {
     if (!this.policy.isStaff(user)) throw forbidden();
     const where: Prisma.AppealWhereInput = { AND: [this.appeals.where(user, filters, true, now), { visibility: 'NORMAL_INTERNAL' }] };
     const tabs = appealQueueFilters(user, now);
+    const sourceFilters = { ...filters, from: undefined, to: undefined, processId: undefined, departmentId: undefined };
+    const filtersBySource = filters.origin === 'ORIGINAL' || filters.categoryId || filters.type || filters.status || filters.priority ||
+      filters.assigneeId || filters.q || filters.dueFrom || filters.dueTo || filters.metric || filters.own || (filters.tab && filters.tab !== 'all');
+    const sources: Prisma.AppealWhereInput = { AND: [
+      this.appeals.where(user, sourceFilters, true, now), { visibility: 'NORMAL_INTERNAL' },
+    ] };
     const improvementWhere: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), { visibility: 'NORMAL_INTERNAL',
+      ...(filters.origin ? { isSynthetic: filters.origin !== 'LIVE' } : {}),
       ...(filters.from || filters.to ? { createdAt: { gte: filters.from, lt: filters.to } } : {}),
-      processId: filters.processId, departmentId: filters.departmentId }] };
+      processId: filters.processId, departmentId: filters.departmentId },
+      ...(filtersBySource ? [{ OR: [{ appeals: { some: { appeal: sources } } },
+        { problem: { appeals: { some: { appeal: sources } } } }] }] : []),
+    ] };
+    const evidence = appealMetrics(filters.evidence).responded.firstResponseOrigin;
     const implementedWhere: Prisma.ImprovementWhereInput = { AND: [improvementWhere, { status: { in: ['IMPLEMENTED', 'VERIFYING', 'COMPLETED'] } }] };
     const recurrenceScope: Prisma.AppealLinkWhereInput = {
       OR: [{ from: where }, { to: where }], relation: 'POSSIBLE_RECURRENCE',
@@ -121,14 +132,14 @@ export class Radar {
     const recurrenceWhere: Prisma.AppealLinkWhereInput = { AND: [visibleLinks, recurrenceScope] };
     const overdueWhere: Prisma.AppealWhereInput = { AND: [where, tabs.overdue] };
     const staleWhere: Prisma.AppealWhereInput = { AND: [where, tabs.stale] };
-    return { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere };
+    return { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics: appealMetrics(filters.evidence) };
   }
 
   async appealAnalytics(user: Principal, raw: unknown) {
-    const { where } = this.analyticsScope(user, parse(appealListInput, raw), new Date());
+    const { where, metrics } = this.analyticsScope(user, parse(appealListInput, raw), new Date());
     const [total, closed, documented, types, statuses] = await this.db.$transaction(tx => Promise.all([
-      tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, { status: 'CLOSED' }] } }),
-      tx.appeal.count({ where: { AND: [where, { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } }] } }),
+      tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, metrics.closed] } }),
+      tx.appeal.count({ where: { AND: [where, metrics.documented] } }),
       tx.appeal.groupBy({ by: ['type'], orderBy: { type: 'asc' }, where, _count: { _all: true } }),
       tx.appeal.groupBy({ by: ['status'], orderBy: { status: 'asc' }, where, _count: { _all: true } }),
     ]), { isolationLevel: 'RepeatableRead' });
@@ -138,11 +149,11 @@ export class Radar {
 
   async slaAnalytics(user: Principal, raw: unknown) {
     const now = new Date();
-    const { where, overdueWhere, staleWhere } = this.analyticsScope(user, parse(appealListInput, raw), now);
+    const { where, overdueWhere, staleWhere, metrics } = this.analyticsScope(user, parse(appealListInput, raw), now);
     const [overdue, stale, waiting, response] = await this.db.$transaction([
       this.db.appeal.count({ where: overdueWhere }), this.db.appeal.count({ where: staleWhere }),
       this.db.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
-      this.db.appeal.aggregate({ where, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
+      this.db.appeal.aggregate({ where: { AND: [where, metrics.responded] }, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
     ], { isolationLevel: 'RepeatableRead' });
     return { overdue, stale, waiting, firstResponse: {
       count: response._count.firstResponseSeconds, hours: response._avg.firstResponseSeconds === null ? null : response._avg.firstResponseSeconds / 3600,
@@ -152,14 +163,14 @@ export class Radar {
   async improvementOutcomes(user: Principal, raw: unknown) {
     const { outcome, verifiedOnly, ...filters } = parse(outcomeInput, raw);
     const { page, limit } = filters;
-    const { implementedWhere } = this.analyticsScope(user, filters, new Date());
+    const { implementedWhere, evidence } = this.analyticsScope(user, filters, new Date());
     const where: Prisma.ImprovementWhereInput = { AND: [implementedWhere,
-      outcome ? { verification: { outcome } } : verifiedOnly ? { verification: { isNot: null } } : {}] };
+      outcome || verifiedOnly ? { verification: { outcome, origin: evidence } } : {}] };
     const [items, total, improved, groups] = await this.db.$transaction(tx => Promise.all([
       tx.improvement.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
         select: { id: true, title: true, number: true, status: true, verification: { select: { outcome: true } } } }),
       tx.improvement.count({ where }), tx.improvement.count({ where: implementedWhere }),
-      tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere }, _count: { _all: true } }),
+      tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere, origin: evidence }, _count: { _all: true } }),
     ]), { isolationLevel: 'RepeatableRead' });
     const count = (outcome: string) => groups.find(row => row.outcome === outcome)?._count._all ?? 0;
     const verified = groups.reduce((sum, row) => sum + row._count._all, 0);
@@ -181,12 +192,17 @@ export class Radar {
 
   async overview(user: Principal, raw: unknown) {
     const filters = parse(appealListInput, raw);
-    const { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere } = this.analyticsScope(user, filters, new Date());
+    const now = new Date();
+    const { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics } = this.analyticsScope(user, filters, now);
+    const activeAttention: Prisma.AppealWhereInput = { status: { notIn: ['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'] } };
+    const nextDay = new Date(now.getTime() + 86400000);
+    const dueSoon = { controlDueAt: { gte: now, lte: nextDay } };
+    const repeats = { OR: [{ linksFrom: { some: recurrenceWhere } }, { linksTo: { some: recurrenceWhere } }] };
     const totals = await this.db.$transaction(async tx => {
       const [total, closed, documented, response, overdue, stale, waiting, types, statuses, processGroups, categoryGroups, improved, verified, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
-        tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, { status: 'CLOSED' }] } }),
-        tx.appeal.count({ where: { AND: [where, { status: 'CLOSED', resolutionType: { not: null }, resolutionText: { not: null } }] } }),
-        tx.appeal.aggregate({ where, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
+        tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, metrics.closed] } }),
+        tx.appeal.count({ where: { AND: [where, metrics.documented] } }),
+        tx.appeal.aggregate({ where: { AND: [where, metrics.responded] }, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
         tx.appeal.count({ where: overdueWhere }), tx.appeal.count({ where: staleWhere }),
         tx.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
         tx.appeal.groupBy({ by: ['type'], orderBy: { type: 'asc' }, where, _count: { _all: true } }),
@@ -194,8 +210,8 @@ export class Radar {
         tx.appeal.groupBy({ by: ['processId'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['categoryId'], where, _count: { _all: true } }),
         tx.improvement.count({ where: implementedWhere }),
-        tx.improvement.count({ where: { AND: [implementedWhere, { verification: { isNot: null } }] } }),
-        tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere }, _count: { _all: true } }),
+        tx.improvement.count({ where: { AND: [implementedWhere, { verification: { origin: evidence } }] } }),
+        tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere, origin: evidence }, _count: { _all: true } }),
         tx.appealLink.count({ where: linkWhere }),
         tx.appealLink.count({ where: recurrenceWhere }),
       ]);
@@ -205,7 +221,12 @@ export class Radar {
       const [processNames, categoryNames, attention, improvements, topicItems] = await Promise.all([
         tx.businessProcess.findMany({ where: { id: { in: processes.flatMap(row => row.processId ? [row.processId] : []) } } }),
         tx.category.findMany({ where: { id: { in: categories.flatMap(row => row.categoryId ? [row.categoryId] : []) } } }),
-        tx.appeal.findMany({ where: { OR: [overdueWhere, staleWhere] }, take: 8, orderBy: [{ controlDueAt: { sort: 'asc', nulls: 'last' } }, { id: 'asc' }], select: { id: true, number: true, title: true, status: true, controlDueAt: true } }),
+        tx.appeal.findMany({ where: { AND: [where, activeAttention, { OR: [overdueWhere, staleWhere, dueSoon, { priority: 'HIGH' }, repeats] }] },
+          take: 8, orderBy: [{ priority: 'desc' }, { controlDueAt: { sort: 'asc', nulls: 'last' } }, { lastMeaningfulActionAt: 'asc' }, { id: 'asc' }],
+          select: { id: true, number: true, title: true, priority: true, status: true, controlDueAt: true,
+            _count: { select: { linksFrom: { where: recurrenceWhere }, linksTo: { where: recurrenceWhere } } },
+            nextActions: { orderBy: { revision: 'desc' }, take: 1, select: { ownerId: true, queueId: true } },
+          } }),
         tx.improvement.findMany({ where: improvementWhere, take: 12, orderBy: { updatedAt: 'desc' },
           select: { id: true, number: true, title: true, status: true, isSynthetic: true, owner: { select: { name: true } }, verification: { select: { outcome: true } } } }),
         tx.appealLink.findMany({ where: linkWhere, take: 12, orderBy: { createdAt: 'desc' }, include: {
@@ -222,7 +243,15 @@ export class Radar {
         verifiedSuccess: outcomeGroups.find(row => row.outcome === 'VERIFIED')?._count._all ?? 0,
         verifiedDeterminate: verified - (outcomeGroups.find(row => row.outcome === 'INCONCLUSIVE')?._count._all ?? 0),
         outcomes: outcomeGroups.map(row => ({ key: row.outcome, count: row._count._all })),
-        topics, recurrenceCandidates, topicItems, attention, improvements, minGroup: min };
+        topics, recurrenceCandidates, topicItems, improvements, minGroup: min,
+        attention: attention.map(({ _count, nextActions, ...row }) => ({
+          ...row, reasons: [
+            ...(row.priority === 'HIGH' ? ['HIGH_PRIORITY'] : []),
+            ...(row.controlDueAt && row.controlDueAt <= nextDay ? [row.controlDueAt < now ? 'OVERDUE' : 'DUE_SOON'] : []),
+            ...(!nextActions.some(action => action.ownerId || action.queueId) ? ['NO_NEXT_OWNER'] : []),
+            ...(_count.linksFrom || _count.linksTo ? ['POSSIBLE_RECURRENCE'] : []),
+          ],
+        })) };
     }, { isolationLevel: 'RepeatableRead' });
     return totals;
   }
@@ -231,10 +260,15 @@ export class Radar {
     if (!this.policy.has(user, 'EXPORT_DATA')) throw forbidden();
     const filters = parse(appealListInput, raw);
     const rows = await this.db.appeal.findMany({ where: { AND: [this.appeals.where(user, filters, true), { visibility: 'NORMAL_INTERNAL' }] },
-      select: { number: true, type: true, status: true, priority: true, createdAt: true }, orderBy: { number: 'asc' }, take: 1000 });
+      select: { number: true, type: true, status: true, priority: true, createdAt: true,
+        seedOrigin: true, isSynthetic: true, firstResponseOrigin: true, firstResponseSeconds: true, resolutionOrigin: true,
+      }, orderBy: { number: 'asc' }, take: 1000 });
     await this.db.$transaction(tx => audit(tx, 'analytics', 'appeals', 'EXPORT', user.id, false, { count: rows.length }));
-    return '\uFEFF' + ['Номер,Тип,Статус,Приоритет,Создано (UTC)', ...rows.map(row =>
-      [row.number, row.type, row.status, row.priority, row.createdAt.toISOString()].join(','))].join('\r\n');
+    const evidence = appealMetrics(filters.evidence).responded.firstResponseOrigin.in;
+    return '\uFEFF' + ['Номер,Тип,Статус,Приоритет,Создано (UTC),Источник карточки,Демо,Источник первого ответа,Секунды первого ответа,Источник решения', ...rows.map(row =>
+      [row.number, row.type, row.status, row.priority, row.createdAt.toISOString(), row.seedOrigin, row.isSynthetic,
+        row.firstResponseOrigin, row.firstResponseOrigin && evidence.some(origin => origin === row.firstResponseOrigin) ? row.firstResponseSeconds : null,
+        row.resolutionOrigin].join(','))].join('\r\n');
   }
 }
 

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Response } from 'express';
-import { scanUpload } from './attachment-scan';
+import { attachmentScanMode, scanUpload } from './attachment-scan';
 import { AuthRequest } from './auth';
 import { AppError, atomic, Database, forbidden, invalid, missing, throttle, Tx } from './common';
 import { Policy, Principal } from './policy';
@@ -123,15 +123,25 @@ export class Files {
       return tx.attachment.create({ data: { name, mediaType, bytes: file.size, storageKey, uploaderId: user.id }, select: attachmentSummary });
     });
     try {
-      await scanUpload(file.buffer);
+      const scanned = await scanUpload(file.buffer);
+      if (scanned) await this.recordProtection('attachment-scan');
       await this.storage.write(storageKey, file.buffer);
-      await this.db.attachment.update({ where: { id: row.id, purgeAt: null }, data: { readyAt: new Date() } });
+      const now = new Date();
+      await this.db.attachment.update({ where: { id: row.id, purgeAt: null }, data: { readyAt: now, scannedAt: scanned ? now : null } });
       return row;
     } catch (error) {
       await this.db.attachment.updateMany({ where: { id: row.id, purgeAt: null }, data: { purgeAt: new Date() } }).catch(() => undefined);
+      const scannerError = error instanceof AppError && ['SCANNER_UNAVAILABLE', 'ATTACHMENT_REJECTED'].includes(error.code);
+      await this.recordProtection(scannerError ? 'attachment-scan-failure' : 'attachment-storage-failure');
       if (error instanceof AppError) throw error;
       throw unavailable();
     }
+  }
+
+  private async recordProtection(id: string) {
+    const checkedAt = new Date();
+    await this.db.workerHeartbeat.upsert({ where: { id }, create: { id, checkedAt }, update: { checkedAt } }).catch(() => undefined);
+    if (id.endsWith('-failure')) console.warn(JSON.stringify({ event: id }));
   }
 
   async download(user: Principal, item: string) {
@@ -141,7 +151,11 @@ export class Files {
     ] } });
     if (!record) throw missing();
     if (process.env.NODE_ENV === 'production' && record.mediaType === types.pdf) throw missing();
-    try { return { record, bytes: await this.storage.read(record.storageKey) }; } catch { throw unavailable(); }
+    if (attachmentScanMode() === 'required' && !record.scannedAt) throw missing();
+    try { return { record, bytes: await this.storage.read(record.storageKey) }; } catch {
+      await this.recordProtection('attachment-storage-failure');
+      throw unavailable();
+    }
   }
 }
 

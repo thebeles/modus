@@ -23,7 +23,9 @@ export class Policy {
       { queue: { members: { some: { userId: user.id } } } },
     ];
     const normal = [...membership];
-    if (!delegatedOnly && user.role === 'MANAGER' && user.departmentId) normal.push({ departmentId: user.departmentId });
+    if (!delegatedOnly && user.role === 'MANAGER' && user.departmentId) {
+      normal.push({ departmentId: user.departmentId, queueId: { not: null } });
+    }
     const access: Prisma.AppealWhereInput[] = [{ visibility: 'NORMAL_INTERNAL', OR: normal }];
     if (this.has(user, 'SENSITIVE_CASE_HANDLER')) {
       access.push({ visibility: { in: ['RESTRICTED', 'SPECIAL'] }, OR: membership });
@@ -72,5 +74,12 @@ export class Policy {
 
   publications(user: Principal): Prisma.PublicationWhereInput {
     return { state: 'PUBLISHED', OR: [{ audienceId: null }, ...(user.departmentId ? [{ audienceId: user.departmentId }] : [])] };
+  }
+
+  feedback(user: Principal): Prisma.FeedbackWhereInput {
+    const source = { authorId: user.id, visibility: 'NORMAL_INTERNAL' as const };
+    return { userId: user.id, improvement: { implementedAt: { not: null }, visibility: 'NORMAL_INTERNAL', OR: [
+      { appeals: { some: { appeal: source } } }, { problem: { appeals: { some: { appeal: source } } } },
+    ] } };
   }
 }

@@ -55,7 +55,12 @@ export type AppealRow = Reference & {
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;
 };
 export type LinkRow = { id: string; version: number; from: Reference; to: Reference; relation: string; state: string; explanation: string; proposedBy: string };
+type NextAction = { kind: string; state: string; dueAt: string | null; assignedAt: string; reason: string | null };
 export type Appeal = AppealRow & {
+  nextAction?: NextAction | null; nextActionHistory?: NextAction[];
+  routingPending?: boolean;
+  authorImprovements?: { number: string; status: string }[];
+  resolutionOrigin?: string | null;
   description: string; proposedSolution: string | null; resolutionType: string | null; resolutionText: string | null; closedAt: string | null;
   assignee: { name: string } | null; queue: { name: string } | null; allowedActions: string[];
   comments: { id: string; author: { name: string }; body: string; internal: boolean; kind: string; createdAt: string }[];
@@ -68,15 +73,20 @@ export type Change = { id: string; title: string; problem: string; change: strin
 export type CaseRow = Reference & { status: string; owner: Entity | null; scope?: string; createdAt: string; updatedAt: string; isSynthetic: boolean; verification?: { outcome: string } | null };
 export type Problem = CaseRow & { symptoms: string; hypothesis: string | null; conclusion: string | null; version: number; canEdit: boolean;
   allowedActions: string[]; people: Entity[]; sources: Reference[]; improvements: Reference[]; events: EventRow[]; findings: { id: string; body: string; source: string; createdAt: string }[] };
-export type Plan = { version: number; method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; protocol?: string; minimumSampleSize: number | null; requireSameSource: boolean; maxPeriodDifferencePercent: number | null;
+export type Effect = { before?: number | null; after?: number | null; delta?: number | null; relativePercent?: number | null;
+  meetsTarget?: boolean | null; improved?: boolean | null; worsened?: boolean | null; maintained?: boolean; unit?: string | null; hasBothObservations: boolean };
+export type Plan = { version: number; method: string; hypothesis: string; criterion: string; metricName?: string; unit?: string; direction?: string; targetValue?: number; targetMaximum?: number; protocol?: string; minimumSampleSize: number | null; requireSameSource: boolean; maxPeriodDifferencePercent: number | null;
   observations: { id: string; phase: string; value: number | null; source: string; sourceType: string; periodStart: string; periodEnd: string; sampleSize?: number; isSynthetic: boolean; evidence: Attachment[] }[] };
 export type Feedback = { id: string; choice?: string; comment?: string; submittedAt?: string; version: number };
 export type Improvement = CaseRow & {
   rationale: string; goal: string; risks?: string; processId?: string; implementationNotes?: string; implementedAt?: string; version: number;
-  canEdit: boolean; canMeasure: boolean; canVerify: boolean; canInvite: boolean; canDraftPublication: boolean; canApprovePublication: boolean;
+  eligibleReviewers: Entity[]; canRequestAmendment: boolean; canDecideAmendment: boolean;
+  amendments: { id: string; reason: string; resolvedAt: string | null; approved: boolean | null; decision: string | null }[];
+  verificationRevisions: { revision: number; reason: string; snapshot: { outcome: string; summary: string }; archivedAt: string }[];
+  canManageSources: boolean; canEdit: boolean; canMeasure: boolean; canVerify: boolean; canInvite: boolean; canDraftPublication: boolean; canApprovePublication: boolean;
   allowedActions: string[]; people: Entity[]; sources: Reference[]; problem: Reference | null; events: EventRow[]; plan: Plan | null;
   actions: { id: string; title: string; status: string; dueAt?: string; result?: string; owner: Entity; blocking: boolean; canUpdate: boolean }[];
   approvals: { id: string; reason: string; status: string; createdAt: string }[];
-  verification: { outcome: string; summary: string; limitations: string; verifiedAt: string; isSynthetic: boolean; planVersion: number; measurementIds: string[]; evidence: Attachment[] } | null;
+  verification: { outcome: string; summary: string; limitations: string; verifiedAt: string; isSynthetic: boolean; planVersion: number; revision?: number; measurementIds: string[]; effect?: Effect | null; evidence: Attachment[] } | null;
   publications: Change[]; feedback: Feedback[];
 };
