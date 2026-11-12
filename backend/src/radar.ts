@@ -3,7 +3,7 @@ import { JsonBody, JsonResponse, QueryFields } from './openapi';
 import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 import { z } from 'zod';
-import { outcomes, relations } from './contracts';
+import { appealStatuses, appealTypes, outcomes, relations } from './contracts';
 import { Appeals, appealListInput, appealMetrics, appealQueueFilters } from './appeals';
 import { AuthRequest } from './auth';
 import { atomic, audit, bodyText, checked, Database, expectedVersion, forbidden, id, invalid, invalidState, missing, pagination, parse } from './common';
@@ -132,7 +132,8 @@ export class Radar {
     const recurrenceWhere: Prisma.AppealLinkWhereInput = { AND: [visibleLinks, recurrenceScope] };
     const overdueWhere: Prisma.AppealWhereInput = { AND: [where, tabs.overdue] };
     const staleWhere: Prisma.AppealWhereInput = { AND: [where, tabs.stale] };
-    return { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics: appealMetrics(filters.evidence) };
+    return { where, tabs, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence,
+      metrics: appealMetrics(filters.evidence) };
   }
 
   async appealAnalytics(user: Principal, raw: unknown) {
@@ -193,35 +194,43 @@ export class Radar {
   async overview(user: Principal, raw: unknown) {
     const filters = parse(appealListInput, raw);
     const now = new Date();
-    const { where, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics } = this.analyticsScope(user, filters, now);
+    const { where, tabs, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics } =
+      this.analyticsScope(user, filters, now);
     const activeAttention: Prisma.AppealWhereInput = { status: { notIn: ['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'] } };
     const nextDay = new Date(now.getTime() + 86400000);
     const dueSoon = { controlDueAt: { gte: now, lte: nextDay } };
     const repeats = { OR: [{ linksFrom: { some: recurrenceWhere } }, { linksTo: { some: recurrenceWhere } }] };
     const totals = await this.db.$transaction(async tx => {
-      const [total, closed, documented, response, overdue, stale, waiting, types, statuses, processGroups, categoryGroups, improved, verified, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
-        tx.appeal.count({ where }), tx.appeal.count({ where: { AND: [where, metrics.closed] } }),
+      const [closed, documented, response, overdue, stale, appealGroups, processGroups, categoryGroups, improved, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
+        tx.appeal.count({ where: { AND: [where, metrics.closed] } }),
         tx.appeal.count({ where: { AND: [where, metrics.documented] } }),
         tx.appeal.aggregate({ where: { AND: [where, metrics.responded] }, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
         tx.appeal.count({ where: overdueWhere }), tx.appeal.count({ where: staleWhere }),
-        tx.appeal.count({ where: { AND: [where, { status: 'WAITING_AUTHOR' }] } }),
-        tx.appeal.groupBy({ by: ['type'], orderBy: { type: 'asc' }, where, _count: { _all: true } }),
-        tx.appeal.groupBy({ by: ['status'], orderBy: { status: 'asc' }, where, _count: { _all: true } }),
+        tx.appeal.groupBy({ by: ['type', 'status'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['processId'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['categoryId'], where, _count: { _all: true } }),
         tx.improvement.count({ where: implementedWhere }),
-        tx.improvement.count({ where: { AND: [implementedWhere, { verification: { origin: evidence } }] } }),
         tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere, origin: evidence }, _count: { _all: true } }),
         tx.appealLink.count({ where: linkWhere }),
         tx.appealLink.count({ where: recurrenceWhere }),
       ]);
+      const typeCounts = new Map(appealTypes.map(type => [type, 0]));
+      const statusCounts = new Map(appealStatuses.map(status => [status, 0]));
+      let total = 0;
+      for (const row of appealGroups) {
+        const count = row._count._all;
+        total += count;
+        typeCounts.set(row.type, (typeCounts.get(row.type) ?? 0) + count);
+        statusCounts.set(row.status, (statusCounts.get(row.status) ?? 0) + count);
+      }
+      const verified = outcomeGroups.reduce((sum, row) => sum + row._count._all, 0);
       const min = Math.max(2, Number(process.env.RADAR_MIN_GROUP || 2) || 2);
       const processes = processGroups.filter(row => row._count._all >= min);
       const categories = categoryGroups.filter(row => row._count._all >= min);
       const [processNames, categoryNames, attention, improvements, topicItems] = await Promise.all([
         tx.businessProcess.findMany({ where: { id: { in: processes.flatMap(row => row.processId ? [row.processId] : []) } } }),
         tx.category.findMany({ where: { id: { in: categories.flatMap(row => row.categoryId ? [row.categoryId] : []) } } }),
-        tx.appeal.findMany({ where: { AND: [where, activeAttention, { OR: [overdueWhere, staleWhere, dueSoon, { priority: 'HIGH' }, repeats] }] },
+        tx.appeal.findMany({ where: { AND: [where, activeAttention, { OR: [tabs.overdue, tabs.stale, dueSoon, { priority: 'HIGH' }, repeats] }] },
           take: 8, orderBy: [{ priority: 'desc' }, { controlDueAt: { sort: 'asc', nulls: 'last' } }, { lastMeaningfulActionAt: 'asc' }, { id: 'asc' }],
           select: { id: true, number: true, title: true, priority: true, status: true, controlDueAt: true,
             _count: { select: { linksFrom: { where: recurrenceWhere }, linksTo: { where: recurrenceWhere } } },
@@ -235,8 +244,9 @@ export class Radar {
       ]);
       return { total, closed, documented, firstResponse: {
         count: response._count.firstResponseSeconds, hours: response._avg.firstResponseSeconds === null ? null : response._avg.firstResponseSeconds / 3600,
-      }, overdue, stale, waiting, types: types.map(row => ({ key: row.type, count: row._count._all })),
-        statuses: statuses.map(row => ({ key: row.status, count: row._count._all })),
+      }, overdue, stale, waiting: statusCounts.get('WAITING_AUTHOR') ?? 0,
+        types: [...typeCounts].filter(([, count]) => count > 0).map(([key, count]) => ({ key, count })),
+        statuses: [...statusCounts].filter(([, count]) => count > 0).map(([key, count]) => ({ key, count })),
         processes: processes.map(row => ({ id: row.processId, name: processNames.find(value => value.id === row.processId)?.name ?? 'Процесс не указан', count: row._count._all })),
         categories: categories.map(row => ({ id: row.categoryId, name: categoryNames.find(value => value.id === row.categoryId)?.name ?? 'Категория не указана', count: row._count._all })),
         improved, verified,

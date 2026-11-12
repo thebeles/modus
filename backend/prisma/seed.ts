@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Appeal, AppealStatus, AppealType, PrismaClient, Priority, Resolution, Role, Visibility } from '@prisma/client';
+import { Appeal, AppealStatus, AppealType, Prisma, PrismaClient, Priority, Resolution, Role, Visibility } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import { readFile } from 'node:fs/promises';
 import { assessEffect } from '../src/effect';
@@ -169,6 +169,14 @@ async function seed() {
       [4, 'Показывать этапы согласования', 'VERIFYING', 'Проверить видимость этапов на синтетических пакетах документов.'],
     ] as const) {
       const number = `DEMO-I-0${index}`;
+      const measured = index === 1;
+      const outcome = measured ? 'VERIFIED' : 'INCONCLUSIVE';
+      const limitations = measured ? 'Синтетические данные, малая выборка. Причинная связь не проверялась.' :
+        'Синтетический сценарий. Наблюдения до и после внедрения отсутствуют.';
+      const effect = {
+        ...assessEffect({ direction: 'DECREASE', targetValue: 25, targetMaximum: null }, measured ? 50 : null, measured ? 20 : null),
+        method: 'QUANTITATIVE', unit: '%', hasBothObservations: measured, evaluatedAsDeterminate: measured,
+      };
       const improvement = await tx.improvement.upsert({ where: { number }, update: {}, create: {
         number, title, status, goal, rationale: 'Синтетический сценарий проверки работы системы.', scope: 'Демонстрационный контур',
         departmentId: units[0].id, ownerId: handler.id, processId: processes[index === 1 ? 0 : index === 3 ? 3 : 1].id,
@@ -186,12 +194,26 @@ async function seed() {
             { phase: 'BEFORE', value: 50, periodStart: date(6), periodEnd: date(12), sampleSize: 20, source: 'Синтетическая выборка. 10 заявок из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
             { phase: 'AFTER', value: 20, periodStart: date(16), periodEnd: date(23), sampleSize: 20, source: 'Синтетическая выборка. 4 заявки из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
           ] : [] } } } } : {}),
-        ...(status === 'COMPLETED' ? { verification: { create: { outcome: index === 1 ? 'VERIFIED' : 'INCONCLUSIVE',
-          summary: index === 1 ? 'В тестовой выборке наблюдалось снижение с 50% до 20%.' : 'Данных для вывода об эффекте недостаточно.',
-          limitations: 'Синтетические данные, малая выборка. Причинная связь не проверялась.',
-          effect: { ...assessEffect({ direction: 'DECREASE', targetValue: 25, targetMaximum: null }, 50, 20),
-            method: 'QUANTITATIVE', unit: '%', hasBothObservations: true, evaluatedAsDeterminate: true }, verifierId: manager.id, origin: 'DEMO_FIXTURE', isSynthetic: true, verifiedAt: date(24) } } } : {}),
+        ...(status === 'COMPLETED' ? { verification: { create: { outcome,
+          summary: measured ? 'В тестовой выборке наблюдалось снижение с 50% до 20%.' : 'Данных для вывода об эффекте недостаточно.',
+          limitations, effect, verifierId: manager.id, origin: 'DEMO_FIXTURE', isSynthetic: true, verifiedAt: date(24) } } } : {}),
       } });
+      if (status === 'COMPLETED') {
+        const baseline = { improvementId: improvement.id, outcome, origin: 'DEMO_FIXTURE', isSynthetic: true, revision: 1,
+          verifiedAt: date(24) } satisfies Prisma.VerificationWhereInput;
+        if (measured) {
+          const observations = await tx.measurement.findMany({
+            where: { improvementId: improvement.id, origin: 'DEMO_FIXTURE', isSynthetic: true, planVersion: 1 },
+            orderBy: { periodStart: 'asc' }, select: { id: true, phase: true },
+          });
+          if (observations.length === 2 && observations[0].phase === 'BEFORE' && observations[1].phase === 'AFTER') {
+            await tx.verification.updateMany({ where: { ...baseline, measurementIds: { isEmpty: true } },
+              data: { measurementIds: observations.map(row => row.id) } });
+          }
+        } else {
+          await tx.verification.updateMany({ where: { ...baseline, effect: { path: ['hasBothObservations'], equals: true } }, data: { effect, limitations } });
+        }
+      }
       await tx.auditEvent.upsert({ where: { id: `seed-${number}` }, update: {}, create: {
         id: `seed-${number}`, entity: 'improvement', entityId: improvement.id, actorId: handler.id, origin: 'DEMO_FIXTURE', action: status, createdAt: date(24), details: { seedOrigin: 'DEMO_SYNTHETIC' },
       } });

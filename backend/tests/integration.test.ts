@@ -96,6 +96,23 @@ test('seed preserves exactly the original source IDs, provenance and mapped tota
   }
 });
 
+test('seeded verification claims only the measurements present in its synthetic plan', async () => {
+  for (const [number, expected] of [['DEMO-I-01', 'VERIFIED'], ['DEMO-I-02', 'INCONCLUSIVE']] as const) {
+    const row = await db.improvement.findUniqueOrThrow({ where: { number }, include: {
+      plan: { include: { observations: { orderBy: { periodStart: 'asc' } } } }, verification: true,
+    } });
+    const observations = row.plan!.observations;
+    const record = row.verification!;
+    assert.equal(record.outcome, expected);
+    assert.deepEqual(record.measurementIds, observations.map(item => item.id));
+    assert.deepEqual(observations.map(item => item.value), expected === 'VERIFIED' ? [50, 20] : []);
+    const effect = record.effect as { hasBothObservations: boolean; evaluatedAsDeterminate: boolean; delta: number | null };
+    assert.equal(effect.hasBothObservations, observations.length === 2);
+    assert.equal(effect.evaluatedAsDeterminate, expected === 'VERIFIED');
+    assert.equal(effect.delta, expected === 'VERIFIED' ? -30 : null);
+  }
+});
+
 test('radar keeps observed responses and synthetic decisions in separate evidence slices', async () => {
   const manager = await login('manager');
   const observed = success(await request<{ documented: number; firstResponse: { count: number; hours: number | null } }>(
@@ -692,7 +709,16 @@ test('queue, radar and OpenAPI expose scoped filters and separate analytics resp
   assert.equal(typeof sla.overdue, 'number');
   const outcomes = success(await request<{ items: unknown[]; total: number; verifiedSuccess: number }>('/analytics/improvement-outcomes?outcome=VERIFIED&limit=100', { session: manager }));
   assert.equal(outcomes.items.length, outcomes.verifiedSuccess);
-  const overview = success(await request<{ recurrenceCandidates: number }>('/radar/overview', { session: manager }));
+  type Groups = { total: number; types: { key: string; count: number }[]; statuses: { key: string; count: number }[] };
+  const overview = success(await request<Groups & { waiting: number; verified: number; recurrenceCandidates: number }>('/radar/overview', { session: manager }));
+  const groups = success(await request<Groups>('/analytics/appeals', { session: manager }));
+  const slaAll = success(await request<{ waiting: number }>('/analytics/sla', { session: manager }));
+  const outcomesAll = success(await request<{ verified: number }>('/analytics/improvement-outcomes', { session: manager }));
+  assert.equal(overview.total, groups.total);
+  assert.deepEqual(overview.types, groups.types);
+  assert.deepEqual(overview.statuses, groups.statuses);
+  assert.equal(overview.waiting, slaAll.waiting);
+  assert.equal(overview.verified, outcomesAll.verified);
   assert.equal(success(await request<{ total: number }>('/radar/recurrences', { session: manager })).total, overview.recurrenceCandidates);
   const doc = await (await fetch(base + '/openapi.json')).json() as { paths: Record<string, Record<string, { requestBody?: unknown; parameters?: { name: string }[] }>> };
   assert.ok(doc.paths['/api/v1/improvements/{id}/measurement-plan'].post.requestBody);

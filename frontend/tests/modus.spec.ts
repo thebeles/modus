@@ -498,6 +498,8 @@ test('E2E-09 inconclusive verification is presented as insufficient data', async
   await page.getByRole('tab', { name: 'Результат' }).click();
   await expect(page.getByText('Недостаточно данных', { exact: true })).toBeVisible();
   await expect(page.getByText('Данных для вывода об эффекте недостаточно.')).toBeVisible();
+  await expect(page.getByText('Недостаточно наблюдений для сравнения.')).toBeVisible();
+  await expect(page.getByText('Наблюдений: 0', { exact: false })).toBeVisible();
 });
 
 test('E2E-10 no Groq key leaves a working manual form', async ({ page }) => {
