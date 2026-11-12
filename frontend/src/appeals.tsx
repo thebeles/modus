@@ -410,11 +410,10 @@ function AppealDetailContent() {
   onSuccess: (item, { data }) => {
     client.setQueryData(['appeal', id], item);
     void client.invalidateQueries({ queryKey: ['appeals'] });
-    setAction(null);
     if (data.action === 'COMMENT') {
       const sent = data.internal ? 'internal' : 'external';
       setDrafts(previous => previous[sent] === data.text ? { ...previous, [sent]: '' } : previous);
-    }
+    } else setAction(null);
     setNotice('Изменения сохранены.');
   } });
   const reroute = useMutation({ mutationFn: (data: FormData) => api<{ readable: boolean }>(`/appeals/${id}/reroute`, { method: 'POST', body: {
@@ -434,6 +433,7 @@ function AppealDetailContent() {
   if (!record) return <><PageHeading title="Обращение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
   const { timing } = record;
   const can = (key: string) => record.allowedActions.includes(key);
+  const saving = update.isPending || reroute.isPending;
   const awaitingAnswer = can('AUTHOR_RESPONSE');
   const sideActions = record.allowedActions.filter(item => actionNames[item] && item !== 'EDIT' && item !== 'AUTHOR_RESPONSE');
   const openAction = (operation: string) => {
@@ -467,7 +467,7 @@ function AppealDetailContent() {
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
     <div className="detail-grid"><div className="detail-main">
-      <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
+      <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" disabled={saving} onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
         <div className="inline-chips"><Chip value={record.priority} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
         <p className="preserve detail-text">{record.description}</p>
         {record.proposedSolution && <><h3>Предложенное решение</h3><p className="preserve">{record.proposedSolution}</p></>}
@@ -477,7 +477,7 @@ function AppealDetailContent() {
         {record.resolutionType && <Chip value={record.resolutionType} />}{record.resolutionOrigin === 'DEMO_FIXTURE' && <small>Демонстрационный пример решения</small>}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
       </Section>}
       <Section title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
-        <button className="button primary" disabled={update.isPending} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
+        <button className="button primary" disabled={saving} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
         {staff && <div className="tab-strip compact-tabs"><button aria-pressed={!notes} onClick={() => setNotes(false)}>Переписка с автором</button><button aria-pressed={notes} onClick={() => setNotes(true)}>Служебные заметки</button></div>}
         {record.comments.filter(item => item.internal === notes).map(item => <article className={`comment ${item.internal ? 'internal' : ''}`} key={item.id}><header><strong>{item.author.name}</strong><small>{date(item.createdAt, true)}</small></header>
           {item.kind !== 'COMMENT' && <small>{label(item.kind)}</small>}<p className="preserve">{item.body}</p></article>)}
@@ -487,7 +487,7 @@ function AppealDetailContent() {
             hint={notes ? 'Автор обращения не увидит эту заметку.' : awaitingAnswer ? 'Чтобы возобновить обработку обращения, нажмите «Ответить на уточнение».' : staff ? 'Автор обращения увидит это сообщение.' : undefined}>
             <textarea rows={3} minLength={5} maxLength={10000} required value={drafts[channel]} onChange={event => setDrafts(previous => ({ ...previous, [channel]: event.target.value }))} /></Field>
           {!action && <ErrorBox error={update.error} retry={() => query.refetch()} />}
-          <button className={`button ${notes ? 'secondary' : 'primary'} self-start`} disabled={update.isPending}><Send size={16} />{notes ? 'Сохранить служебную заметку' : 'Отправить сообщение'}</button>
+          <button className={`button ${notes ? 'secondary' : 'primary'} self-start`} disabled={saving}><Send size={16} />{notes ? 'Сохранить служебную заметку' : 'Отправить сообщение'}</button>
         </form>}
       </Section>
       {staff && record.visibility === 'NORMAL_INTERNAL' && <RelatedAppeals record={record} reload={() => void query.refetch()} />}
@@ -510,7 +510,7 @@ function AppealDetailContent() {
         {sideActions.length > 0 && <div className="side-actions">
           {sideActions.map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
             <Link key={item} className="button secondary" to={`/${item === 'CREATE_PROBLEM' ? 'problems' : 'improvements'}/new?appealId=${record.id}`}>{actionNames[item]}</Link> :
-            <button key={item} className={`button ${item === 'REVIEW' ? 'primary' : 'secondary'}`} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
+            <button key={item} className={`button ${item === 'REVIEW' ? 'primary' : 'secondary'}`} disabled={saving} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
         </div>}
       </Section>
       {(record.improvements.length > 0 || record.problems.length > 0) && <Section title="Связанные записи">

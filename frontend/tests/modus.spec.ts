@@ -158,6 +158,23 @@ test('E2E-02 author receives clarification, replies, and restores the previous s
   await handler.page.goto('/work-queue/appeals/' + item.id);
   await mutation(handler.page, 'Взять на рассмотрение', undefined, 'Подтвердить');
   await mutation(handler.page, 'В работу', undefined, 'Подтвердить');
+  const note = 'Служебная заметка перед запросом уточнения.';
+  let releaseComment = () => {};
+  const holdComment = new Promise<void>(resolve => { releaseComment = resolve; });
+  await handler.page.route(`**/api/v1/appeals/${item.id}/transition`, async route => {
+    if (route.request().postDataJSON().action === 'COMMENT') await holdComment;
+    await route.continue();
+  });
+  try {
+    await handler.page.getByRole('button', { name: 'Служебные заметки' }).click();
+    await handler.page.getByLabel('Заметка только для обработчиков').fill(note);
+    await handler.page.getByRole('button', { name: 'Сохранить служебную заметку' }).click();
+    await expect(handler.page.getByRole('button', { name: 'Запросить уточнение' })).toBeDisabled();
+  } finally {
+    releaseComment();
+  }
+  await expect(handler.page.getByText(note, { exact: true })).toBeVisible();
+  await handler.page.getByRole('button', { name: 'Переписка с автором' }).click();
   await mutation(handler.page, 'Запросить уточнение', async dialog => dialog.getByLabel('Вопрос автору').fill('Какой образец заявки вы заполняли?'));
   await page.goto('/notifications');
   await page.getByRole('link', { name: 'Запрошено уточнение', exact: true }).and(page.locator(`a[href="/appeals/${item.id}"]`)).click();
