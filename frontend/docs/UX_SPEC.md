@@ -8,14 +8,17 @@
 
 ## Скриншоты
 
-Снимки сделаны в Chromium на текущей сборке с синтетическими данными. Ширина десктопных экранов — 1440 px, мобильного — 390 px.
+Снимки сделаны в Chromium на локальном демостенде с синтетическими данными. Ширина десктопных экранов — 1440 px, мобильного — 390 px.
 
 | Раздел | Экраны |
 | --- | --- |
 | Рабочее пространство сотрудника | [Главная](screenshots/home-desktop.png) · [Мобильная главная](screenshots/home-mobile.png) · [Подача обращения](screenshots/form.png) |
-| Обработка обращений | [Рабочая очередь](screenshots/queue.png) · [Радар процессов](screenshots/radar.png) · [Анализ обращения через Groq](screenshots/ai-triage.png) |
+| Обработчик и руководитель | [Рабочая очередь](screenshots/queue.png) · [Обзор руководителя](screenshots/overview.png) · [Аналитика](screenshots/radar.png) |
 | Каналы обратной связи | [Анонимная подача](screenshots/anonymous.png) · [Доска предложений](screenshots/proposals.png) · [Клиентские отзывы](screenshots/customer-reviews.png) |
 | Инициативы и 1С | [Обзор инициативы](screenshots/initiative.png) · [Проверка эффекта](screenshots/result.png) · [Недостаточно данных](screenshots/inconclusive.png) · [Симулятор 1С](screenshots/one-c.png) |
 | Публикации | [Библиотека изменений](screenshots/library.png) · [Карточка публикации](screenshots/publication.png) |
+| Администрирование | [Предпросмотр маршрутизации](screenshots/admin.png) |
 
-[Сценарий проверки интерфейса](../../README.md#демосценарий) · [Браузерные тесты](../../backend/docs/TEST_PLAN.md)
+Отдельный снимок из предыдущей версии показывает интерфейс с включённым провайдером. [Анализ обращения через Groq](screenshots/ai-triage.png)
+
+[Сценарий ручной проверки](../../docs/DEMO_ACCEPTANCE.md) · [Браузерные тесты](../../backend/docs/TEST_PLAN.md)
