@@ -2,10 +2,10 @@ import { DatePicker } from './date-picker';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
-  Inbox, Layers3, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
+  Inbox, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
 import { lazy, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
 import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
@@ -21,17 +21,32 @@ const kinds = [
   { code: 'POSITIVE_FEEDBACK', name: 'Поблагодарить', description: 'Отметьте то, что хорошо работает.', icon: Heart, tone: 'lavender' },
 ] as const;
 
+const nextActionLabels: Record<string, string> = {
+  NONE: 'Рассмотрение завершено', TRIAGE: 'Первичное рассмотрение', DECISION: 'Рассмотрение и решение',
+  EXECUTION: 'Работа над обращением', AUTHOR_RESPONSE: 'Ответ автора', ROUTING: 'Назначение ответственного',
+};
+
+export function nextActionText(item: Pick<AppealRow, 'nextActionKind' | 'status'>) {
+  if (item.nextActionKind && nextActionLabels[item.nextActionKind]) return nextActionLabels[item.nextActionKind];
+  if (['CLOSED', 'WITHDRAWN'].includes(item.status)) return nextActionLabels.NONE;
+  if (item.status === 'WAITING_AUTHOR') return nextActionLabels.AUTHOR_RESPONSE;
+  if (item.status === 'IN_PROGRESS') return nextActionLabels.EXECUTION;
+  return item.status === 'NEW' ? nextActionLabels.TRIAGE : nextActionLabels.DECISION;
+}
+
 function AppealTable({ rows, staff = false, compact = false, returnTo }: { rows: AppealRow[]; staff?: boolean; compact?: boolean; returnTo?: string }) {
   const tableClass = ['data-table', 'appeal-table', !staff && 'personal-appeal-table', compact && 'compact'].filter(Boolean).join(' ');
   return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={tableClass}><thead><tr>
     <th>Обращение</th><th>Статус</th>{!compact && <th className="appeal-context">{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th className="appeal-arrow"><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
+    const overdue = staff && !!item.controlDueAt && !['CLOSED', 'WITHDRAWN'].includes(item.status) && Date.parse(item.controlDueAt) < Date.now();
     const to = `${staff ? '/work-queue' : ''}/appeals/${item.id}`;
     return <tr key={item.id}><td><Link className="table-title" to={to} state={{ returnTo }}><span className="row-icon"><FileText size={17} /></span><span>
       <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} aria-label="Ограниченный доступ" />}</small><strong>{item.title}</strong>
       {!compact && <small className="appeal-context-mobile">{staff ? item.department?.name : label(item.type)}</small>}
+      {staff && <small className="queue-next">{nextActionText(item)}</small>}
     </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td className="appeal-context">{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
-      <td className="date-cell">{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
+      <td className="date-cell">{overdue && <strong className="overdue-label">Просрочено</strong>}{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
       <td className="appeal-arrow"><Link className="icon-button row-arrow" to={to} state={{ returnTo }} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
   })}</tbody></table></TableRegion>;
 }
@@ -44,14 +59,12 @@ export function Home() {
   return <div className="home-page">
     <section className="home-hero">
       <div className="hero-content"><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p>
-        <h1>Сделаем работу удобнее</h1><p className="hero-copy">Расскажите, что мешает, предложите идею или поблагодарите коллег. Здесь можно проследить, что стало с вашим обращением.</p>
+        <h1>Главная</h1><p className="hero-copy">Расскажите, что мешает работе, предложите идею или поблагодарите коллег.</p>
         <Link className="button primary hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
       </div></section>
-    <section className="home-start"><h2>С чего начнём?</h2>
-      <div className="kind-grid">{kinds.map(({ code, name, description, icon: Icon, tone }) => <Link key={code} className="kind-card" to={`/appeals/new?type=${code}`}>
-        <span className={`kind-icon ${tone}`}><Icon size={27} aria-hidden="true" /></span>
-        <div><strong>{name}</strong><p>{description}</p></div><ArrowRight size={21} className="kind-arrow" aria-hidden="true" /></Link>)}</div>
-    </section>
+    <nav className="context-links home-shortcuts" aria-label="Быстрый выбор типа обращения">
+      {kinds.map(({ code, name, icon: Icon }) => <Link key={code} to={`/appeals/new?type=${code}`}><Icon size={17} aria-hidden="true" />{name}</Link>)}
+    </nav>
     <ErrorBox error={waiting.error} retry={() => waiting.refetch()} />
     {waiting.data?.items.length ? <Section title="Требует вашего ответа" icon={<MessageCircle size={18} />} className="attention-section">
       {waiting.data.items.map(item => <Link key={item.id} className="inline-reference" to={`/appeals/${item.id}`}><small>{item.number}</small>{item.title}<ArrowRight size={16} /></Link>)}
@@ -60,66 +73,114 @@ export function Home() {
       <Section title="Мои последние обращения" icon={<Inbox size={25} />} className="recent-section"
         action={<Link className="text-button" to="/my/appeals">Все обращения <ArrowRight size={15} /></Link>}>
         {latest.isPending && <Loading />}<ErrorBox error={latest.error} retry={() => latest.refetch()} />
-        {latest.data && (latest.data.items.length ? <AppealTable rows={latest.data.items} compact /> : <Empty title="Обращений пока нет"><Link to="/appeals/new">Создать первое обращение</Link></Empty>)}
+        {latest.data && (latest.data.items.length ? <AppealTable rows={latest.data.items} compact /> : <Empty title="Обращений пока нет" />)}
       </Section>
-      <Section title="Что улучшилось" icon={<BookOpen size={25} />} className="home-library">
+      <Section title="Что изменилось" icon={<BookOpen size={25} />} className="home-library"
+        action={<Link className="text-button" to="/changes">Все изменения <ArrowRight size={15} /></Link>}>
         {changes.isPending && <Loading />}<ErrorBox error={changes.error} retry={() => changes.refetch()} />
         {changes.data && (changes.data.items.length ? changes.data.items.map(item => <article className="mini-change" key={item.id}>
-          <div className="publication-cover"><Layers3 size={22} /><span>БИБЛИОТЕКА ИЗМЕНЕНИЙ</span></div>
-          <div><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link><p>{item.change}</p>
-            <Link className="text-button" to={`/changes/${item.id}`}>Читать результат <ArrowRight size={14} /></Link></div></article>) : <Empty title="Публикаций пока нет" />)}
+          <div><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link>
+            <dl className="publication-facts">
+              <div><dt>Что было</dt><dd>{item.problem}</dd></div>
+              <div><dt>Что изменили</dt><dd>{item.change}</dd></div>
+              <div><dt>Результат</dt><dd>{item.result}</dd></div>
+              <div><dt>Как проверили</dt><dd>{item.method}</dd></div>
+            </dl>
+            {item.verificationOutcome && <Chip value={item.verificationOutcome} />}
+            {item.isSynthetic && <small className="demo-indicator">Демонстрационный пример</small>}
+          </div></article>) : <Empty title="Публикаций пока нет" />)}
       </Section>
     </div>
   </div>;
 }
 
+const queueTabs = [['mine', 'Мои задачи'], ['all', 'Все'], ['overdue', 'Просроченные']] as const;
+const additionalTabs = [['new', 'Новые / без назначения'], ['waiting', 'Ждут автора'], ['risk', 'Под риском'], ['stale', 'Без активности']] as const;
+const filterKeys = ['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to',
+  'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric', 'origin', 'evidence'];
+
+export function AppealChannels({ staff = false }: { staff?: boolean }) {
+  const { user } = useSession();
+  const location = useLocation();
+  const tabs = staff ? [['/work-queue', 'Очередь'], ['/customer-reviews', 'Клиентские отзывы']] :
+    [['/my/appeals', 'Мои обращения'], ['/proposals', 'Предложения подразделения']];
+  if (!user.departmentId || (!staff && user.role === 'ADMIN')) return null;
+  return <nav className="context-links" aria-label={staff ? 'Каналы обратной связи' : 'Обращения и предложения'}>
+    {tabs.map(([to, title]) => <NavLink key={to} to={typeof location.state?.returnTo === 'string' && location.state.returnTo.startsWith(to + '?') ? location.state.returnTo : to}
+      state={{ returnTo: location.pathname + location.search }}>{title}</NavLink>)}
+  </nav>;
+}
+
 export function AppealList({ staff = false }: { staff?: boolean }) {
+  const { user } = useSession();
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const assignees = useQuery({ queryKey: ['appeal-assignees'], enabled: staff,
     queryFn: () => api<{ id: string; name: string }[]>('/work-queue/assignees') });
-  const tab = params.get('tab') ?? 'all';
+  const defaultTab = user.role === 'HANDLER' ? 'mine' : 'all';
+  const tab = params.get('tab') ?? (params.size ? 'all' : defaultTab);
   const page = Number(params.get('page')) || 1;
-  const filter = Object.fromEntries(['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to', 'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric', 'origin', 'evidence'].map(key => [key, params.get(key) ?? undefined]));
+  const filter = Object.fromEntries(filterKeys.map(key => [key, params.get(key) ?? undefined]));
+  const activeFilters = filterKeys.filter(key => key !== 'q' && filter[key]).length;
+  const additionalView = additionalTabs.some(([key]) => key === tab);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const endpoint = (staff ? '/work-queue' : '/appeals') + queryString({ ...filter, tab: staff ? tab : undefined, own: staff ? undefined : 'true', page, limit: 15 });
   const rows = useQuery({ queryKey: ['appeals', endpoint], queryFn: ({ signal }) => api<Page<AppealRow>>(endpoint, { signal }), placeholderData: keepPreviousData });
   const apply = (key: string, value: string) => {
     const updated = new URLSearchParams(params);
     if (key !== 'page') updated.delete('page');
+    if (staff && key !== 'tab' && !updated.has('tab')) updated.set('tab', tab);
     if (value) updated.set(key, value); else updated.delete(key);
     setParams(updated, { replace: true });
   };
-  const tabs = [['all', 'Все доступные'], ['mine', 'Моё действие'], ['new', 'Новые / без назначения'], ['waiting', 'Ждут автора'], ['risk', 'Под риском'], ['overdue', 'Просроченные'], ['stale', 'Без активности']];
-  return <><PageHeading title={staff ? 'Очередь обращений' : 'Мои обращения'} subtitle={staff ? 'Рассмотрение обращений, сроки и следующие действия.' : 'Следите за рассмотрением, отвечайте на вопросы и смотрите решения.'}
-    action={<Link className="button primary" to="/appeals/new"><Plus size={18} />Создать обращение</Link>} />
-    {staff && <nav className="tab-strip" aria-label="Представления очереди">{tabs.map(([key, text]) => <button type="button" aria-pressed={tab === key} key={key} onClick={() => apply('tab', key)}>{text}</button>)}</nav>}
+  const reset = () => setParams(staff ? { tab } : {}, { replace: true });
+  const dateFilter = (key: string, title: string) => <Field label={title}><DatePicker type="datetime-local" value={filter[key]?.slice(0, 16) ?? ''}
+    onValueChange={value => apply(key, value && new Date(value + 'Z').toISOString())} /></Field>;
+  return <><PageHeading title={staff ? user.role === 'MANAGER' ? 'Обращения' : 'Очередь' : 'Мои обращения'} />
+    <AppealChannels staff={staff} />
+    {staff && <nav className="tab-strip" aria-label="Представления очереди">{queueTabs.map(([key, title]) =>
+      <button type="button" aria-pressed={tab === key} key={key} onClick={() => apply('tab', key)}>{title}</button>)}</nav>}
     <div className="surface filter-bar">
-      <label className="search-field"><Search size={18} /><span className="sr-only">Поиск по обращениям</span><input placeholder="Поиск по номеру или тексту" value={filter.q ?? ''} onChange={event => apply('q', event.target.value)} maxLength={150} /></label>
-      <select aria-label="Статус" value={filter.status ?? ''} onChange={event => apply('status', event.target.value)}><Options items={appealStatuses} blank="Все статусы" /></select>
-      <select aria-label="Тип" value={filter.type ?? ''} onChange={event => apply('type', event.target.value)}><Options items={appealTypes} blank="Все типы" /></select>
-      <select aria-label="Категория" value={filter.categoryId ?? ''} onChange={event => apply('categoryId', event.target.value)}><EntityOptions rows={catalog.data?.categories ?? []} blank="Все категории" /></select>
-      {staff && <details className="advanced-filters">
-        <summary>Дополнительные фильтры{['departmentId', 'processId', 'priority', 'assigneeId', 'dueFrom', 'dueTo'].filter(key => filter[key]).length > 0 && ' · применены'}</summary>
-        <div className="advanced-filter-fields"><select aria-label="Подразделение" value={filter.departmentId ?? ''} onChange={event => apply('departmentId', event.target.value)}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все подразделения" /></select>
-        <select aria-label="Процесс" value={filter.processId ?? ''} onChange={event => apply('processId', event.target.value)}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select>
-        <select aria-label="Приоритет" value={filter.priority ?? ''} onChange={event => apply('priority', event.target.value)}><Options items={priorities} blank="Все приоритеты" /></select>
-        <select aria-label="Исполнитель" value={filter.assigneeId ?? ''} onChange={event => apply('assigneeId', event.target.value)}>
-          <EntityOptions rows={assignees.data ?? []} blank="Все исполнители" />
-        </select>
-        <Field label="Срок с (UTC)"><DatePicker type="datetime-local" value={filter.dueFrom?.slice(0, 16) ?? ''}
-          onValueChange={value => apply('dueFrom', value && new Date(value + 'Z').toISOString())} /></Field>
-        <Field label="Срок до (UTC)"><DatePicker type="datetime-local" value={filter.dueTo?.slice(0, 16) ?? ''}
-          onValueChange={value => apply('dueTo', value && new Date(value + 'Z').toISOString())} /></Field>
-      </div></details>}
-      <select aria-label="Сортировка" value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select>
-      {params.size > 0 && <button className="button subtle" type="button" onClick={() => setParams({})}>Очистить фильтры</button>}
+      <label className="search-field"><Search size={18} aria-hidden="true" /><span className="sr-only">Поиск по обращениям</span><input placeholder="Поиск по номеру или тексту" value={filter.q ?? ''} onChange={event => apply('q', event.target.value)} maxLength={150} /></label>
+      <button type="button" className="button secondary" aria-expanded={filtersOpen} aria-controls="appeal-filters" onClick={() => setFiltersOpen(!filtersOpen)}>
+        Фильтры{activeFilters > 0 ? ` (${activeFilters})` : ''}{additionalView ? ` · ${additionalTabs.find(([key]) => key === tab)?.[1]}` : ''}
+      </button>
+      <div id="appeal-filters" className="queue-filters" hidden={!filtersOpen}>
+        <div className="advanced-filter-fields">
+          {staff && <Field label="Представление очереди"><select value={tab} onChange={event => apply('tab', event.target.value)}>
+            {[...queueTabs, ...additionalTabs].map(([key, title]) => <option key={key} value={key}>{title}</option>)}
+          </select></Field>}
+          <Field label="Статус"><select value={filter.status ?? ''} onChange={event => apply('status', event.target.value)}><Options items={appealStatuses} blank="Все статусы" /></select></Field>
+          <Field label="Тип"><select value={filter.type ?? ''} onChange={event => apply('type', event.target.value)}><Options items={appealTypes} blank="Все типы" /></select></Field>
+          <Field label="Категория"><select value={filter.categoryId ?? ''} onChange={event => apply('categoryId', event.target.value)}><EntityOptions rows={catalog.data?.categories ?? []} blank="Все категории" /></select></Field>
+          {staff && <>
+            <Field label="Подразделение"><select value={filter.departmentId ?? ''} onChange={event => apply('departmentId', event.target.value)}><EntityOptions rows={catalog.data?.departments ?? []} blank="Все подразделения" /></select></Field>
+            <Field label="Процесс"><select value={filter.processId ?? ''} onChange={event => apply('processId', event.target.value)}><EntityOptions rows={catalog.data?.processes ?? []} blank="Все процессы" /></select></Field>
+            <Field label="Приоритет"><select value={filter.priority ?? ''} onChange={event => apply('priority', event.target.value)}><Options items={priorities} blank="Все приоритеты" /></select></Field>
+            <Field label="Исполнитель"><select value={filter.assigneeId ?? ''} onChange={event => apply('assigneeId', event.target.value)}><EntityOptions rows={assignees.data ?? []} blank="Все исполнители" /></select></Field>
+            {dateFilter('dueFrom', 'Срок с (UTC)')}{dateFilter('dueTo', 'Срок до (UTC)')}
+          </>}
+          {dateFilter('from', 'Создано с (UTC)')}{dateFilter('to', 'Создано до (UTC)')}
+          <Field label="Сортировка"><select value={filter.sort ?? 'recent'} onChange={event => apply('sort', event.target.value)}><option value="recent">Сначала новые</option><option value="oldest">Сначала ранние</option>{staff && <option value="due">По сроку</option>}</select></Field>
+          {staff && <>
+            <Field label="Происхождение карточки"><select value={filter.origin ?? ''} onChange={event => apply('origin', event.target.value)}><option value="">Все источники</option><option value="LIVE">Рабочие</option><option value="DEMO">Демонстрационные</option><option value="ORIGINAL">Исходный набор</option></select></Field>
+            <Field label="Доказательства"><select value={filter.evidence ?? 'OBSERVED'} onChange={event => apply('evidence', event.target.value === 'OBSERVED' ? '' : event.target.value)}><option value="OBSERVED">Действия и подтверждённый импорт</option><option value="DEMO_FIXTURE">Синтетические примеры</option><option value="UNKNOWN">Неустановленное происхождение</option></select></Field>
+            <Field label="Показатель обзора"><select value={filter.metric ?? ''} onChange={event => apply('metric', event.target.value)}><option value="">Все</option><option value="closed">Закрытые</option><option value="documented">Закрытые с итогом</option><option value="responded">С первым ответом</option></select></Field>
+            <label className="checkbox-line"><input type="checkbox" checked={filter.normalOnly === 'true'} onChange={event => apply('normalOnly', event.target.checked ? 'true' : '')} /> Только с обычным доступом</label>
+          </>}
+        </div>
+        {(activeFilters > 0 || filter.q) && <button className="button subtle" type="button" onClick={reset}>Очистить фильтры</button>}
+      </div>
     </div>
     <ErrorBox error={rows.error || catalog.error || assignees.error} retry={() => { void rows.refetch(); void catalog.refetch(); if (staff) void assignees.refetch(); }} />{rows.isPending && <Loading />}
-    {rows.data && <div className={staff ? 'surface' : 'surface personal-appeal-list'}>
+    {rows.data && !rows.error && <div className={staff ? 'surface' : 'surface personal-appeal-list'}>
       <div className="list-meta" aria-live="polite">{rows.isFetching ? 'Обновляем…' : `Найдено: ${rows.data.total}`}</div>
       {rows.data.items.length ? <AppealTable rows={rows.data.items} staff={staff} returnTo={location.pathname + location.search} /> :
-        <Empty title="Обращения не найдены"><button className="button subtle" onClick={() => setParams({})}>Сбросить фильтры</button></Empty>}
+        <Empty title={filter.q ? 'По вашему запросу ничего не найдено' : activeFilters ? 'По выбранным фильтрам обращений нет' : staff && tab === 'mine' ? 'Сейчас у вас нет задач по обращениям' : 'Обращений пока нет'}>
+          {(activeFilters > 0 || filter.q) && <button className="button subtle" type="button" onClick={reset}>Сбросить фильтры</button>}
+          {staff && tab !== 'all' && <button className="button subtle" type="button" onClick={() => apply('tab', 'all')}>Показать все обращения</button>}
+        </Empty>}
       <Pagination {...rows.data} onChange={next => apply('page', String(next))} />
     </div>}
   </>;
@@ -457,18 +518,17 @@ function AppealDetailContent() {
     update.reset();
     reroute.reset();
   };
-  const actionLabels: Record<string, string> = { NONE: 'Рассмотрение завершено', TRIAGE: 'Первичное рассмотрение', DECISION: 'Рассмотрение и решение', EXECUTION: 'Работа над обращением', AUTHOR_RESPONSE: 'Ответ автора', ROUTING: 'Назначение ответственного' };
-  const fallbackNext = record.routingPending ? 'Назначение ответственного' : record.status === 'WAITING_AUTHOR' ? 'Ответ автора' : ['CLOSED', 'WITHDRAWN'].includes(record.status) ? 'Рассмотрение завершено' :
-    record.status === 'NEW' ? 'Первичное рассмотрение' : 'Рассмотрение и решение';
-  const next = record.nextAction ? actionLabels[record.nextAction.kind] ?? fallbackNext : fallbackNext;
+  const next = record.routingPending ? nextActionLabels.ROUTING : nextActionText({ ...record, nextActionKind: record.nextAction?.kind });
   const nextDue = record.nextAction ? record.nextAction.dueAt : record.controlDueAt;
   const plain = ['REVIEW', 'IN_PROGRESS'].includes(action ?? '') && record.status !== 'IN_PROGRESS';
   const fromQueue = location.pathname.startsWith('/work-queue/');
   const listPath = fromQueue ? '/work-queue' : '/my/appeals';
   const previousList = location.state?.returnTo;
-  const backTo = typeof previousList === 'string' && previousList.split('?')[0] === listPath ? previousList : listPath;
+  const previousPath = typeof previousList === 'string' ? previousList.split('?')[0] : undefined;
+  const fromOverview = fromQueue && previousPath === '/overview';
+  const backTo = previousPath === listPath || fromOverview ? previousList : listPath;
   return <><PageHeading title={record.title} subtitle={`${record.number} · ${label(record.type)} · ${date(record.createdAt)}`}
-    back={{ to: backTo, label: fromQueue ? 'Очередь' : 'Мои обращения' }}
+    back={{ to: backTo, label: fromOverview ? 'Обзор' : fromQueue ? 'Очередь' : 'Мои обращения' }}
     action={<Chip value={record.status} />} />
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
@@ -515,7 +575,7 @@ function AppealDetailContent() {
           <div><dt>Срок</dt><dd>{nextDue ? date(nextDue, true) : 'Срок не задан'}</dd></div>
           {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
         {!!record.nextActionHistory?.length && <details><summary>История следующих действий</summary><ul>
-          {record.nextActionHistory.map((step, index) => <li key={index}>{date(step.assignedAt, true)} · {actionLabels[step.kind] ?? step.kind}</li>)}
+          {record.nextActionHistory.map((step, index) => <li key={index}>{date(step.assignedAt, true)} · {nextActionLabels[step.kind] ?? step.kind}</li>)}
         </ul></details>}
         {sideActions.length > 0 && <div className="side-actions">
           {sideActions.map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?

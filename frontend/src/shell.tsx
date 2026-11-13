@@ -1,18 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
-  GitPullRequest, House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
+  House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { label } from './contracts';
 import { api, ApiError, queryString, type Page, type Session } from './api';
 import { SessionContext, useSession } from './session';
 import { ActionForm, date, Empty, ErrorBox, Field, Loading, Modal, PageHeading, Pagination } from './ui';
-import { AppealDetail, AppealList, Home, NewAppeal } from './appeals';
+import { AppealChannels, AppealDetail, AppealList, Home, NewAppeal } from './appeals';
 import { AnonymousPage } from './anonymous';
 const ProposalsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ProposalsPage })));
 const ReviewsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ReviewsPage })));
 const OneCPage = lazy(() => import('./one-c').then(module => ({ default: module.OneCPage })));
-const CaseList = lazy(() => import('./cases').then(module => ({ default: module.CaseList })));
+const ImprovementsWorkspace = lazy(() => import('./cases').then(module => ({ default: module.ImprovementsWorkspace })));
 const CreateCase = lazy(() => import('./cases').then(module => ({ default: module.CreateCase })));
 const ImprovementDetail = lazy(() => import('./cases').then(module => ({ default: module.ImprovementDetail })));
 const ProblemDetail = lazy(() => import('./cases').then(module => ({ default: module.ProblemDetail })));
@@ -25,19 +25,18 @@ const AdminPage = lazy(() => import('./admin').then(module => ({ default: module
 const employeeNav = [
   { to: '/', text: 'Главная', icon: House },
   { to: '/my/appeals', text: 'Мои обращения', icon: Inbox },
-  { to: '/changes', text: 'Что улучшилось', icon: BookOpen },
+  { to: '/changes', text: 'Что изменилось', icon: BookOpen },
 ];
-const handlerNav = [
-  { to: '/work-queue', text: 'Очередь', icon: Inbox },
-  { to: '/problems', text: 'Проблемы', icon: GitPullRequest },
-  { to: '/improvements', text: 'Улучшения', icon: Layers3 },
-  { to: '/radar', text: 'Радар процессов', icon: Activity },
-  { to: '/changes', text: 'Библиотека изменений', icon: BookOpen },
-];
-const managerNav = [handlerNav[3], handlerNav[2], { ...handlerNav[0], text: 'Очередь команды' }, handlerNav[1], handlerNav[4]];
-const adminNav = [{ to: '/admin/users', text: 'Администрирование', icon: Settings }];
-const navigation = { EMPLOYEE: employeeNav, HANDLER: handlerNav, MANAGER: managerNav, ADMIN: adminNav };
-const landing = { EMPLOYEE: '/', HANDLER: '/work-queue', MANAGER: '/radar', ADMIN: '/admin/users' };
+const queueNav = { to: '/work-queue', text: 'Очередь', icon: Inbox };
+const improvementNav = { to: '/improvements', text: 'Улучшения', icon: Layers3 };
+const overviewNav = { to: '/overview', text: 'Обзор', icon: Activity };
+const navigation = {
+  EMPLOYEE: employeeNav,
+  HANDLER: [queueNav, improvementNav],
+  MANAGER: [overviewNav, { ...queueNav, text: 'Обращения' }, improvementNav],
+  ADMIN: [{ to: '/admin', text: 'Администрирование', icon: Settings }],
+};
+const landing = { EMPLOYEE: '/', HANDLER: '/work-queue', MANAGER: '/overview', ADMIN: '/admin/users' };
 
 function Brand() {
   return <div className="brand"><strong>До результата</strong></div>;
@@ -46,32 +45,38 @@ function Brand() {
 function Login() {
   const client = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const demo = useQuery({ queryKey: ['demo'], queryFn: () => api<{ demoMode: boolean }>('/auth/capabilities') });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const login = useMutation({ mutationFn: (data: { email: string; password: string } | { profile: string }) => api<Session>('profile' in data ? '/auth/demo' : '/auth/login', { method: 'POST', body: data }),
-    onSuccess: session => { client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); client.setQueryData(['session'], session); navigate(landing[session.user.role], { replace: true }); } });
-  const demoAccounts = [['employee', 'Сотрудник'], ['handler', 'Обработчик'], ['manager', 'Руководитель'], ['admin', 'Администратор'],
+    onSuccess: session => { client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); client.setQueryData(['session'], session); navigate(['/', '/login'].includes(location.pathname) ? landing[session.user.role] : location, { replace: true }); } });
+  const demoAccounts = [['employee', 'Сотрудник'], ['manager', 'Руководитель'], ['handler', 'Обработчик'], ['admin', 'Администратор'],
     ['other-employee', 'Другой сотрудник'], ['sensitive-handler', 'Спецочередь']];
   return <main className="login-main">
     <div className="login-card">
       <h1>До результата</h1>
-      <p>Войдите с рабочей учётной записью.</p>
+      <p>Ваши идеи. Реальные изменения. Проверенный результат</p>
       <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
         <Field label="Рабочая почта"><input type="email" required autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} /></Field>
         <Field label="Пароль"><input type="password" required autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></Field>
         <ErrorBox error={login.error} />
         <button className="button primary login-submit" disabled={login.isPending}>{login.isPending ? 'Входим…' : 'Войти'} <ArrowRight size={20} aria-hidden="true" /></button>
       </form>
-      <a className="button secondary login-submit" href="/anonymous">Отправить анонимно</a>
-      {demo.data?.demoMode && <section className="demo-box" aria-labelledby="demo-heading">
-        <h2 id="demo-heading" className="demo-heading">Демонстрационный вход</h2>
+      <a className="text-button anonymous-login" href="/anonymous">Сообщить анонимно</a>
+      {demo.data?.demoMode && <details className="demo-box">
+        <summary>Попробовать демоверсию</summary>
         <div className="demo-options">
-          {demoAccounts.map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => {
-            setEmail(`${account}@demo.local`); setPassword(''); login.mutate({ profile: account });
-          }}><span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
+          {demoAccounts.slice(0, 3).map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => login.mutate({ profile: account })}>
+            <span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
         </div>
-      </section>}
+        <details className="demo-other"><summary>Другие сценарии</summary>
+          <div className="demo-options">
+            {demoAccounts.slice(3).map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => login.mutate({ profile: account })}>
+              <span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
+          </div>
+        </details>
+      </details>}
     </div>
   </main>;
 }
@@ -84,36 +89,51 @@ function Layout() {
   const notices = useQuery({ queryKey: ['notifications'], queryFn: () => api<{ unread: number }>('/notifications?limit=1'), refetchInterval: 5000 });
   const logout = useMutation({ mutationFn: () => api('/auth/logout', { method: 'POST' }),
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
-  const nav = navigation[user.role];
+  const location = useLocation();
   const staff = user.role === 'HANDLER' || user.role === 'MANAGER';
   const oneC = useQuery({ queryKey: ['one-c-capabilities'], queryFn: () => api<{ mode: string | null }>('/one-c/capabilities'),
     enabled: staff && (user.demo || user.permissions.includes('ONEC_OPERATOR')) });
+  const isHome = user.role === 'EMPLOYEE' && location.pathname === '/';
+  const profileLinks = staff || user.role === 'ADMIN';
   function sideContent() {
     return <><div className="sidebar-brand"><Link to={landing[user.role]} onClick={() => setMobile(false)}><Brand /></Link></div>
-      {user.role !== 'ADMIN' && <div className="sidebar-create"><Link className="button primary" to="/appeals/new" onClick={() => setMobile(false)}><Plus size={19} />Создать обращение</Link></div>}
-      <nav className="nav-list" aria-label="Основная навигация"><div className="nav-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-        {nav.map(({ to, text, icon: Icon }) => <NavLink key={to} end={to === '/'} to={to} onClick={() => setMobile(false)}><Icon size={18} />{text}</NavLink>)}
-        {user.role !== 'ADMIN' && user.departmentId && <NavLink to="/proposals" onClick={() => setMobile(false)}><Layers3 size={18} />Предложения</NavLink>}
-        {staff && user.departmentId && <NavLink to="/customer-reviews" onClick={() => setMobile(false)}><Inbox size={18} />Клиентские отзывы</NavLink>}
-        {oneC.data?.mode && <NavLink to="/one-c" onClick={() => setMobile(false)}><Settings size={18} />Интеграция 1С</NavLink>}
-        <NavLink to="/notifications" onClick={() => setMobile(false)}><Bell size={18} />Уведомления{notices.data?.unread ? <span className="nav-count">{notices.data.unread}</span> : null}</NavLink>
+      {user.role !== 'ADMIN' && !isHome && <div className="sidebar-create"><Link className="button primary" to="/appeals/new" onClick={() => setMobile(false)}><Plus size={19} />Создать обращение</Link></div>}
+      <nav className="nav-list" aria-label="Основная навигация">
+        {navigation[user.role].map(({ to, text, icon: Icon }) => {
+          const legacyActive = (to === '/improvements' && /^\/problems(?:\/|$)/.test(location.pathname)) ||
+            (to === '/work-queue' && location.pathname === '/customer-reviews') ||
+            (to === '/my/appeals' && location.pathname === '/proposals');
+          return <NavLink key={to} end={to === '/'} to={to} className={legacyActive ? 'active' : undefined}
+            aria-current={legacyActive ? 'location' : undefined} onClick={() => setMobile(false)}><Icon size={18} aria-hidden="true" />{text}</NavLink>;
+        })}
       </nav>
-      <div className="sidebar-bottom"><Link to="/help" className="nav-help" onClick={() => setMobile(false)}><CircleHelp size={18} />Помощь</Link>
-        <div className="sidebar-account">
-          <div className="user-card"><strong>{user.name}</strong><small>{label(user.role)}</small></div>
-          <button className="icon-button sidebar-logout" type="button" aria-label="Выйти из аккаунта" title="Выйти из аккаунта" disabled={logout.isPending} onClick={() => logout.mutate()}>
-            <LogOut size={17} aria-hidden="true" />
-          </button>
-        </div>
-        <ErrorBox error={logout.error} />
-      </div></>;
+      <div className="sidebar-bottom"><Link to="/help" className="nav-help" onClick={() => setMobile(false)}><CircleHelp size={18} />Помощь</Link></div></>;
   }
   return <div className="app-shell">
     <a href="#content" className="skip">К содержанию</a>
     <aside className="sidebar">{sideContent()}</aside>
     {mobile && <Modal title="Навигация" close={() => setMobile(false)}><div className="mobile-nav">{sideContent()}</div></Modal>}
     <div className="main-shell">
-      <button className="icon-button mobile-menu" type="button" aria-label="Открыть навигацию" onClick={() => setMobile(true)}><Menu size={21} /></button>
+      <header className="workspace-header">
+        <button className="icon-button mobile-menu" type="button" aria-label="Открыть навигацию" onClick={() => setMobile(true)}><Menu size={21} aria-hidden="true" /></button>
+        <div className="workspace-account">
+          <Link to="/notifications" className="icon-button notification-button" aria-label={notices.data?.unread ? `Уведомления, непрочитанных: ${notices.data.unread}` : 'Уведомления'}>
+            <Bell size={19} aria-hidden="true" />{notices.data?.unread ? <span className="nav-count" aria-hidden="true">{notices.data.unread}</span> : null}
+          </Link>
+          <details className="account-menu" key={location.key}>
+            <summary>{user.name}</summary>
+            <div className="surface account-panel">
+              <div className="user-card"><strong>{user.name}</strong><small>{user.email}</small><small>{label(user.role)}</small></div>
+              {profileLinks && <Link to="/my/appeals">Мои обращения</Link>}
+              {profileLinks && <Link to="/changes">Что изменилось</Link>}
+              {staff && user.role !== 'MANAGER' && <Link to="/overview">Обзор</Link>}
+              {staff && oneC.data?.mode && <Link to="/one-c">Интеграция 1С</Link>}
+              <button className="button secondary" type="button" disabled={logout.isPending} onClick={() => logout.mutate()}><LogOut size={17} aria-hidden="true" />Выйти из аккаунта</button>
+              <ErrorBox error={logout.error} />
+            </div>
+          </details>
+        </div>
+      </header>
       <main className="content" id="content" tabIndex={-1}><Suspense fallback={<Loading />}><Outlet /></Suspense></main>
     </div>
   </div>;
@@ -163,6 +183,13 @@ function Unavailable() {
   return <><PageHeading title="Страница недоступна" /><Empty title="Страница отсутствует или у вас нет доступа"><Link className="button secondary" to={landing[user.role]}>В рабочее пространство</Link></Empty></>;
 }
 
+function LegacyList({ to, view }: { to: string; view?: string }) {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  if (view) params.set('view', view);
+  return <Navigate to={{ pathname: to, search: params.toString(), hash: location.hash }} replace />;
+}
+
 export function App() {
   const location = useLocation();
   const client = useQueryClient();
@@ -188,18 +215,20 @@ export function App() {
       <Route path="appeals/:id" element={<AppealDetail />} />
       <Route path="work-queue" element={<Guard roles={staff}><AppealList staff /></Guard>} />
       <Route path="work-queue/appeals/:id" element={<Guard roles={staff}><AppealDetail /></Guard>} />
-      <Route path="problems" element={<Guard roles={staff}><CaseList kind="problem" /></Guard>} />
+      <Route path="problems" element={<Guard roles={staff}><LegacyList to="/improvements" view="problems" /></Guard>} />
       <Route path="problems/new" element={<Guard roles={staff}><CreateCase kind="problem" /></Guard>} />
       <Route path="problems/:id" element={<Guard roles={staff}><ProblemDetail /></Guard>} />
-      <Route path="improvements" element={<Guard roles={staff}><CaseList kind="improvement" /></Guard>} />
+      <Route path="improvements" element={<Guard roles={staff}><ImprovementsWorkspace /></Guard>} />
       <Route path="improvements/new" element={<Guard roles={staff}><CreateCase kind="improvement" /></Guard>} />
       <Route path="improvements/:id" element={<Guard roles={staff}><ImprovementDetail /></Guard>} />
-      <Route path="proposals" element={<Guard roles={['EMPLOYEE', ...staff]}><ProposalsPage /></Guard>} />
-      <Route path="customer-reviews" element={<Guard roles={staff}><ReviewsPage /></Guard>} />
+      <Route path="proposals" element={<Guard roles={['EMPLOYEE', ...staff]}><><AppealChannels /><ProposalsPage /></></Guard>} />
+      <Route path="customer-reviews" element={<Guard roles={staff}><><AppealChannels staff /><ReviewsPage /></></Guard>} />
       <Route path="one-c" element={<Guard roles={staff}><OneCPage /></Guard>} />
-      <Route path="radar" element={<Guard roles={staff}><RadarPage /></Guard>} />
+      <Route path="overview" element={<Guard roles={staff}><RadarPage /></Guard>} />
+      <Route path="radar" element={<Guard roles={staff}><LegacyList to="/overview" /></Guard>} />
       <Route path="changes" element={<Changes />} /><Route path="changes/:id" element={<ChangeDetail />} />
       <Route path="feedback/:id" element={<FeedbackPage />} /><Route path="notifications" element={<Notifications />} />
+      <Route path="admin" element={<Guard roles={['ADMIN']}><LegacyList to="/admin/users" /></Guard>} />
       <Route path="admin/:resource" element={<Guard roles={['ADMIN']}><AdminPage /></Guard>} />
       <Route path="help" element={<Help />} /><Route path="*" element={<Unavailable />} />
     </Route>

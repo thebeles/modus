@@ -9,6 +9,11 @@ import { Policy, Principal } from './policy';
 
 const content = { title: true, id: true, problem: true, change: true, method: true, result: true, limitations: true, publishedAt: true, isSynthetic: true } as const;
 
+const publishedContent = { ...content, improvement: { select: { verification: { select: { outcome: true } } } } } as const;
+function publishedView({ improvement, ...row }: Prisma.PublicationGetPayload<{ select: typeof publishedContent }>) {
+  return { ...row, verificationOutcome: improvement.verification?.outcome ?? null };
+}
+
 const editorialInput = z.strictObject({
   title, problem: bodyText, change: bodyText, method: bodyText, result: bodyText, limitations: bodyText,
   audience: z.enum(['DEPARTMENT', 'INTERNAL']).default('DEPARTMENT'),
@@ -37,16 +42,16 @@ export class Publications {
     const { page, limit, q } = parse(publicationListInput, raw);
     const where = { ...this.policy.publications(user), ...(q ? { title: { contains: q, mode: 'insensitive' as const } } : {}) };
     const [items, total] = await this.db.$transaction([
-      this.db.publication.findMany({ where, select: content, orderBy: { publishedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+      this.db.publication.findMany({ where, select: publishedContent, orderBy: { publishedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
       this.db.publication.count({ where }),
     ]);
-    return { items, total, page, limit };
+    return { items: items.map(publishedView), total, page, limit };
   }
 
   async detail(user: Principal, item: string) {
-    const row = await this.db.publication.findFirst({ where: { id: item, ...this.policy.publications(user) }, select: content });
+    const row = await this.db.publication.findFirst({ where: { id: item, ...this.policy.publications(user) }, select: publishedContent });
     if (!row) throw missing();
-    return row;
+    return publishedView(row);
   }
 
   async revisions(user: Principal, item: string, raw: unknown) {

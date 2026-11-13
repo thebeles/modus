@@ -8,6 +8,7 @@ test('queue stays readable at 360 px, retains the search, and keeps dialog draft
   await employee.close();
   await login(page, 'handler');
   await page.setViewportSize({ width: 360, height: 820 });
+  await page.getByRole('button', { name: 'Все', exact: true }).click();
   const search = page.getByRole('textbox', { name: 'Поиск по обращениям' });
   await search.fill(title);
   const table = page.getByRole('region', { name: 'Очередь обращений' });
@@ -29,6 +30,61 @@ test('queue stays readable at 360 px, retains the search, and keeps dialog draft
   await expect(menu).toBeFocused();
   await page.getByRole('link', { name: 'Очередь', exact: true }).click();
   await expect(search).toHaveValue(title);
+});
+
+test('keeps old workspace links and routes each role to its working views', async ({ page, browser }, info) => {
+  await login(page, 'manager');
+  await page.goto('/radar?origin=DEMO');
+  await expect(page).toHaveURL(/overview\?origin=DEMO/);
+  await expect(page.getByRole('heading', { name: 'Требует внимания' })).toBeVisible();
+  const overdue = page.getByRole('link', { name: /^Просроченные обращения/ });
+  await expect(overdue).toBeVisible();
+  await page.screenshot({ path: info.outputPath('overview-desktop.png'), fullPage: true, animations: 'disabled' });
+  await overdue.click();
+  await expect(page).toHaveURL(/tab=overdue/);
+  await page.getByRole('button', { name: /^Фильтры/ }).click();
+  await expect(page.getByLabel('Происхождение карточки')).toHaveValue('DEMO');
+
+  await page.goto('/problems?q=маршрут&page=2');
+  await expect(page).toHaveURL(/\/improvements\?.*view=problems/);
+  await expect(page.getByRole('textbox', { name: 'Поиск', exact: true })).toHaveValue('маршрут');
+  await page.getByRole('link', { name: 'На проверке', exact: true }).click();
+  await expect(page).toHaveURL(/view=review/);
+  const verify = page.getByRole('checkbox', { name: 'Ожидают моей проверки' });
+  await verify.press('Space');
+  await expect(verify).toBeChecked();
+  await expect(page).toHaveURL(/actionable=true/);
+
+  const handler = await session(browser, 'handler');
+  await expect(handler.page.getByRole('button', { name: 'Мои задачи', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await handler.page.getByRole('button', { name: 'Фильтры', exact: true }).click();
+  await handler.page.getByLabel('Представление очереди').selectOption('stale');
+  await expect(handler.page).toHaveURL(/tab=stale/);
+  await handler.close();
+
+  const admin = await session(browser, 'admin');
+  await admin.page.getByRole('textbox', { name: 'Поиск сотрудников' }).fill('manager@demo.local');
+  await expect(admin.page.getByRole('button', { name: /^Изменить:/ })).toHaveCount(1);
+  await admin.page.getByRole('button', { name: /^Изменить:/ }).click();
+  await expect(admin.page.getByRole('dialog').getByLabel('Электронная почта')).toHaveValue('manager@demo.local');
+  await admin.page.keyboard.press('Escape');
+  await admin.page.getByRole('link', { name: 'Обработка обращений' }).click();
+  await expect(admin.page.getByRole('heading', { name: 'Категории' })).toBeVisible();
+  await admin.page.getByRole('link', { name: 'Интеграции', exact: true }).click();
+  await expect(admin.page.getByText('Демонстрационный симулятор', { exact: true })).toBeVisible();
+  await admin.page.getByRole('link', { name: 'Контроль системы' }).click();
+  await expect(admin.page.getByRole('heading', { name: 'Мониторинг' })).toBeVisible();
+  await admin.page.getByRole('link', { name: 'Аудит', exact: true }).click();
+  await expect(admin.page.getByRole('heading', { name: 'Аудит' })).toBeVisible();
+  await admin.close();
+
+  const employee = await session(browser, 'employee');
+  await expect(employee.page.getByRole('navigation', { name: 'Основная навигация' }).getByRole('link')).toHaveCount(3);
+  await employee.page.goto('/admin/users');
+  await expect(employee.page.getByRole('heading', { name: 'Страница недоступна' })).toBeVisible();
+  const denied = await employee.page.request.get('/api/v1/admin/user-directory');
+  expect(denied.status()).toBe(403);
+  await employee.close();
 });
 
 test('finds an old transfer target beyond the first hundred through the dialog', async ({ page, browser }) => {
@@ -72,8 +128,13 @@ const profileNames = { employee: 'Сотрудник', handler: 'Обработ�
 
 async function login(page: Page, role: keyof typeof profileNames) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByText('Попробовать демоверсию', { exact: true }).click();
+  if (['admin', 'other', 'sensitive-handler'].includes(role)) await page.getByText('Другие сценарии', { exact: true }).click();
   await page.getByRole('button', { name: profileNames[role], exact: true }).press('Enter');
-  await expect(page.getByRole('button', { name: 'Выйти из аккаунта', exact: true })).toBeVisible();
+  const landingPath = role === 'admin' ? '/admin/users' : role === 'manager' ? '/overview' :
+    role === 'handler' || role === 'sensitive-handler' ? '/work-queue' : '/';
+  await expect(page).toHaveURL(url => url.pathname === landingPath);
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 }
 
 async function session(browser: Browser, role: keyof typeof profileNames) {
@@ -145,6 +206,7 @@ test('E2E-01 creates a real appeal and shows it to its author and the queue', as
   await page.goto('/my/appeals');
   await expect(page.getByRole('link', { name: new RegExp(title) })).toBeVisible();
   const handler = await session(browser, 'handler');
+  await handler.page.getByRole('button', { name: 'Все', exact: true }).click();
   await handler.page.getByRole('textbox', { name: 'Поиск по обращениям' }).fill(title);
   await expect(handler.page.getByRole('link', { name: new RegExp(title) })).toBeVisible();
   await handler.close();
@@ -358,6 +420,7 @@ test('E2E-06 radar uses live database counts and supports human review of a them
   const employee = await session(browser, 'employee');
   await create(employee.page, 'Обращение для радара ' + randomUUID().slice(0, 8));
   await page.reload();
+  await page.getByRole('link', { name: 'Аналитика', exact: true }).click();
   await expect(page.getByRole('link', { name: /Обращения.*Карточки выбранного происхождения и периода/ })).toContainText(String(before.total + 1));
   await page.getByRole('tab', { name: 'Темы' }).click();
   const card = page.locator('.link-card').filter({ hasText: 'A-001' }).filter({ hasText: 'A-015' });
@@ -559,7 +622,7 @@ test('E2E-12 responsive home and keyboard-operable submission at 360 px', async 
   for (const width of [360, 768, 1280, 1600]) {
     await page.setViewportSize({ width, height: 950 });
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Сделаем работу удобнее' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Главная' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Мои последние обращения' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     if (width === 1280 || width === 360) await page.screenshot({ path: info.outputPath(`dashboard-${width}.png`), fullPage: true, animations: 'disabled' });
@@ -620,7 +683,7 @@ test('a draft survives reload and reuses the submission after a lost response', 
 
 test('guest submits and tracks a private appeal without signing in', async ({ page, browser }) => {
   await page.goto('/');
-  await page.getByRole('link', { name: 'Отправить анонимно' }).click();
+  await page.getByRole('link', { name: 'Сообщить анонимно' }).click();
   await expect(page.getByRole('heading', { name: 'Анонимное обращение' })).toBeVisible();
   const title = 'Анонимный канал ' + randomUUID().slice(0, 8);
   await page.getByLabel('Заголовок').fill(title);
@@ -649,7 +712,8 @@ test('guest submits and tracks a private appeal without signing in', async ({ pa
 
 test('an employee discusses a proposal and the owner converts it to a draft', async ({ page, browser }) => {
   await login(page, 'employee');
-  await page.getByRole('link', { name: 'Предложения', exact: true }).click();
+  await page.getByRole('link', { name: 'Мои обращения', exact: true }).click();
+  await page.getByRole('link', { name: 'Предложения подразделения', exact: true }).click();
   const title = 'Идея команды ' + randomUUID().slice(0, 8);
   await page.getByRole('button', { name: 'Новое предложение' }).click();
   const createDialog = page.getByRole('dialog');
@@ -664,7 +728,9 @@ test('an employee discusses a proposal and the owner converts it to a draft', as
   await page.getByRole('dialog').getByRole('button', { name: 'Добавить комментарий' }).click();
   await expect(page.getByText('Готов помочь с пилотной проверкой.', { exact: true })).toBeVisible();
   const handler = await session(browser, 'handler');
-  await handler.page.getByRole('link', { name: 'Предложения', exact: true }).click();
+  await handler.page.locator('.account-menu > summary').click();
+  await handler.page.getByRole('link', { name: 'Мои обращения', exact: true }).click();
+  await handler.page.getByRole('link', { name: 'Предложения подразделения', exact: true }).click();
   const row = handler.page.locator('section').filter({ has: handler.page.getByRole('heading', { name: title }) });
   await row.getByRole('button', { name: 'Создать инициативу' }).click();
   const conversion = handler.page.getByRole('dialog');
@@ -687,6 +753,7 @@ test('staff can import feedback and send a request through the labeled 1C simula
   await dialog.getByRole('button', { name: 'Импортировать', exact: true }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await expect(page.getByText(/Добавлено: 1/)).toBeVisible();
+  await page.locator('.account-menu > summary').click();
   await page.getByRole('link', { name: 'Интеграция 1С' }).click();
   await expect(page.getByText('Демонстрационный симулятор 1С')).toBeVisible();
   await page.getByRole('button', { name: 'Новая заявка' }).click();

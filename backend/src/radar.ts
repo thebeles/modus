@@ -215,7 +215,7 @@ export class Radar {
     const dueSoon = { controlDueAt: { gte: now, lte: nextDay } };
     const repeats = { OR: [{ linksFrom: { some: recurrenceWhere } }, { linksTo: { some: recurrenceWhere } }] };
     const totals = await this.db.$transaction(async tx => {
-      const [closed, documented, response, overdue, stale, appealGroups, processGroups, categoryGroups, improved, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
+      const [closed, documented, response, overdue, stale, appealGroups, processGroups, categoryGroups, departmentGroups, improved, outcomeGroups, topics, recurrenceCandidates] = await Promise.all([
         tx.appeal.count({ where: { AND: [where, metrics.closed] } }),
         tx.appeal.count({ where: { AND: [where, metrics.documented] } }),
         tx.appeal.aggregate({ where: { AND: [where, metrics.responded] }, _count: { firstResponseSeconds: true }, _avg: { firstResponseSeconds: true } }),
@@ -223,6 +223,7 @@ export class Radar {
         tx.appeal.groupBy({ by: ['type', 'status'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['processId'], where, _count: { _all: true } }),
         tx.appeal.groupBy({ by: ['categoryId'], where, _count: { _all: true } }),
+        tx.appeal.groupBy({ by: ['departmentId'], where, _count: { _all: true } }),
         tx.improvement.count({ where: implementedWhere }),
         tx.verification.groupBy({ by: ['outcome'], orderBy: { outcome: 'asc' }, where: { improvement: implementedWhere, origin: evidence }, _count: { _all: true } }),
         tx.appealLink.count({ where: linkWhere }),
@@ -241,14 +242,16 @@ export class Radar {
       const min = Math.max(2, Number(process.env.RADAR_MIN_GROUP || 2) || 2);
       const processes = processGroups.filter(row => row._count._all >= min);
       const categories = categoryGroups.filter(row => row._count._all >= min);
-      const [processNames, categoryNames, attention, improvements, topicItems] = await Promise.all([
+      const departments = departmentGroups.filter(row => row._count._all >= min);
+      const [processNames, categoryNames, departmentNames, attention, improvements, topicItems] = await Promise.all([
         tx.businessProcess.findMany({ where: { id: { in: processes.flatMap(row => row.processId ? [row.processId] : []) } } }),
         tx.category.findMany({ where: { id: { in: categories.flatMap(row => row.categoryId ? [row.categoryId] : []) } } }),
+        tx.organizationUnit.findMany({ where: { id: { in: departments.flatMap(row => row.departmentId ? [row.departmentId] : []) } }, select: { id: true, name: true } }),
         tx.appeal.findMany({ where: { AND: [where, activeAttention, { OR: [tabs.overdue, tabs.stale, dueSoon, { priority: 'HIGH' }, repeats] }] },
           take: 8, orderBy: [{ priority: 'desc' }, { controlDueAt: { sort: 'asc', nulls: 'last' } }, { lastMeaningfulActionAt: 'asc' }, { id: 'asc' }],
           select: { id: true, number: true, title: true, priority: true, status: true, controlDueAt: true,
             _count: { select: { linksFrom: { where: recurrenceWhere }, linksTo: { where: recurrenceWhere } } },
-            nextActions: { orderBy: { revision: 'desc' }, take: 1, select: { ownerId: true, queueId: true } },
+            nextActions: { orderBy: { revision: 'desc' }, take: 1, select: { ownerId: true, queueId: true, kind: true } },
           } }),
         tx.improvement.findMany({ where: improvementWhere, take: 12, orderBy: { updatedAt: 'desc' },
           select: { id: true, number: true, title: true, status: true, isSynthetic: true, owner: { select: { name: true } }, verification: { select: { outcome: true } } } }),
@@ -263,13 +266,14 @@ export class Radar {
         statuses: [...statusCounts].filter(([, count]) => count > 0).map(([key, count]) => ({ key, count })),
         processes: processes.map(row => ({ id: row.processId, name: processNames.find(value => value.id === row.processId)?.name ?? 'Процесс не указан', count: row._count._all })),
         categories: categories.map(row => ({ id: row.categoryId, name: categoryNames.find(value => value.id === row.categoryId)?.name ?? 'Категория не указана', count: row._count._all })),
+        departments: departments.map(row => ({ id: row.departmentId, name: departmentNames.find(value => value.id === row.departmentId)?.name ?? 'Подразделение не указано', count: row._count._all })),
         improved, verified,
         verifiedSuccess: outcomeGroups.find(row => row.outcome === 'VERIFIED')?._count._all ?? 0,
         verifiedDeterminate: verified - (outcomeGroups.find(row => row.outcome === 'INCONCLUSIVE')?._count._all ?? 0),
         outcomes: outcomeGroups.map(row => ({ key: row.outcome, count: row._count._all })),
         topics, recurrenceCandidates, topicItems, improvements, minGroup: min,
         attention: attention.map(({ _count, nextActions, ...row }) => ({
-          ...row, reasons: [
+          ...row, nextActionKind: nextActions[0]?.kind ?? null, reasons: [
             ...(row.priority === 'HIGH' ? ['HIGH_PRIORITY'] : []),
             ...(row.controlDueAt && row.controlDueAt <= nextDay ? [row.controlDueAt < now ? 'OVERDUE' : 'DUE_SOON'] : []),
             ...(!nextActions.some(action => action.ownerId || action.queueId) ? ['NO_NEXT_OWNER'] : []),

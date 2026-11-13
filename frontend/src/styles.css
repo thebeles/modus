@@ -875,3 +875,62 @@ a.metric:hover { border-color: #bac6df; }
 
 :root .recharts-tooltip-cursor { fill: var(--soft); }
 .anonymous-card { width: min(100%, 42rem); }
+
+.workspace-header { display: flex; align-items: center; justify-content: space-between; min-height: 44px; margin-bottom: 10px; }
+.workspace-account { display: flex; align-items: center; gap: 9px; margin-left: auto; min-width: 0; }
+.workspace-account .notification-button { position: relative; flex: none; background: var(--surface); }
+.notification-button .nav-count { position: absolute; top: -5px; right: -5px; min-width: 17px; padding: 2px 4px; line-height: 1.15; }
+.account-menu { position: relative; min-width: 0; }
+.account-menu summary { background: var(--surface); border: 1px solid var(--line); padding: 8px 11px; border-radius: var(--control-radius); overflow-wrap: anywhere; }
+.account-panel { position: absolute; z-index: 5; right: 0; top: calc(100% + 6px); width: min(255px, 78vw); padding: 13px; display: grid; gap: 8px; }
+.account-panel > a { padding: 7px; border-radius: var(--control-radius); }
+.account-panel > a:hover { background: var(--hover); }
+.account-panel .user-card { padding: 0 7px 8px; border-bottom: 1px solid var(--line); }
+.workspace-header + .content > .page-heading:first-child { padding-top: 0; }
+.anonymous-login { margin-top: 14px; }
+.demo-box summary, .demo-other summary { min-height: 32px; padding-block: 5px; cursor: pointer; font-weight: 700; }
+.demo-other { margin-top: 8px; color: var(--muted); }
+.context-links { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; margin-bottom: 12px; }
+.context-links a { min-height: 34px; display: inline-flex; align-items: center; gap: 7px; color: var(--accent); font-weight: 650; }
+.context-links a:is(.active, :hover) { text-decoration: underline; text-underline-offset: 4px; }
+.home-shortcuts { margin-bottom: 0; }
+.home-hero .hero-content { padding: clamp(14px, 1.35vw, 23px); }
+.publication-facts { display: grid; gap: 7px; margin: 8px 0; }
+.publication-facts dt { font-size: 11px; font-weight: 700; color: var(--muted); }
+.publication-facts dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.demo-indicator { display: block; margin-top: 6px; }
+.workspace-list-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+.queue-filters { flex-basis: 100%; border-top: 1px solid var(--line); padding-top: 8px; }
+.queue-filters .advanced-filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); }
+.queue-filters :is(select, .date-picker) { width: 100%; min-width: 0; }
+.queue-next { margin-top: 3px; }
+.overdue-label { display: block; margin-bottom: 3px; color: #962b44; }
+.overview-task > div { min-width: 0; overflow-wrap: anywhere; }
+.overview-signals { margin-bottom: 12px; }
+.directory-filters { padding: 0; }
+.directory-list { padding: 0; margin: 0; list-style: none; }
+.directory-list li + li { border-top: 1px solid var(--line); }
+.directory-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto auto; gap: 12px; align-items: center; width: 100%; background: transparent; padding: 10px; text-align: left; border: 0; border-radius: 6px; color: var(--ink); }
+.directory-row:hover { background: var(--hover); }
+.directory-row span { min-width: 0; overflow-wrap: anywhere; }
+.directory-row small { display: block; }
+.directory-row > svg { grid-column: 4; }
+:is(.button, select, .search-field, .field input:not([type=checkbox]):not([type=radio])) { min-height: 38px; }
+:focus-visible { outline-offset: 2px; }
+
+@media (max-width: 800px) {
+  .app-shell .content { padding-top: 0; }
+}
+@media (max-width: 570px) {
+  .appeal-table .chip { white-space: normal; overflow-wrap: anywhere; }
+  .appeal-table .table-title strong { overflow-wrap: anywhere; }
+  .appeal-table .date-cell { white-space: normal; }
+  .overview-task { flex-wrap: wrap; }
+  .directory-row { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; }
+  .directory-row > :nth-child(2) { grid-column: 1; grid-row: 2; }
+  .directory-row > svg { grid-column: 2; grid-row: 1; }
+}
+
+.overview-filters { padding: 10px 13px; margin-bottom: 12px; }
+.overview-filters summary { cursor: pointer; min-height: 28px; font-weight: 650; }
+.overview-filters .filter-bar { padding: 8px 0 0; margin-bottom: 8px; }

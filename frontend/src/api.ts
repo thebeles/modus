@@ -51,6 +51,7 @@ export function uploadAttachment(file: File) {
   return api<Attachment>('/attachments/complete', { method: 'POST', body });
 }
 export type AppealRow = Reference & {
+  nextActionKind?: string | null;
   type: string; status: string; priority: string; visibility: string; version: number; isSynthetic: boolean;
   authorId: string | null; assigneeId: string | null; departmentId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;
@@ -70,7 +71,7 @@ export type Appeal = AppealRow & {
   reviews: { id: string; kind: 'WITHDRAWAL' | 'RECONSIDERATION'; reason: string; decision?: string; approved?: boolean | null; decidedAt?: string }[];
 };
 export type Change = { id: string; title: string; problem: string; change: string; method: string; result: string; limitations: string; publishedAt: string | null;
-  isSynthetic: boolean; state?: string; version?: number; authorId?: string; audienceId?: string | null; reviewNote?: string | null };
+  isSynthetic: boolean; verificationOutcome?: string | null; state?: string; version?: number; authorId?: string; audienceId?: string | null; reviewNote?: string | null };
 export type CaseRow = Reference & { status: string; owner: Entity | null; scope?: string; createdAt: string; updatedAt: string; isSynthetic: boolean; verification?: { outcome: string } | null };
 export type Problem = CaseRow & { symptoms: string; hypothesis: string | null; conclusion: string | null; version: number; canEdit: boolean;
   allowedActions: string[]; people: Entity[]; sources: Reference[]; improvements: Reference[]; events: EventRow[]; findings: { id: string; body: string; source: string; createdAt: string }[] };

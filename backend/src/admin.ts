@@ -1,12 +1,12 @@
 import { ApiParam } from '@nestjs/swagger';
-import { JsonBody, JsonBodyVariants } from './openapi';
+import { JsonBody, JsonBodyVariants, QueryFields } from './openapi';
 import type { Prisma } from '@prisma/client';
-import { Body, Controller, Get, Inject, Injectable, Param, Patch, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Injectable, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { hash } from 'bcryptjs';
 import { z } from 'zod';
 import { permissions, priorities, roles, visibilities } from './contracts';
 import { AuthRequest } from './auth';
-import { atomic, audit, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, missing, notify, parse, shortText, Tx } from './common';
+import { atomic, audit, checked, Database, dateTime, expectedVersion, forbidden, id, invalid, missing, notify, pagination, parse, shortText, Tx } from './common';
 import { Principal, principalSelect } from './policy';
 import { attachmentScanMode } from './attachment-scan';
 import { eligibleStaff, queueStaff, Routing } from './routing';
@@ -29,6 +29,7 @@ const resources = ['users', 'organization-units', 'categories', 'processes', 'wo
 type Resource = typeof resources[number];
 
 const writableResources = ['users', 'organization-units', 'categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies'] as const;
+const userDirectoryInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), role: z.enum(roles).optional() });
 const configInputs = [unitInput, categoryInput, processInput, queueInput, ruleInput, slaInput];
 
 @Injectable()
@@ -36,6 +37,26 @@ export class Admin {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Routing) private readonly routing: Routing) {}
 
   private check(user: Principal) { if (user.role !== 'ADMIN') throw forbidden(); }
+
+  integrations(user: Principal) {
+    this.check(user);
+    const mode = process.env.ONEC_MODE;
+    return { oneC: mode === 'simulator' || mode === 'http' ? mode : null };
+  }
+
+  async userDirectory(user: Principal, raw: unknown) {
+    this.check(user);
+    const { page, limit, q, role } = parse(userDirectoryInput, raw);
+    const where: Prisma.UserWhereInput = { role, ...(q ? { OR: [
+      { name: { contains: q, mode: 'insensitive' } }, { email: { contains: q, mode: 'insensitive' } },
+    ] } : {}) };
+    const [items, total] = await this.db.$transaction([
+      this.db.user.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        select: { ...principalSelect, active: true, department: { select: { name: true } } } }),
+      this.db.user.count({ where }),
+    ]);
+    return { items, total, page, limit };
+  }
 
   async workerStatus(user: Principal) {
     this.check(user);
@@ -248,6 +269,9 @@ export class Admin {
 @Controller('admin')
 export class AdminController {
   constructor(@Inject(Admin) private readonly admin: Admin) {}
+  @Get('integrations') integrations(@Req() req: AuthRequest) { return this.admin.integrations(req.user); }
+  @Get('user-directory') @QueryFields(userDirectoryInput)
+  directory(@Req() req: AuthRequest, @Query() q: unknown) { return this.admin.userDirectory(req.user, q); }
   @Get('worker-status') workerStatus(@Req() req: AuthRequest) { return this.admin.workerStatus(req.user); }
   @Post('outbox-failures/:id/retry') retry(@Req() req: AuthRequest, @Param('id') item: string) {
     return this.admin.retryNotification(req.user, parse(id, item));

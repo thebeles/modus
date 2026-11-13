@@ -10,7 +10,11 @@ import { Policy, Principal } from './policy';
 import { improvementTransitions, problemTransitions } from './workflow';
 import { assessEffect } from './effect';
 
-const listInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), status: z.string().max(30).optional(), processId: id.optional() });
+const workStatuses: ImprovementStatus[] = ['DRAFT', 'UNDER_REVIEW', 'APPROVED', 'DEFERRED', 'IN_PROGRESS'];
+const reviewStatuses: ImprovementStatus[] = ['IMPLEMENTED', 'VERIFYING'];
+const listInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), status: z.string().max(30).optional(), processId: id.optional(),
+  stage: z.enum(['work', 'review', 'results']).optional(), actionable: z.enum(['true']).optional(),
+});
 const problemInput = z.strictObject({ title, symptoms: bodyText, hypothesis: bodyText.optional(), appealId: id.optional(), relatedAppealIds: z.array(id).max(8).default([]), explanation: bodyText.optional() });
 const improvementInput = z.strictObject({ title, rationale: bodyText, goal: bodyText, scope: shortText, risks: bodyText.optional(),
   processId: id.optional(), appealId: id.optional(), problemId: id.optional(), ownerId: id.optional() });
@@ -94,18 +98,29 @@ export class Cases {
 
   async list(user: Principal, raw: unknown, kind: 'problem' | 'improvement') {
     this.requireStaff(user);
-    const { page, limit, q, status, processId } = parse(listInput, raw);
+    const { page, limit, q, status, processId, stage, actionable } = parse(listInput, raw);
     const search = q ? { OR: ['number', 'title'].map(field => ({ [field]: { contains: q, mode: 'insensitive' } })) } : {};
     const options = { orderBy: [{ createdAt: 'desc' as const }, { id: 'asc' as const }], skip: (page - 1) * limit, take: limit };
     const owner = { select: { id: true, name: true } } as const;
     if (kind === 'problem') {
-      const where: Prisma.ProblemWhereInput = { AND: [this.policy.problems(user), search, { status: status ? parse(z.enum(problemStatuses), status) : undefined }] };
+      const where: Prisma.ProblemWhereInput = { AND: [this.policy.problems(user), search,
+        { status: status ? parse(z.enum(problemStatuses), status) : undefined },
+        ...(actionable ? [{ status: { in: ['CANDIDATE', 'INVESTIGATING', 'CONFIRMED'] } } satisfies Prisma.ProblemWhereInput] : []),
+      ] };
       const [items, total] = await this.db.$transaction([this.db.problem.findMany({ ...options, where, select: {
         id: true, number: true, title: true, status: true, owner, isSynthetic: true, createdAt: true, updatedAt: true,
       } }), this.db.problem.count({ where })]);
       return { items: items.map(item => ({ ...item, owner: { id: item.owner.id, name: item.owner.name } })), total, page, limit };
     }
-    const where: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), search, { status: status ? parse(z.enum(improvementStatuses), status) : undefined, processId }] };
+    const stages = { work: workStatuses, review: reviewStatuses, results: ['COMPLETED'] as ImprovementStatus[] };
+    const availableForVerification: Prisma.ImprovementWhereInput = this.policy.has(user, 'RESULT_VERIFIER') && user.departmentId
+      ? { status: 'VERIFYING', verification: null, visibility: 'NORMAL_INTERNAL', departmentId: user.departmentId, ownerId: { not: user.id } }
+      : { id: { in: [] } };
+    const where: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), search,
+      { status: status ? parse(z.enum(improvementStatuses), status) : undefined, processId },
+      ...(stage ? [{ status: { in: stages[stage] } }] : []),
+      ...(actionable ? [availableForVerification] : []),
+    ] };
     const [items, total] = await this.db.$transaction([this.db.improvement.findMany({ ...options, where, select: {
       id: true, number: true, title: true, status: true, owner, isSynthetic: true, createdAt: true, updatedAt: true,
       scope: true, verification: { select: { outcome: true } },

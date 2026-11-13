@@ -1,18 +1,24 @@
 import { DatePicker } from './date-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, Plus, Settings, ShieldCheck } from './icons';
+import { ArrowRight, Plus, Search, Settings, ShieldCheck } from './icons';
 import { useState } from 'react';
-import { NavLink, useParams } from 'react-router-dom';
+import { NavLink, useParams, useSearchParams } from 'react-router-dom';
 import { label, permissions, priorities, roles, visibilities } from './contracts';
-import { api } from './api';
-import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options, PageHeading, Section, timestamp } from './ui';
+import { api, queryString, type Page } from './api';
+import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options, PageHeading, Pagination, Section, timestamp } from './ui';
 
 const resources = {
   users: 'Пользователи', 'organization-units': 'Структура', categories: 'Категории', processes: 'Процессы', 'work-queues': 'Очереди',
-  'routing-rules': 'Маршрутизация', 'sla-policies': 'Сроки', ai: 'Настройки Groq', 'outbox-failures': 'Мониторинг', audit: 'Аудит',
+  'routing-rules': 'Маршрутизация', 'sla-policies': 'Сроки', 'one-c': '1С', ai: 'ИИ-помощник', 'outbox-failures': 'Мониторинг', audit: 'Аудит',
 } as const;
+const groups = [
+  { title: 'Сотрудники и доступ', resources: ['users', 'organization-units'] },
+  { title: 'Обработка обращений', resources: ['categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies'] },
+  { title: 'Интеграции', resources: ['one-c', 'ai'] },
+  { title: 'Контроль системы', resources: ['outbox-failures', 'audit'] },
+] as const;
 type Resource = keyof typeof resources;
-type Row = { id: string; name?: string; email?: string; role?: string; departmentId?: string; parentId?: string; categoryId?: string;
+type Row = { id: string; name?: string; email?: string; role?: string; departmentId?: string; department?: { name: string }; parentId?: string; categoryId?: string;
   processId?: string; queueId?: string; assigneeId?: string; coordinatorId?: string; active?: boolean; fallback?: boolean; permissions?: string[];
   sensitive?: boolean; rank?: number; effectiveFrom?: string; effectiveTo?: string; visibility?: string; priority?: string; firstResponseHours?: number;
   nextActionHours?: number; members?: { userId: string }[]; version?: number; entity?: string; action?: string; createdAt?: string; kind?: string; deadAt?: string; attempts?: number };
@@ -35,8 +41,23 @@ function AdminResource({ resource }: { resource: Resource }) {
   const client = useQueryClient();
   const [editor, setEditor] = useState<Row | 'new' | null>(null);
   const [preview, setPreview] = useState(false);
-  const editable = !['audit', 'outbox-failures', 'ai'].includes(resource);
-  const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: resource !== 'ai' });
+  const [params, setParams] = useSearchParams();
+  const q = params.get('q') ?? '';
+  const role = params.get('role') ?? '';
+  const page = Number(params.get('page')) || 1;
+  const group = groups.find(item => (item.resources as readonly Resource[]).includes(resource)) ?? groups[0];
+  const directory = useQuery({ queryKey: ['admin', 'user-directory', q, role, page], enabled: resource === 'users',
+    queryFn: ({ signal }) => api<Page<Row>>('/admin/user-directory' + queryString({ q, role, page, limit: 20 }), { signal }) });
+  const integrations = useQuery({ queryKey: ['admin', 'integrations'], enabled: resource === 'one-c',
+    queryFn: () => api<{ oneC: 'http' | 'simulator' | null }>('/admin/integrations') });
+  const updateDirectory = (key: string, value: string) => {
+    const updated = new URLSearchParams(params);
+    if (key !== 'page') updated.delete('page');
+    if (value) updated.set(key, value); else updated.delete(key);
+    setParams(updated, { replace: true });
+  };
+  const editable = !['audit', 'outbox-failures', 'ai', 'one-c'].includes(resource);
+  const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: !['ai', 'one-c', 'users'].includes(resource) });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean; fallback: string }>('/ai/capabilities'), enabled: resource === 'ai' });
   const monitor = useQuery({ queryKey: ['admin', 'worker-status'], enabled: resource === 'outbox-failures', refetchInterval: 15000,
     queryFn: () => api<{ healthy: boolean; lastCheckAt: string | null; oldestAvailableAt: string | null; pendingCount: number; deadCount: number; routingPendingCount: number; attachmentProtection: { mode: string; lastCleanAt: string | null; scanFailureAt: string | null; storageFailureAt: string | null } }>('/admin/worker-status') });
@@ -75,8 +96,20 @@ function AdminResource({ resource }: { resource: Resource }) {
   const active = <label className="checkbox-line"><input type="checkbox" name="active" defaultChecked={row?.active ?? true} /> Активно</label>;
   return <><PageHeading title="Администрирование" subtitle="Справочники, доступ, правила обработки и эксплуатация." action={editable && <button className="button primary"
     onClick={() => { save.reset(); setEditor('new'); }}><Plus size={18} />Добавить запись</button>} />
-    <nav className="tab-strip admin-tabs" aria-label="Разделы администрирования">{Object.entries(resources).map(([key, title]) => <NavLink key={key} to={`/admin/${key}`}>{title}</NavLink>)}</nav>
-    {resource === 'ai' ? <Section title="Groq" icon={<Settings size={18} />}><ErrorBox error={ai.error} retry={() => ai.refetch()} />
+    <nav className="tab-strip admin-tabs" aria-label="Разделы администрирования">
+      {groups.map(item => <NavLink key={item.title} to={'/admin/' + item.resources[0]} className={group === item ? 'active' : undefined}
+        aria-current={group === item ? 'location' : undefined}>{item.title}</NavLink>)}
+    </nav>
+    <nav className="context-links admin-resources" aria-label={group.title}>
+      {group.resources.map(key => <NavLink key={key} to={'/admin/' + key}>{resources[key]}</NavLink>)}
+    </nav>
+    {resource === 'one-c' ? <Section title="Обмен с 1С">
+      <ErrorBox error={integrations.error} retry={() => integrations.refetch()} />{integrations.isPending && <Loading />}
+      {integrations.data && <dl className="facts">
+        <div><dt>Режим</dt><dd>{integrations.data.oneC === 'simulator' ? 'Демонстрационный симулятор' : integrations.data.oneC === 'http' ? 'Подключение по HTTP' : 'Отключено'}</dd></div>
+        <div><dt>Настройка подключения</dt><dd>Режим и реквизиты задаются на сервере. Рабочий обмен доступен обработчикам и руководителям с полномочием «Обмен с 1С».</dd></div>
+      </dl>}
+    </Section> : resource === 'ai' ? <Section title="Groq" icon={<Settings size={18} />}><ErrorBox error={ai.error} retry={() => ai.refetch()} />
       {ai.isPending && <Loading />}{ai.data && <div className="inner-stack"><span className="chip tone-muted">{ai.data.available ? 'Включено' : 'Отключено'}</span>
         <p>{ai.data.fallback}</p><p>Провайдер настраивается серверными переменными окружения. Конфиденциальные карточки закрыты для передачи.</p></div>}</Section> :
       <Section title={resources[resource]} icon={<Settings size={18} />} action={resource === 'routing-rules' && <button className="button secondary"
@@ -91,7 +124,27 @@ function AdminResource({ resource }: { resource: Resource }) {
           <div><dt>Исчерпали попытки</dt><dd>{monitor.data.deadCount}</dd></div>
         </dl>}
         <ErrorBox error={monitor.error || retry.error} />
-        <ErrorBox error={rows.error} retry={() => rows.refetch()} />{rows.isPending && <Loading />}
+        {resource === 'users' && <>
+          <div className="directory-filters filter-bar">
+            <label className="search-field"><Search size={18} aria-hidden="true" /><span className="sr-only">Поиск сотрудников</span>
+              <input placeholder="Имя или рабочая почта" value={q} maxLength={150} onChange={event => updateDirectory('q', event.target.value)} />
+            </label>
+            <Field label="Роль"><select value={role} onChange={event => updateDirectory('role', event.target.value)}><Options items={roles} blank="Все роли" /></select></Field>
+          </div>
+          <ErrorBox error={directory.error} retry={() => directory.refetch()} />{directory.isPending && <Loading />}
+          {directory.data && <>
+            {directory.data.items.length ? <ul className="directory-list">{directory.data.items.map(item => <li key={item.id}>
+              <button className="directory-row" type="button" onClick={() => { save.reset(); setEditor(item); }} aria-label={`Изменить: ${item.name}`}>
+                <span><strong>{item.name}</strong><small>{item.email}</small></span>
+                <span><strong>{label(item.role ?? '')}</strong><small>{item.department?.name ?? 'Без подразделения'}</small></span>
+                {item.active === false && <Chip value="Неактивно" />}
+                <ArrowRight size={16} aria-hidden="true" />
+              </button>
+            </li>)}</ul> : <Empty title="Сотрудники не найдены" />}
+            <Pagination {...directory.data} onChange={next => updateDirectory('page', String(next))} />
+          </>}
+        </>}
+        {resource !== 'users' && <><ErrorBox error={rows.error} retry={() => rows.refetch()} />{rows.isPending && <Loading />}
         {rows.data && (rows.data.length ? rows.data.map(item => <div key={item.id} className="task-row admin-row">
           <div><strong>{item.name ?? (item.priority ? label(item.priority) : label(item.action ?? item.kind ?? ''))}</strong>
             <small>{item.email ? `${item.email} · ${label(item.role ?? '')}` : item.priority ? `Первый ответ: ${item.firstResponseHours} ч · Следующее действие: ${item.nextActionHours} ч` :
@@ -100,7 +153,7 @@ function AdminResource({ resource }: { resource: Resource }) {
           {resource === 'outbox-failures' && <button className="button secondary" disabled={retry.isPending} onClick={() => retry.mutate(item.id)}>Повторить доставку</button>}
           {item.active === false && <Chip value="Неактивно" />}
           {editable && <button className="button subtle" onClick={() => { save.reset(); setEditor(item); }}>Изменить</button>}
-        </div>) : <Empty title="Записей пока нет" />)}
+        </div>) : <Empty title="Записей пока нет" />)}</>}
       </Section>}
     {editor && <Modal title={row ? 'Редактировать запись' : 'Добавить запись'} description={resources[resource]} close={() => setEditor(null)}>
       <ErrorBox error={users.error || units.error || cats.error || processes.error || queues.error} />

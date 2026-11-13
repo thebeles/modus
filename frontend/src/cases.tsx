@@ -3,7 +3,7 @@ import * as Tabs from '@radix-ui/react-tabs';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, BookOpen, CheckCircle2, ClipboardList, GitPullRequest, Layers3, Plus, Search, Sparkles } from './icons';
 import { useState, type ReactNode } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { improvementStatuses, label, outcomes, problemStatuses } from './contracts';
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Effect, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
@@ -14,37 +14,74 @@ import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Fie
 
 type Kind = 'problem' | 'improvement';
 const config = {
-  problem: { path: '/problems', title: 'Проблемы', subtitle: 'Исследуйте повторяющиеся сигналы и проверяйте гипотезы.', create: 'Создать проблему', statuses: problemStatuses, permission: 'PROBLEM_OWNER' },
-  improvement: { path: '/improvements', title: 'Улучшения', subtitle: 'Управляйте изменениями от идеи до проверки эффекта.', create: 'Создать улучшение', statuses: improvementStatuses, permission: 'IMPROVEMENT_OWNER' },
+  problem: { path: '/problems', title: 'Проблемы', create: 'Создать проблему', statuses: problemStatuses, permission: 'PROBLEM_OWNER' },
+  improvement: { path: '/improvements', title: 'Улучшения', create: 'Создать улучшение', statuses: improvementStatuses, permission: 'IMPROVEMENT_OWNER' },
 };
 
 function References({ items, path }: { items: Reference[]; path: string }) {
   return items.length ? <div className="reference-stack">{items.map(item => <Link key={item.id} to={`${path}/${item.id}`} className="inline-reference"><small>{item.number}</small>{item.title}<ArrowRight size={15} /></Link>)}</div> : <Empty title="Связанных записей пока нет" />;
 }
 
-export function CaseList({ kind }: { kind: Kind }) {
+const views = [
+  ['problems', 'Проблемы'], ['work', 'В работе'], ['review', 'На проверке'], ['results', 'Результаты'], ['all', 'Все инициативы'],
+] as const;
+const stageStatuses: Record<string, readonly string[]> = {
+  work: ['DRAFT', 'UNDER_REVIEW', 'APPROVED', 'DEFERRED', 'IN_PROGRESS'],
+  review: ['IMPLEMENTED', 'VERIFYING'],
+  results: ['COMPLETED'],
+};
+
+export function ImprovementsWorkspace() {
+  const [params] = useSearchParams();
+  const view = views.find(([key]) => key === params.get('view'))?.[0] ?? (params.size ? 'all' : 'work');
+  return <><PageHeading title="Улучшения" />
+    <nav className="tab-strip" aria-label="Этапы улучшений">
+      {views.map(([key, title]) => {
+        const next = new URLSearchParams(params);
+        for (const filter of ['page', 'status', 'actionable']) next.delete(filter);
+        next.set('view', key);
+        return <Link key={key} to={`?${next}`} aria-current={key === view ? 'page' : undefined} className={key === view ? 'active' : undefined}>{title}</Link>;
+      })}
+    </nav>
+    {view === 'results' && <div className="context-links"><NavLink to="/changes">Опубликованные изменения <ArrowRight size={16} /></NavLink></div>}
+    <CaseList key={view} kind={view === 'problems' ? 'problem' : 'improvement'} view={view} />
+  </>;
+}
+
+function CaseList({ kind, view }: { kind: Kind; view: string }) {
   const { user } = useSession();
   const [params, setParams] = useSearchParams();
-  const { path, title, subtitle, create, statuses, permission } = config[kind];
+  const { path, title, create, statuses, permission } = config[kind];
+  const stage = Object.hasOwn(stageStatuses, view) ? view : undefined;
+  const actionable = params.get('actionable') === 'true' ? 'true' : undefined;
+  const location = useLocation();
+  const showMyVerifications = view === 'review' && !!user.departmentId && user.permissions.includes('RESULT_VERIFIER');
+  const availableStatuses = stage ? statuses.filter(value => stageStatuses[stage].includes(value)) : statuses;
   const page = Number(params.get('page')) || 1;
   const q = params.get('q') ?? '';
   const status = params.get('status') ?? '';
   const processId = params.get('processId') ?? '';
-  const rows = useQuery({ queryKey: [kind, q, status, page, processId], queryFn: ({ signal }) =>
-    api<Page<CaseRow>>(path + queryString({ q, status, page, processId }), { signal }), placeholderData: keepPreviousData });
+  const rows = useQuery({ queryKey: [kind, q, status, page, processId, stage, actionable], queryFn: ({ signal }) =>
+    api<Page<CaseRow>>(path + queryString({ q, status, page, processId, stage, actionable }), { signal }), placeholderData: keepPreviousData });
   const filters = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (key !== 'page') next.delete('page');
     if (value) next.set(key, value); else next.delete(key);
     setParams(next, { replace: true });
   };
-  return <><PageHeading title={title} subtitle={subtitle} action={user.permissions.includes(permission) && <Link className="button primary" to={path + '/new'}><Plus size={18} />{create}</Link>} />
+  return <>
+    <div className="workspace-list-heading"><h2>{views.find(([key]) => key === view)?.[1] ?? title}</h2>
+      {user.permissions.includes(permission) && ['problems', 'work', 'all'].includes(view) && <Link className="button primary" to={path + '/new'}><Plus size={18} />{create}</Link>}
+    </div>
     <div className="surface filter-bar"><label className="search-field"><Search size={18} /><span className="sr-only">Поиск</span><input placeholder="Поиск по номеру или названию" value={q} onChange={event => filters('q', event.target.value)} /></label>
-      <select aria-label="Статус" value={status} onChange={event => filters('status', event.target.value)}><Options items={statuses} blank="Все статусы" /></select></div>
+      <select aria-label="Статус" value={status} onChange={event => filters('status', event.target.value)}><Options items={availableStatuses} blank="Все статусы" /></select>
+      {kind === 'problem' && actionable && <button className="button subtle" onClick={() => filters('actionable', '')}>Показать все проблемы</button>}
+      {showMyVerifications && <label className="checkbox-line"><input type="checkbox" checked={!!actionable} onChange={event => filters('actionable', event.target.checked ? 'true' : '')} /> Ожидают моей проверки</label>}
+    </div>
     {rows.isPending && <Loading />}<ErrorBox error={rows.error} retry={() => rows.refetch()} />
     {rows.data && <div className="surface"><div className="list-meta">Найдено: {rows.data.total}</div>
       {rows.data.items.length ? <TableRegion label={title}><table className="data-table"><thead><tr><th>Название</th><th>Статус</th><th>Владелец</th>{kind === 'improvement' && <th>Эффект</th>}<th>Обновлено</th></tr></thead>
-        <tbody>{rows.data.items.map(item => <tr key={item.id}><td><Link className="table-title" to={`${path}/${item.id}`}><span className="row-icon">{kind === 'problem' ? <GitPullRequest size={17} /> : <Layers3 size={17} />}</span>
+        <tbody>{rows.data.items.map(item => <tr key={item.id}><td><Link className="table-title" to={path + '/' + item.id + (view === 'review' || view === 'results' ? '?tab=result' : '')} state={{ returnTo: location.pathname + location.search }}><span className="row-icon">{kind === 'problem' ? <GitPullRequest size={17} /> : <Layers3 size={17} />}</span>
           <span><small>{item.number}{item.isSynthetic ? ' · демо' : ''}</small><strong>{item.title}</strong></span></Link></td>
           <td><Chip value={item.status} /></td><td>{item.owner?.name ?? '—'}</td>{kind === 'improvement' && <td>{item.verification ? <Chip value={item.verification.outcome} /> : 'Ещё не проверен'}</td>}<td>{date(item.updatedAt)}</td></tr>)}</tbody></table></TableRegion>
         : <Empty title="Записи не найдены" />}
@@ -53,6 +90,7 @@ export function CaseList({ kind }: { kind: Kind }) {
 }
 
 export function CreateCase({ kind }: { kind: Kind }) {
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { path, create, title, permission } = config[kind];
@@ -65,8 +103,11 @@ export function CreateCase({ kind }: { kind: Kind }) {
   const save = useMutation({ mutationFn: (data: FormData) => api<{ id: string }>(path, { method: 'POST', body: kind === 'problem'
     ? { title: field(data, 'title'), symptoms: field(data, 'symptoms'), hypothesis: optional(data, 'hypothesis'), appealId }
     : { title: field(data, 'title'), rationale: field(data, 'rationale'), goal: field(data, 'goal'), scope: field(data, 'scope'), risks: optional(data, 'risks'),
-      processId: optional(data, 'processId'), appealId, problemId } }), onSuccess: item => navigate(`${path}/${item.id}`) });
-  return <><PageHeading title={create} back={{ to: path, label: title }} />
+      processId: optional(data, 'processId'), appealId, problemId } }), onSuccess: async item => {
+      await queryClient.invalidateQueries({ queryKey: [kind] });
+      navigate(path + '/' + item.id);
+    } });
+  return <><PageHeading title={create} back={{ to: kind === 'problem' ? '/improvements?view=problems' : path, label: title }} />
     {!user.permissions.includes(permission) ? <Empty title="У вас нет прав на создание записи" /> : <div className="surface form-panel">
       {(sourceAppeal.data || sourceProblem.data) && <p className="subtle-text">Основание: {(sourceAppeal.data || sourceProblem.data)?.title}</p>}
       <ErrorBox error={sourceAppeal.error || sourceProblem.error} />
@@ -103,7 +144,7 @@ function useEditor(id: string | undefined, key: Kind, version?: number) {
       navigate(config[key].path);
       return;
     }
-    await Promise.all([client.invalidateQueries({ queryKey: [key, id] }), client.invalidateQueries({ queryKey: ['radar'] }), client.invalidateQueries({ queryKey: ['changes'] })]);
+    await Promise.all([client.invalidateQueries({ queryKey: [key] }), client.invalidateQueries({ queryKey: ['radar'] }), client.invalidateQueries({ queryKey: ['changes'] })]);
     setEditor(null); setSaved(true);
   } });
   return { open: (next: Editor) => { update.reset(); setSaved(false); setUploading(false); setEditor(next); }, saved, setUploading,
@@ -111,8 +152,17 @@ function useEditor(id: string | undefined, key: Kind, version?: number) {
       reload={() => client.invalidateQueries({ queryKey: [key, id] })} onSubmit={data => update.mutate(data)}>{editor.fields}</ActionForm></Modal> };
 }
 
+function useWorkspaceBack(fallback: string, label: string) {
+  const previous = useLocation().state?.returnTo;
+  const path = typeof previous === 'string' ? previous.split('?')[0] : '';
+  if (path === '/overview') return { to: previous, label: 'Обзор' };
+  if (path === '/improvements') return { to: previous, label };
+  return { to: fallback, label };
+}
+
 export function ProblemDetail() {
   const { id } = useParams();
+  const back = useWorkspaceBack('/improvements?view=problems', 'Улучшения · Проблемы');
   const { user } = useSession();
   const path = `/problems/${id}`;
   const query = useQuery({ queryKey: ['problem', id], queryFn: () => api<Problem>(path) });
@@ -122,7 +172,7 @@ export function ProblemDetail() {
   const [search, setSearch] = useState('');
   const options = useQuery({ queryKey: ['appeals', 'problem-source', search], queryFn: () => api<Page<AppealRow>>('/work-queue' + queryString({ limit: 30, q: search })), enabled: addSource });
   if (!record) return <><PageHeading title="Проблема" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
-  return <><PageHeading title={record.title} subtitle={`${record.number} · Владелец: ${record.owner?.name ?? '—'}`} back={{ to: '/problems', label: 'Проблемы' }} action={<Chip value={record.status} />} />
+  return <><PageHeading title={record.title} subtitle={`${record.number} · Владелец: ${record.owner?.name ?? '—'}`} back={back} action={<Chip value={record.status} />} />
     {edit.saved && <p className="success-box" role="status"><CheckCircle2 size={18} />Изменения сохранены.</p>}
     <div className="detail-grid"><div className="detail-main">
       <Section title="Наблюдения и гипотеза" icon={<GitPullRequest size={18} />} action={record.canEdit && <button className="text-button" onClick={() => edit.open({
@@ -280,6 +330,12 @@ export function ImprovementDetail() {
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean }>('/ai/capabilities') });
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const record = query.data;
+  const view = record?.status === 'COMPLETED' ? 'results' : ['IMPLEMENTED', 'VERIFYING'].includes(record?.status ?? '') ? 'review' :
+    ['REJECTED', 'CANCELED'].includes(record?.status ?? '') ? 'all' : 'work';
+  const back = useWorkspaceBack('/improvements' + queryString({ view }), 'Улучшения');
+  const [params, setParams] = useSearchParams();
+  const requestedTab = params.get('tab') ?? '';
+  const activeTab = ['plan', 'result', 'feedback', 'history'].includes(requestedTab) ? requestedTab : 'overview';
   const edit = useEditor(id, 'improvement', record?.version);
   const [aiOpen, setAiOpen] = useState(false);
   const [sourceSearch, setSourceSearch] = useState<string | null>(null);
@@ -308,10 +364,14 @@ export function ImprovementDetail() {
       <label className="checkbox-line"><input name="blocking" type="checkbox" defaultChecked={task?.blocking ?? true} /> Задача блокирует завершение</label></>,
     body: data => ({ title: field(data, 'title'), ownerId: optional(data, 'ownerId'), dueAt: timestamp(data, 'dueAt') ?? null, blocking: data.has('blocking') }),
   });
-  return <><PageHeading title={record.title} subtitle={`${record.number} · ${record.scope ?? ''}`} back={{ to: '/improvements', label: 'Улучшения' }} action={<Chip value={record.status} />} />
+  return <><PageHeading title={record.title} subtitle={`${record.number} · ${record.scope ?? ''}`} back={back} action={<Chip value={record.status} />} />
     {edit.saved && <p className="success-box" role="status"><CheckCircle2 size={18} />Изменения сохранены.</p>}
     <div className="detail-grid"><div className="detail-main">
-      <Tabs.Root defaultValue="overview">
+      <Tabs.Root value={activeTab} onValueChange={tab => {
+        const next = new URLSearchParams(params);
+        if (tab === 'overview') next.delete('tab'); else next.set('tab', tab);
+        setParams(next, { replace: true, state: { returnTo: back.to } });
+      }}>
         <Tabs.List className="tab-strip radix-tabs" aria-label="Разделы улучшения">
           {[['overview', 'Обзор'], ['plan', 'План'], ['result', 'Результат'], ['feedback', 'Обратная связь'], ['history', 'История']].map(([key, title]) => <Tabs.Trigger key={key} value={key}>{title}</Tabs.Trigger>)}
         </Tabs.List>

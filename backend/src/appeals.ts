@@ -67,7 +67,7 @@ export function appealQueueFilters(user: Principal, now: Date) {
     new: { AND: [active, { OR: [{ status: 'NEW' }, { assigneeId: null }] }] },
     waiting: { status: 'WAITING_AUTHOR' },
     risk: { controlDueAt: { gte: now, lte: new Date(now.getTime() + 86400000) } },
-    overdue: { controlDueAt: { lt: now } },
+    overdue: { AND: [{ status: { notIn: ['CLOSED', 'WITHDRAWN'] } }, { controlDueAt: { lt: now } }] },
     stale: { AND: [active, { OR: [
       { lastMeaningfulActionAt: { lt: new Date(now.getTime() - staleHours * 3600000) } },
       { NOT: { OR: visibilities.map(liveOwner) } },
@@ -119,11 +119,18 @@ export class Appeals {
     const where = this.where(user, filters, staff);
     const orderBy: Prisma.AppealOrderByWithRelationInput = sort === 'due' ? { controlDueAt: { sort: 'asc', nulls: 'last' } } :
       { createdAt: sort === 'oldest' ? 'asc' : 'desc' };
+    const select = { ...summary, nextActions: staff ? {
+      orderBy: { revision: 'desc' as const }, take: 1, select: { kind: true },
+    } : false } satisfies Prisma.AppealSelect;
     const [items, total] = await this.db.$transaction([
-      this.db.appeal.findMany({ where, orderBy: [orderBy, { id: 'asc' }], skip: (page - 1) * limit, take: limit, select: summary }),
+      this.db.appeal.findMany({ where, orderBy: [orderBy, { id: 'asc' }], skip: (page - 1) * limit, take: limit, select }),
       this.db.appeal.count({ where }),
     ], { isolationLevel: 'RepeatableRead' });
-    return { items: items.map(row => row.authorId === user.id && row.visibility !== 'NORMAL_INTERNAL' ? { ...row, assigneeId: null } : row),
+    return { items: items.map(({ nextActions, ...row }) => ({
+      ...row,
+      ...(row.authorId === user.id && row.visibility !== 'NORMAL_INTERNAL' ? { assigneeId: null } : {}),
+      ...(staff ? { nextActionKind: nextActions?.[0]?.kind ?? null } : {}),
+    })),
       total, page, limit };
   }
 
