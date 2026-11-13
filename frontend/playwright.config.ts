@@ -14,7 +14,7 @@ export default defineConfig({
   webServer: process.env.E2E_BASE_URL ? undefined : [
     {
       name: 'API',
-      command: 'pnpm dev',
+      command: 'pnpm exec tsx --env-file-if-exists=.env src/main.ts',
       cwd: fileURLToPath(new URL('../backend/', import.meta.url)),
       url: 'http://127.0.0.1:4080/api/v1/health/ready',
       timeout: 120000,

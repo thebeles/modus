@@ -120,7 +120,7 @@ function Layout() {
           <Link to="/notifications" className="icon-button notification-button" aria-label={notices.data?.unread ? `Уведомления, непрочитанных: ${notices.data.unread}` : 'Уведомления'}>
             <Bell size={19} aria-hidden="true" />{notices.data?.unread ? <span className="nav-count" aria-hidden="true">{notices.data.unread}</span> : null}
           </Link>
-          <details className="account-menu" key={location.key}>
+          <details className="account-menu" key={location.pathname}>
             <summary>{user.name}</summary>
             <div className="surface account-panel">
               <div className="user-card"><strong>{user.name}</strong><small>{user.email}</small><small>{label(user.role)}</small></div>

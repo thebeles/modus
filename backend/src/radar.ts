@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { Response } from 'express';
 import { z } from 'zod';
 import { appealStatuses, appealTypes, outcomes, relations } from './contracts';
-import { Appeals, appealListInput, appealMetrics, appealQueueFilters } from './appeals';
+import { Appeals, appealListInput, appealMetrics, appealQueueFilters, appealStaleHours } from './appeals';
 import { AuthRequest } from './auth';
 import { atomic, audit, bodyText, checked, Database, expectedVersion, forbidden, id, invalid, invalidState, missing, pagination, parse } from './common';
 import { Policy, Principal } from './policy';
@@ -261,7 +261,7 @@ export class Radar {
       ]);
       return { total, closed, documented, firstResponse: {
         count: response._count.firstResponseSeconds, hours: response._avg.firstResponseSeconds === null ? null : response._avg.firstResponseSeconds / 3600,
-      }, overdue, stale, waiting: statusCounts.get('WAITING_AUTHOR') ?? 0,
+      }, overdue, stale, staleHours: appealStaleHours(), waiting: statusCounts.get('WAITING_AUTHOR') ?? 0,
         types: [...typeCounts].filter(([, count]) => count > 0).map(([key, count]) => ({ key, count })),
         statuses: [...statusCounts].filter(([, count]) => count > 0).map(([key, count]) => ({ key, count })),
         processes: processes.map(row => ({ id: row.processId, name: processNames.find(value => value.id === row.processId)?.name ?? 'Процесс не указан', count: row._count._all })),

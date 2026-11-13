@@ -52,6 +52,7 @@ export function uploadAttachment(file: File) {
 }
 export type AppealRow = Reference & {
   nextActionKind?: string | null;
+  recommendedAction?: string | null;
   type: string; status: string; priority: string; visibility: string; version: number; isSynthetic: boolean;
   authorId: string | null; assigneeId: string | null; departmentId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;

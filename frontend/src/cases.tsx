@@ -34,11 +34,13 @@ const stageStatuses: Record<string, readonly string[]> = {
 export function ImprovementsWorkspace() {
   const [params] = useSearchParams();
   const view = views.find(([key]) => key === params.get('view'))?.[0] ?? (params.size ? 'all' : 'work');
-  return <><PageHeading title="Улучшения" />
+  const previous = useLocation().state?.returnTo;
+  const back = typeof previous === 'string' && previous.split('?')[0] === '/overview' ? { to: previous, label: 'Обзор' } : undefined;
+  return <><PageHeading title="Улучшения" back={back} />
     <nav className="tab-strip" aria-label="Этапы улучшений">
       {views.map(([key, title]) => {
         const next = new URLSearchParams(params);
-        for (const filter of ['page', 'status', 'actionable']) next.delete(filter);
+        for (const filter of ['page', 'status', 'actionable', 'mine']) next.delete(filter);
         next.set('view', key);
         return <Link key={key} to={`?${next}`} aria-current={key === view ? 'page' : undefined} className={key === view ? 'active' : undefined}>{title}</Link>;
       })}
@@ -53,6 +55,7 @@ function CaseList({ kind, view }: { kind: Kind; view: string }) {
   const [params, setParams] = useSearchParams();
   const { path, title, create, statuses, permission } = config[kind];
   const stage = Object.hasOwn(stageStatuses, view) ? view : undefined;
+  const mine = params.get('mine') === 'true' ? 'true' : undefined;
   const actionable = params.get('actionable') === 'true' ? 'true' : undefined;
   const location = useLocation();
   const showMyVerifications = view === 'review' && !!user.departmentId && user.permissions.includes('RESULT_VERIFIER');
@@ -61,13 +64,13 @@ function CaseList({ kind, view }: { kind: Kind; view: string }) {
   const q = params.get('q') ?? '';
   const status = params.get('status') ?? '';
   const processId = params.get('processId') ?? '';
-  const rows = useQuery({ queryKey: [kind, q, status, page, processId, stage, actionable], queryFn: ({ signal }) =>
-    api<Page<CaseRow>>(path + queryString({ q, status, page, processId, stage, actionable }), { signal }), placeholderData: keepPreviousData });
+  const rows = useQuery({ queryKey: [kind, q, status, page, processId, stage, actionable, mine], queryFn: ({ signal }) =>
+    api<Page<CaseRow>>(path + queryString({ q, status, page, processId, stage, actionable, mine }), { signal }), placeholderData: keepPreviousData });
   const filters = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (key !== 'page') next.delete('page');
     if (value) next.set(key, value); else next.delete(key);
-    setParams(next, { replace: true });
+    setParams(next, { replace: true, state: location.state });
   };
   return <>
     <div className="workspace-list-heading"><h2>{views.find(([key]) => key === view)?.[1] ?? title}</h2>
@@ -75,6 +78,7 @@ function CaseList({ kind, view }: { kind: Kind; view: string }) {
     </div>
     <div className="surface filter-bar"><label className="search-field"><Search size={18} /><span className="sr-only">Поиск</span><input placeholder="Поиск по номеру или названию" value={q} onChange={event => filters('q', event.target.value)} /></label>
       <select aria-label="Статус" value={status} onChange={event => filters('status', event.target.value)}><Options items={availableStatuses} blank="Все статусы" /></select>
+      {kind === 'problem' && mine && <button className="button subtle" onClick={() => filters('mine', '')}>Показать все проблемы</button>}
       {kind === 'problem' && actionable && <button className="button subtle" onClick={() => filters('actionable', '')}>Показать все проблемы</button>}
       {showMyVerifications && <label className="checkbox-line"><input type="checkbox" checked={!!actionable} onChange={event => filters('actionable', event.target.checked ? 'true' : '')} /> Ожидают моей проверки</label>}
     </div>

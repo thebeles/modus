@@ -132,12 +132,12 @@ async function seed() {
     }
     for (const [number, title, description, author, q, visibility, overdue] of [
       ['DEMO-A-01', 'Доступ к учебным материалам', 'Подскажите, где хранится актуальная подборка учебных материалов.', employee, baseQueue, 'NORMAL_INTERNAL', false],
-      ['DEMO-A-02', 'Обновить сроки в шаблоне заявки', 'В тестовом шаблоне требуется актуализировать срок проверки заявки.', other, baseQueue, 'NORMAL_INTERNAL', true],
+      ['DEMO-A-02', 'Поставщик ждёт уточнения по комплектации', 'Поставщик зарезервировал оборудование до конца недели. Нужно сверить комплектацию и ответить, чтобы сохранить резерв.', other, baseQueue, 'NORMAL_INTERNAL', true],
       ['DEMO-A-03', 'Запрос с ограниченным доступом', 'Синтетический пример сообщения, доступного автору и специальной очереди.', employee, privateQueue, 'RESTRICTED', false],
     ] as const) {
       const record = await tx.appeal.upsert({ where: { number }, update: {}, create: { number, title, description, descriptionOriginal: description,
         authorId: author.id, departmentId: author.departmentId, queueId: q.id, visibility, type: 'PROPOSAL',
-        dueAt: overdue ? date(22) : null, slaVersion: overdue ? 1 : null, createdAt: date(22), lastMeaningfulActionAt: date(22), updatedAt: date(23),
+        assigneeId: overdue ? manager.id : null, dueAt: overdue ? date(22) : null, slaVersion: overdue ? 1 : null, createdAt: date(22), lastMeaningfulActionAt: date(22), updatedAt: date(23),
         seedOrigin: 'DEMO_SYNTHETIC', isSynthetic: true } });
       const eventId = `seed-created-${number}`;
       await tx.auditEvent.upsert({ where: { id: eventId }, update: {}, create: { id: eventId, entity: 'appeal', entityId: record.id,
@@ -162,6 +162,37 @@ async function seed() {
       appeals: { create: [2, 5, 11].map(index => ({ appealId: appeals[index - 1].id, explanation: 'Общая тема для проверки.' })) },
       findings: { create: { body: 'У сигналов разные контексты. Общая причина пока не установлена.', source: 'Синтетические обращения', recordedBy: handler.id } },
     } });
+    const purchase = await tx.problem.upsert({ where: { number: 'DEMO-P-02' }, update: {}, create: {
+      number: 'DEMO-P-02', title: 'Не хватает характеристик в закупочных заявках',
+      symptoms: 'Закупщики возвращают заявки на уточнение назначения, размеров и параметров оборудования.',
+      hypothesis: 'Обязательные поля в шаблоне сократят число уточнений.',
+      ownerId: handler.id, departmentId: units[0].id, status: 'CONFIRMED', isSynthetic: true,
+      appeals: { create: { appealId: appeals[0].id, explanation: 'В заявке нет характеристик, необходимых для подбора.' } },
+    } });
+    const duplicateEntry = await tx.problem.upsert({ where: { number: 'DEMO-P-03' }, update: {}, create: {
+      number: 'DEMO-P-03', title: 'Повторный ввод данных при подготовке заказа',
+      symptoms: 'Данные заявки переносят из карточки в учётную систему и повторно сверяют перед отправкой.',
+      hypothesis: 'Передача согласованных полей устранит повторный ввод.',
+      ownerId: handler.id, departmentId: units[0].id, status: 'INVESTIGATING', isSynthetic: true,
+      appeals: { create: { appealId: appeals[6].id, explanation: 'Исходное обращение о ручном переносе.' } },
+    } });
+    const repeated = await tx.appeal.upsert({ where: { number: 'DEMO-A-04' }, update: {}, create: {
+      number: 'DEMO-A-04', title: 'Позиции заказа приходится повторно вводить в учётную систему',
+      description: 'После согласования заявки количество и артикулы вручную переносятся в учётную систему.',
+      descriptionOriginal: 'После согласования заявки количество и артикулы вручную переносятся в учётную систему.',
+      type: 'PROBLEM', authorId: other.id, departmentId: units[0].id, processId: processes[6].id,
+      queueId: baseQueue.id, assigneeId: handler.id, status: 'REVIEW', isSynthetic: true, seedOrigin: 'DEMO_SYNTHETIC',
+      createdAt: date(23), lastMeaningfulActionAt: date(23),
+    } });
+    await tx.problemAppeal.createMany({ data: [{ problemId: duplicateEntry.id, appealId: repeated.id,
+      explanation: 'Второй независимый сигнал о повторном вводе тех же полей.' }], skipDuplicates: true });
+    await tx.improvement.upsert({ where: { number: 'DEMO-I-05' }, update: {}, create: {
+      number: 'DEMO-I-05', title: 'Передавать согласованные позиции заказа в учётную систему',
+      rationale: 'Два обращения описывают повторный перенос артикулов и количества.',
+      goal: 'Передавать согласованные поля из карточки заявки и сократить ручной ввод.',
+      scope: 'Пилот на тестовых заказах отдела закупок', status: 'DRAFT', ownerId: handler.id,
+      departmentId: units[0].id, processId: processes[6].id, problemId: duplicateEntry.id, isSynthetic: true,
+    } });
     for (const [index, title, status, goal] of [
       [1, 'Дополнить шаблон закупочной заявки', 'COMPLETED', 'Сократить долю заявок, по которым требуется уточнение.'],
       [2, 'Согласовать единый канал решений', 'COMPLETED', 'Проверить полноту итоговых решений по задачам.'],
@@ -180,7 +211,7 @@ async function seed() {
       const improvement = await tx.improvement.upsert({ where: { number }, update: {}, create: {
         number, title, status, goal, rationale: 'Синтетический сценарий проверки работы системы.', scope: 'Демонстрационный контур',
         departmentId: units[0].id, ownerId: handler.id, processId: processes[index === 1 ? 0 : index === 3 ? 3 : 1].id,
-        problemId: index === 4 ? problem.id : null, isSynthetic: true, createdAt: date(1 + index), updatedAt: date(24 - index),
+        problemId: index === 1 ? purchase.id : index === 4 ? problem.id : null, isSynthetic: true, createdAt: date(1 + index), updatedAt: date(24 - index),
         implementedAt: status === 'DEFERRED' ? null : date(15), completedAt: status === 'COMPLETED' ? date(24) : null,
         implementationNotes: status === 'DEFERRED' ? null : 'Изменение проведено в синтетической среде.',
         appeals: { create: { appealId: appeals[[0, 11, 15, 4][index - 1]].id, explanation: 'Демонстрационная связь с источником.' } },
@@ -193,11 +224,18 @@ async function seed() {
           observations: { create: index === 1 ? [
             { phase: 'BEFORE', value: 50, periodStart: date(6), periodEnd: date(12), sampleSize: 20, source: 'Синтетическая выборка. 10 заявок из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
             { phase: 'AFTER', value: 20, periodStart: date(16), periodEnd: date(23), sampleSize: 20, source: 'Синтетическая выборка. 4 заявки из 20.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
+          ] : index === 4 ? [
+            { phase: 'BEFORE', value: 60, periodStart: date(6), periodEnd: date(12), sampleSize: 10, source: 'Синтетические пакеты. 6 из 10 потребовали уточнений.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
+            { phase: 'AFTER', value: 20, periodStart: date(16), periodEnd: date(23), sampleSize: 10, source: 'Синтетические пакеты. 2 из 10 потребовали уточнений.', recordedBy: handler.id, origin: 'DEMO_FIXTURE', isSynthetic: true },
           ] : [] } } } } : {}),
         ...(status === 'COMPLETED' ? { verification: { create: { outcome,
           summary: measured ? 'В тестовой выборке наблюдалось снижение с 50% до 20%.' : 'Данных для вывода об эффекте недостаточно.',
           limitations, effect, verifierId: manager.id, origin: 'DEMO_FIXTURE', isSynthetic: true, verifiedAt: date(24) } } } : {}),
       } });
+      if (index === 1) await tx.improvement.updateMany({
+        where: { id: improvement.id, isSynthetic: true, problemId: null },
+        data: { problemId: purchase.id },
+      });
       if (status === 'COMPLETED') {
         const baseline = { improvementId: improvement.id, outcome, origin: 'DEMO_FIXTURE', isSynthetic: true, revision: 1,
           verifiedAt: date(24) } satisfies Prisma.VerificationWhereInput;

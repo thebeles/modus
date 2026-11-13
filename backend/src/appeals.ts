@@ -16,7 +16,7 @@ export const appealListInput = z.strictObject({
   ...pagination, q: z.string().trim().max(150).optional(), status: z.enum(appealStatuses).optional(),
   type: z.enum(appealTypes).optional(), priority: z.enum(priorities).optional(), categoryId: id.optional(),
   departmentId: id.optional(), processId: id.optional(), assigneeId: id.optional(),
-  tab: z.enum(['mine', 'new', 'waiting', 'risk', 'overdue', 'stale', 'all']).optional(),
+  tab: z.enum(['mine', 'new', 'waiting', 'risk', 'overdue', 'stale', 'urgent', 'attention-mine', 'all']).optional(),
   own: z.enum(['true', 'false']).optional(), normalOnly: z.enum(['true']).optional(), sort: z.enum(['recent', 'oldest', 'due']).default('recent'),
   from: dateTime.optional(), to: dateTime.optional(), dueFrom: dateTime.optional(), dueTo: dateTime.optional(),
   metric: z.enum(['closed', 'documented', 'responded']).optional(),
@@ -50,30 +50,41 @@ export function appealMetrics(evidence: z.output<typeof appealListInput>['eviden
     responded: { firstResponseSeconds: { not: null }, firstResponseOrigin: { in: [...origins] } },
   } satisfies Record<string, Prisma.AppealWhereInput>;
 }
-export function appealQueueFilters(user: Principal, now: Date) {
+export function appealStaleHours() {
   const hours = Number(process.env.APPEAL_STALE_HOURS ?? 72);
-  const staleHours = Number.isFinite(hours) && hours >= 1 && hours <= 720 ? hours : 72;
+  return Number.isFinite(hours) && hours >= 1 && hours <= 720 ? hours : 72;
+}
+
+export function appealQueueFilters(user: Principal, now: Date) {
+  const staleHours = appealStaleHours();
   const liveOwner = (visibility: Appeal['visibility']): Prisma.AppealWhereInput => ({
     visibility, OR: [
       { assignee: eligibleStaff(visibility) },
       { assigneeId: null, queue: { coordinator: eligibleStaff(visibility) } },
     ],
   });
-  const tabs = {
-    all: {},
-    mine: { AND: [active, { OR: [{ authorId: null }, { authorId: { not: user.id } }] }, { OR: [
+  const mine: Prisma.AppealWhereInput = { AND: [active, { OR: [{ authorId: null }, { authorId: { not: user.id } }] }, { OR: [
       { assigneeId: user.id }, { assigneeId: null, queue: { coordinatorId: user.id } },
-    ] }] },
+    ] }] };
+  const overdue: Prisma.AppealWhereInput = { AND: [{ status: { notIn: ['CLOSED', 'WITHDRAWN'] } }, { controlDueAt: { lt: now } }] };
+  const urgent: Prisma.AppealWhereInput = { OR: [overdue, { AND: [active, { priority: 'HIGH' }] }] };
+  return {
+    all: {},
+    mine,
+    urgent,
+    'attention-mine': { OR: [
+      { AND: [mine, { priority: { not: 'HIGH' } }, { OR: [{ controlDueAt: null }, { controlDueAt: { gte: now } }] }] },
+      { authorId: user.id, status: 'WAITING_AUTHOR', OR: [{ controlDueAt: null }, { controlDueAt: { gte: now } }] },
+    ] },
     new: { AND: [active, { OR: [{ status: 'NEW' }, { assigneeId: null }] }] },
     waiting: { status: 'WAITING_AUTHOR' },
     risk: { controlDueAt: { gte: now, lte: new Date(now.getTime() + 86400000) } },
-    overdue: { AND: [{ status: { notIn: ['CLOSED', 'WITHDRAWN'] } }, { controlDueAt: { lt: now } }] },
+    overdue,
     stale: { AND: [active, { OR: [
       { lastMeaningfulActionAt: { lt: new Date(now.getTime() - staleHours * 3600000) } },
       { NOT: { OR: visibilities.map(liveOwner) } },
     ] }] },
   } satisfies Record<string, Prisma.AppealWhereInput>;
-  return tabs;
 }
 
 const summary = {
@@ -96,11 +107,13 @@ export class Appeals {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Policy) private readonly policy: Policy,
     @Inject(Routing) private readonly routing: Routing) {}
 
-  where(user: Principal, filters: z.output<typeof appealListInput>, staff = false, now = new Date()): Prisma.AppealWhereInput {
+  where(user: Principal, filters: z.output<typeof appealListInput>, staff = false, now = new Date(), includeAuthorTasks = false): Prisma.AppealWhereInput {
     const { status, type, priority, categoryId, departmentId, processId, assigneeId, q, own, normalOnly, tab, from, to, dueFrom, dueTo, metric, origin, evidence } = filters;
     const tabs = appealQueueFilters(user, now);
     return { AND: [
-      staff ? this.policy.staffAppeals(user) : this.policy.appeals(user),
+      staff ? includeAuthorTasks && tab === 'attention-mine'
+        ? { OR: [this.policy.staffAppeals(user), { authorId: user.id, status: 'WAITING_AUTHOR' }] }
+        : this.policy.staffAppeals(user) : this.policy.appeals(user),
       { status, type, priority, categoryId, departmentId, processId, assigneeId, ...(from || to ? { createdAt: { gte: from, lt: to } } : {}) },
       own === 'true' ? { authorId: user.id } : {},
       normalOnly === 'true' ? { visibility: 'NORMAL_INTERNAL' } : {},
@@ -116,22 +129,39 @@ export class Appeals {
     if (staff && !this.policy.isStaff(user)) throw forbidden();
     const filters = parse(appealListInput, input);
     const { page, limit, sort } = filters;
-    const where = this.where(user, filters, staff);
-    const orderBy: Prisma.AppealOrderByWithRelationInput = sort === 'due' ? { controlDueAt: { sort: 'asc', nulls: 'last' } } :
+    const where = this.where(user, filters, staff, new Date(), true);
+    const orderBy: Prisma.AppealOrderByWithRelationInput = filters.tab === 'urgent' || sort === 'due' ? { controlDueAt: { sort: 'asc', nulls: 'last' } } :
       { createdAt: sort === 'oldest' ? 'asc' : 'desc' };
     const select = { ...summary, nextActions: staff ? {
       orderBy: { revision: 'desc' as const }, take: 1, select: { kind: true },
     } : false } satisfies Prisma.AppealSelect;
-    const [items, total] = await this.db.$transaction([
-      this.db.appeal.findMany({ where, orderBy: [orderBy, { id: 'asc' }], skip: (page - 1) * limit, take: limit, select }),
-      this.db.appeal.count({ where }),
-    ], { isolationLevel: 'RepeatableRead' });
+    const attention = staff && (filters.tab === 'urgent' || filters.tab === 'attention-mine');
+    const [items, total] = await this.db.$transaction(async tx => {
+      const items = await tx.appeal.findMany({ where, orderBy: [orderBy, ...(filters.tab === 'urgent' ? [{ priority: 'desc' as const }] : []), { id: 'asc' }], skip: (page - 1) * limit, take: limit, select });
+      const total = await tx.appeal.count({ where });
+      if (!attention || !items.length) return [items, total] as const;
+      const ids = items.map(item => item.id);
+      const [delegated, pending] = await Promise.all([
+        tx.appeal.findMany({ where: { AND: [{ id: { in: ids } }, this.policy.staffAppeals(user, true)] }, select: { id: true, resumeState: true } }),
+        tx.reviewRequest.findMany({ where: { appealId: { in: ids }, decidedAt: null }, select: { appealId: true, kind: true } }),
+      ]);
+      const handling = new Map(delegated.map(row => [row.id, row]));
+      const reviews = new Map(pending.map(row => [row.appealId, row.kind]));
+      return [items.map(row => {
+        const delegation = handling.get(row.id);
+        const actions = this.actions(user, { ...row, resumeState: delegation?.resumeState ?? null }, !!delegation, reviews.get(row.id));
+        const work = [
+          'REVIEW_DECISION', 'AUTHOR_RESPONSE', ...(row.assigneeId === null ? ['ASSIGN'] : []),
+          ...(row.status === 'IN_PROGRESS' ? ['RESOLVE', 'REVIEW'] : ['REVIEW', 'IN_PROGRESS', 'RESOLVE']), 'RESUME',
+        ];
+        return { ...row, recommendedAction: work.find(action => actions.includes(action)) ?? null };
+      }), total] as const;
+    }, { isolationLevel: 'RepeatableRead' });
     return { items: items.map(({ nextActions, ...row }) => ({
       ...row,
       ...(row.authorId === user.id && row.visibility !== 'NORMAL_INTERNAL' ? { assigneeId: null } : {}),
       ...(staff ? { nextActionKind: nextActions?.[0]?.kind ?? null } : {}),
-    })),
-      total, page, limit };
+    })), total, page, limit };
   }
 
   async assignees(user: Principal) {

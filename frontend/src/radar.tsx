@@ -7,7 +7,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { feedbackChoices, label } from './contracts';
 import { api, type AppealRow, type CaseRow, type Catalog, type Change, type Feedback, type LinkRow, type Page, queryString } from './api';
-import { LinkCards, nextActionText } from './appeals';
+import { LinkCards } from './appeals';
 import { useSession } from './session';
 import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, optional, Options, PageHeading, Pagination, Section } from './ui';
 
@@ -15,18 +15,51 @@ type Bucket = { id: string | null; name: string; count: number };
 type MetricGroup = { key: string; count: number };
 type RadarData = {
   total: number; closed: number; documented: number; firstResponse: { count: number; hours: number | null };
-  overdue: number; stale: number; waiting: number; improved: number; verified: number; verifiedSuccess: number; verifiedDeterminate: number; topics: number; recurrenceCandidates: number;
+  overdue: number; stale: number; staleHours: number; waiting: number; improved: number; verified: number; verifiedSuccess: number; verifiedDeterminate: number; topics: number; recurrenceCandidates: number;
   types: MetricGroup[]; statuses: MetricGroup[]; outcomes: MetricGroup[]; processes: Bucket[]; categories: Bucket[]; departments?: Bucket[];
-  attention: (AppealRow & { reasons: string[] })[]; improvements: CaseRow[]; topicItems: LinkRow[]; minGroup: number;
+  improvements: CaseRow[]; topicItems: LinkRow[]; minGroup: number;
 };
-const attentionReason: Record<string, string> = { HIGH_PRIORITY: 'Высокий приоритет', OVERDUE: 'Просрочено', DUE_SOON: 'Срок в ближайшие сутки', NO_NEXT_OWNER: 'Нет владельца следующего действия', POSSIBLE_RECURRENCE: 'Возможный повтор' };
+const actionText: Record<string, string> = {
+  ASSIGN: 'Назначить ответственного', REVIEW: 'Рассмотреть обращение', IN_PROGRESS: 'Начать обработку',
+  RESOLVE: 'Принять решение', AUTHOR_RESPONSE: 'Ответить на уточнение', REVIEW_DECISION: 'Рассмотреть запрос', RESUME: 'Возобновить обработку',
+};
+type AttentionItem = Pick<CaseRow, 'id' | 'number' | 'title' | 'status' | 'isSynthetic'> & {
+  href: string; action: string; detail?: string;
+};
+
+function AttentionGroup({ title, items, total, links, returnTo, empty }: {
+  title: string; items: AttentionItem[]; total?: number; links: { to: string; label: string }[];
+  returnTo: string; empty: string;
+}) {
+  return <Section title={total === undefined ? title : title + ' · ' + total} className="overview-group"
+    action={<div className="button-row">{links.map(link => <Link key={link.to} className="text-button" to={link.to}
+      state={{ returnTo }}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>)}</div>}>
+    {items.length ? <ul className="overview-list">{items.map(item => <li className="overview-task" key={item.href}>
+      <div><strong>{item.title}</strong><small>{item.number}{item.isSynthetic ? ' · демо' : ''}{item.detail ? ' · ' + item.detail : ''}</small></div>
+      <Chip value={item.status} />
+      <Link className="button secondary" to={item.href} state={{ returnTo }} aria-label={item.action + ': ' + item.title}>{item.action}</Link>
+    </li>)}</ul> : <p className="overview-empty">{empty}</p>}
+  </Section>;
+}
+
+function appealTask(item: AppealRow): AttentionItem {
+  const action = item.recommendedAction;
+  const author = action === 'AUTHOR_RESPONSE';
+  const href = (author ? '/appeals/' : '/work-queue/appeals/') + item.id +
+    (author ? '#appeal-dialogue' : action ? '#appeal-actions' : '');
+  const overdue = item.controlDueAt && Date.parse(item.controlDueAt) < Date.now();
+  const detail = item.controlDueAt ? (overdue ? 'Просрочено, срок был ' : 'Срок до ') + date(item.controlDueAt, true) :
+    item.priority === 'HIGH' ? 'Высокий приоритет' : undefined;
+  return { ...item, href, detail, action: (action && actionText[action]) || 'Посмотреть' };
+}
+
 const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
 const ratio = (numerator: number, denominator: number) => denominator ? `${number.format(numerator / denominator * 100)}%` : '—';
 
-function Metric({ label, value, detail, icon, to }: { label: string; value: number | string; detail: string; icon: ReactNode; to?: string }) {
+function Metric({ label, value, detail, icon, to, returnTo }: { label: string; value: number | string; detail: string; icon: ReactNode; to?: string; returnTo?: string }) {
   const contents = <><span className="metric-icon">{icon}</span><span className="metric-label">{label}</span>
     <strong>{value}</strong><small>{detail}</small>{to && <ArrowRight size={16} className="metric-arrow" />}</>;
-  return to ? <Link className="surface metric" to={to}>{contents}</Link> : <div className="surface metric">{contents}</div>;
+  return to ? <Link className="surface metric" to={to} state={returnTo ? { returnTo } : undefined}>{contents}</Link> : <div className="surface metric">{contents}</div>;
 }
 
 export function RadarPage() {
@@ -63,6 +96,12 @@ export function RadarPage() {
     api<Page<CaseRow>>('/problems?actionable=true&limit=3', { signal }) });
   const verifications = useQuery({ queryKey: ['improvement', 'overview'], enabled: !analysis && canVerify, queryFn: ({ signal }) =>
     api<Page<CaseRow>>('/improvements?stage=review&actionable=true&limit=3', { signal }) });
+  const urgent = useQuery({ queryKey: ['appeals', 'overview', 'urgent', query], enabled: !analysis, queryFn: ({ signal }) =>
+    api<Page<AppealRow>>('/work-queue' + queryString({ ...scope, normalOnly: 'true', tab: 'urgent', sort: 'due', limit: 4 }), { signal }) });
+  const mine = useQuery({ queryKey: ['appeals', 'overview', 'mine', query], enabled: !analysis, queryFn: ({ signal }) =>
+    api<Page<AppealRow>>('/work-queue' + queryString({ ...scope, normalOnly: 'true', tab: 'attention-mine', sort: 'due', limit: 4 }), { signal }) });
+  const myProblems = useQuery({ queryKey: ['problem', 'overview-mine'], enabled: !analysis, queryFn: ({ signal }) =>
+    api<Page<CaseRow>>('/problems?mine=true&limit=2', { signal }) });
   const recurrences = useQuery({ queryKey: ['radar', 'recurrences', query, recurrencePage], enabled: analysis && tab === 'topics' && showRecurrences,
     queryFn: () => api<Page<LinkRow>>('/radar/recurrences' + queryString({ ...scope, page: recurrencePage })) });
   const outcomeRows = useQuery({ queryKey: ['radar', 'outcomes', query, outcome, outcomePage], enabled: analysis && tab === 'outcomes',
@@ -88,19 +127,20 @@ export function RadarPage() {
   };
   const values = data.data;
   const toQueue = (extra: Record<string, string> = {}) => '/work-queue' + queryString({ ...scope, normalOnly: 'true', tab: 'all', ...extra });
-  const attention = values?.attention.map(item => ({
-    id: item.id, number: item.number, title: item.title, status: item.status, due: item.controlDueAt,
-    href: `/work-queue/appeals/${item.id}`, next: nextActionText(item),
-    reason: item.reasons.map(reason => attentionReason[reason]).filter(Boolean).join(' · ') || 'Превышен порог активности',
-    rank: item.reasons.includes('OVERDUE') ? 0 : item.reasons.includes('HIGH_PRIORITY') ? 1 : item.reasons.includes('DUE_SOON') ? 2 : 5,
-  })) ?? [];
-  for (const [items, path, reason, next, rank] of [
-    [verifications.data?.items, '/improvements', 'Ожидает независимой проверки', 'Открыть доказательства', 3],
-    [actionable.data?.items, '/problems', 'Открытая проблема', 'Открыть проблему', 4],
-  ] as const) {
-    for (const item of items ?? []) attention.push({ ...item, href: path + '/' + item.id + (path === '/improvements' ? '?tab=result' : ''), reason, next, rank, due: null });
-  }
-  attention.sort((a, b) => a.rank - b.rank || (a.due ?? '').localeCompare(b.due ?? ''));
+  const returnTo = '/overview' + (params.size ? '?' + params.toString() : '');
+  const myAppeals = mine.data?.items ?? [];
+  const problems = myProblems.data?.items ?? [];
+  const myTasks = [
+    ...myAppeals.slice(0, problems.length ? 3 : 4).map(appealTask),
+    ...problems.slice(0, 5 - Math.min(myAppeals.length, 3)).map(item => ({
+      ...item, href: '/problems/' + item.id, action: 'Продолжить работу с проблемой',
+    })),
+  ];
+  const reviewTasks = verifications.data?.items.map(item => ({
+    ...item, href: '/improvements/' + item.id + '?tab=result', action: 'Проверить доказательства',
+  }));
+  const groupsLoading = urgent.isPending || mine.isPending || myProblems.isPending;
+  const groupsError = urgent.error || mine.error || myProblems.error;
   return <><PageHeading title="Обзор" action={analysis && user.permissions.includes('EXPORT_DATA') && <a className="button secondary" href={'/api/v1/analytics/export' + query}><Download size={17} />Выгрузить CSV</a>} />
     <nav className="tab-strip" aria-label="Разделы обзора">
       <Link to={viewLink(false)} className={!analysis ? 'active' : undefined} aria-current={!analysis ? 'page' : undefined}>Требует внимания</Link>
@@ -109,27 +149,35 @@ export function RadarPage() {
     {filters.origin === 'DEMO' || filters.evidence === 'DEMO_FIXTURE' ? <div className="info-box"><Activity size={18} /> В показателях обращений выбраны демонстрационные данные.</div> : null}
     {filters.origin === 'ORIGINAL' && <div className="info-box"><Activity size={18} /> В показателях обращений выбран исходный набор данных.</div>}
     {!analysis && <>
-      <ErrorBox error={data.error || actionable.error || verifications.error} retry={() => {
+      <ErrorBox error={data.error || actionable.error || verifications.error || groupsError} retry={() => {
         void data.refetch();
         void actionable.refetch();
+        void urgent.refetch();
+        void mine.refetch();
+        void myProblems.refetch();
         if (canVerify) void verifications.refetch();
       }} />
-      {(data.isPending || actionable.isPending || (canVerify && verifications.isPending)) && <Loading />}
+      {(data.isPending || actionable.isPending || groupsLoading || (canVerify && verifications.isPending)) && <Loading />}
       <div className="metric-grid overview-signals">
         {values && <>
-          <Metric label="Просроченные обращения" value={values.overdue} detail="Истёк срок ответа или следующего действия" icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
-          <Metric label="Обращения без активности" value={values.stale} detail="Давно без изменений или без ответственного" icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
+          <Metric label="Просроченные обращения" value={values.overdue} detail="Истёк контрольный срок первого ответа или следующего действия" returnTo={returnTo} icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
+          <Metric label="Обращения без активности" value={values.stale} detail={`Нет значимого действия более ${values.staleHours} ч или доступного ответственного`} returnTo={returnTo} icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
         </>}
-        {actionable.data && <Metric label="Открытые проблемы" value={actionable.data.total} detail="Сигналы и подтверждённые проблемы в доступной области" icon={<GitPullRequest size={19} />} to="/improvements?view=problems&actionable=true" />}
-        {canVerify && verifications.data && <Metric label="Ожидают моей проверки" value={verifications.data.total} detail="Инициативы, доступные для независимой проверки" icon={<CheckCircle2 size={19} />} to="/improvements?view=review&actionable=true" />}
+        {actionable.data && <Metric label="Открытые проблемы" value={actionable.data.total} detail="Кандидаты, проблемы на исследовании и подтверждённые проблемы" returnTo={returnTo} icon={<GitPullRequest size={19} />} to="/improvements?view=problems&actionable=true" />}
+        {canVerify && verifications.data && <Metric label="Ожидают моей проверки" value={verifications.data.total} detail="Доступные вам инициативы на проверке без вынесенного решения" returnTo={returnTo} icon={<CheckCircle2 size={19} />} to="/improvements?view=review&actionable=true" />}
       </div>
-      <Section title="Требует внимания" icon={<TriangleAlert size={18} />}>
-        {attention.length ? attention.map(item => <div className="task-row overview-task" key={item.href}>
-          <div><Link to={item.href} state={{ returnTo: '/overview' + (params.size ? `?${params}` : '') }}>{item.title}</Link>
-            <small>{item.number} · {item.reason}</small><small>{item.due ? date(item.due, true) : 'Срок не задан'} · {item.next}</small>
-          </div><Chip value={item.status} />
-        </div>) : values && actionable.data && (!canVerify || verifications.data) ? <Empty title="Сейчас нет задач, требующих внимания" /> : null}
-      </Section>
+      <div className="overview-groups">
+        <h2>Требует внимания</h2>
+        {urgent.data && <AttentionGroup title="Срочно" total={urgent.data.total} items={urgent.data.items.map(appealTask)}
+          links={[{ to: toQueue({ tab: 'urgent', sort: 'due' }), label: 'Показать все срочные' }]} returnTo={returnTo} empty="Срочных обращений нет" />}
+        {mine.data && myProblems.data && <AttentionGroup title="Нужно моё действие" total={mine.data.total + myProblems.data.total} items={myTasks}
+          links={[
+            { to: toQueue({ tab: 'attention-mine', sort: 'due' }), label: 'Все мои обращения к действию' },
+            { to: '/improvements?view=problems&mine=true', label: 'Все мои проблемы' },
+          ]} returnTo={returnTo} empty="Сейчас нет обращений и проблем, требующих вашего действия" />}
+        {canVerify && verifications.data && <AttentionGroup title="Ожидают проверки" total={verifications.data.total} items={reviewTasks ?? []}
+          links={[{ to: '/improvements?view=review&actionable=true', label: 'Показать все проверки' }]} returnTo={returnTo} empty="Доступных проверок сейчас нет" />}
+      </div>
     </>}
     {analysis && <>
     <details className="surface overview-filters"><summary>Фильтры аналитики</summary>

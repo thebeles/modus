@@ -26,7 +26,7 @@ const nextActionLabels: Record<string, string> = {
   EXECUTION: 'Работа над обращением', AUTHOR_RESPONSE: 'Ответ автора', ROUTING: 'Назначение ответственного',
 };
 
-export function nextActionText(item: Pick<AppealRow, 'nextActionKind' | 'status'>) {
+function nextActionText(item: Pick<AppealRow, 'nextActionKind' | 'status'>) {
   if (item.nextActionKind && nextActionLabels[item.nextActionKind]) return nextActionLabels[item.nextActionKind];
   if (['CLOSED', 'WITHDRAWN'].includes(item.status)) return nextActionLabels.NONE;
   if (item.status === 'WAITING_AUTHOR') return nextActionLabels.AUTHOR_RESPONSE;
@@ -40,7 +40,7 @@ function AppealTable({ rows, staff = false, compact = false, returnTo }: { rows:
     <th>Обращение</th><th>Статус</th>{!compact && <th className="appeal-context">{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th className="appeal-arrow"><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
     const overdue = staff && !!item.controlDueAt && !['CLOSED', 'WITHDRAWN'].includes(item.status) && Date.parse(item.controlDueAt) < Date.now();
-    const to = `${staff ? '/work-queue' : ''}/appeals/${item.id}`;
+    const to = `${staff && item.recommendedAction !== 'AUTHOR_RESPONSE' ? '/work-queue' : ''}/appeals/${item.id}`;
     return <tr key={item.id}><td><Link className="table-title" to={to} state={{ returnTo }}><span className="row-icon"><FileText size={17} /></span><span>
       <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} aria-label="Ограниченный доступ" />}</small><strong>{item.title}</strong>
       {!compact && <small className="appeal-context-mobile">{staff ? item.department?.name : label(item.type)}</small>}
@@ -95,7 +95,7 @@ export function Home() {
 }
 
 const queueTabs = [['mine', 'Мои задачи'], ['all', 'Все'], ['overdue', 'Просроченные']] as const;
-const additionalTabs = [['new', 'Новые / без назначения'], ['waiting', 'Ждут автора'], ['risk', 'Под риском'], ['stale', 'Без активности']] as const;
+const additionalTabs = [['new', 'Новые / без назначения'], ['waiting', 'Ждут автора'], ['risk', 'Под риском'], ['stale', 'Без активности'], ['urgent', 'Срочно'], ['attention-mine', 'Нужно моё действие']] as const;
 const filterKeys = ['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to',
   'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric', 'origin', 'evidence'];
 
@@ -132,12 +132,14 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
     if (key !== 'page') updated.delete('page');
     if (staff && key !== 'tab' && !updated.has('tab')) updated.set('tab', tab);
     if (value) updated.set(key, value); else updated.delete(key);
-    setParams(updated, { replace: true });
+    setParams(updated, { replace: true, state: location.state });
   };
-  const reset = () => setParams(staff ? { tab } : {}, { replace: true });
+  const reset = () => setParams(staff ? { tab } : {}, { replace: true, state: location.state });
   const dateFilter = (key: string, title: string) => <Field label={title}><DatePicker type="datetime-local" value={filter[key]?.slice(0, 16) ?? ''}
     onValueChange={value => apply(key, value && new Date(value + 'Z').toISOString())} /></Field>;
-  return <><PageHeading title={staff ? user.role === 'MANAGER' ? 'Обращения' : 'Очередь' : 'Мои обращения'} />
+  const previous = location.state?.returnTo;
+  const back = staff && typeof previous === 'string' && previous.split('?')[0] === '/overview' ? { to: previous, label: 'Обзор' } : undefined;
+  return <><PageHeading back={back} title={staff ? user.role === 'MANAGER' ? 'Обращения' : 'Очередь' : 'Мои обращения'} />
     <AppealChannels staff={staff} />
     {staff && <nav className="tab-strip" aria-label="Представления очереди">{queueTabs.map(([key, title]) =>
       <button type="button" aria-pressed={tab === key} key={key} onClick={() => apply('tab', key)}>{title}</button>)}</nav>}
@@ -453,6 +455,7 @@ function AppealDetailContent() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const section = location.hash.slice(1);
   const { user } = useSession();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['appeal', id], queryFn: () => api<Appeal>(`/appeals/${id}`) });
@@ -466,6 +469,14 @@ function AppealDetailContent() {
   const [targetPage, setTargetPage] = useState(1);
   const [notice, setNotice] = useState('');
   const record = query.data;
+  const recordId = record?.id;
+  useEffect(() => {
+    if (recordId && ['appeal-actions', 'appeal-dialogue'].includes(section)) {
+      const target = document.getElementById(section);
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: 'start' });
+    }
+  }, [recordId, section]);
   const staff = !!record && record.authorId !== user.id;
   const catalog = useQuery({ queryKey: ['catalog', id], queryFn: () => api<Catalog>(`/catalog?appealId=${id}`), enabled: !!action && ['EDIT', 'ASSIGN', 'REROUTE'].includes(action) });
   const targets = useQuery({ queryKey: ['appeals', id, 'resolution-targets', resolution, targetSearch, targetPage],
@@ -525,10 +536,10 @@ function AppealDetailContent() {
   const listPath = fromQueue ? '/work-queue' : '/my/appeals';
   const previousList = location.state?.returnTo;
   const previousPath = typeof previousList === 'string' ? previousList.split('?')[0] : undefined;
-  const fromOverview = fromQueue && previousPath === '/overview';
-  const backTo = previousPath === listPath || fromOverview ? previousList : listPath;
+  const fromOverview = previousPath === '/overview';
+  const backTo = ['/work-queue', '/my/appeals', '/overview'].includes(previousPath ?? '') ? previousList : listPath;
   return <><PageHeading title={record.title} subtitle={`${record.number} · ${label(record.type)} · ${date(record.createdAt)}`}
-    back={{ to: backTo, label: fromOverview ? 'Обзор' : fromQueue ? 'Очередь' : 'Мои обращения' }}
+    back={{ to: backTo, label: fromOverview ? 'Обзор' : fromQueue || previousPath === '/work-queue' ? 'Очередь' : 'Мои обращения' }}
     action={<Chip value={record.status} />} />
     {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
     {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
@@ -542,7 +553,7 @@ function AppealDetailContent() {
       {record.resolutionText && <Section title="Итог рассмотрения" icon={<CheckCircle2 size={18} />} className="resolution-section">
         {record.resolutionType && <Chip value={record.resolutionType} />}{record.resolutionOrigin === 'DEMO_FIXTURE' && <small>Демонстрационный пример решения</small>}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
       </Section>}
-      <Section title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
+      <Section id="appeal-dialogue" title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
         <button className="button primary" disabled={saving} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
         {staff && <div className="tab-strip compact-tabs"><button aria-pressed={!notes} onClick={() => setNotes(false)}>Переписка с автором</button><button aria-pressed={notes} onClick={() => setNotes(true)}>Служебные заметки</button></div>}
         {!notes && record.authorId === null && <StaffAnonymousThread appealId={record.id} />}
@@ -570,7 +581,7 @@ function AppealDetailContent() {
       </Section>}
       <Section title="История" icon={<Clock3 size={18} />}><Timeline items={record.events} /></Section>
     </div><aside className="detail-side">
-      <Section title="Следующий шаг" icon={<ArrowRight size={18} />}>
+      <Section id="appeal-actions" title="Следующий шаг" icon={<ArrowRight size={18} />}>
         <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
           <div><dt>Срок</dt><dd>{nextDue ? date(nextDue, true) : 'Срок не задан'}</dd></div>
           {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>

@@ -39,7 +39,32 @@ test('keeps old workspace links and routes each role to its working views', asyn
   await expect(page.getByRole('heading', { name: 'Требует внимания' })).toBeVisible();
   const overdue = page.getByRole('link', { name: /^Просроченные обращения/ });
   await expect(overdue).toBeVisible();
+  await page.setViewportSize({ width: 360, height: 900 });
+  await expect(page.getByRole('heading', { name: /^Ожидают проверки/ })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  await page.screenshot({ path: info.outputPath('overview-mobile.png'), fullPage: true, animations: 'disabled' });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: info.outputPath('overview-desktop.png'), fullPage: true, animations: 'disabled' });
+  const urgent = page.locator('section').filter({ has: page.getByRole('heading', { name: /^Срочно/ }) });
+  const mine = page.locator('section').filter({ has: page.getByRole('heading', { name: /^Нужно моё действие/ }) });
+  const reviews = page.locator('section').filter({ has: page.getByRole('heading', { name: /^Ожидают проверки/ }) });
+  const urgentCase = urgent.getByRole('link', { name: /Поставщик ждёт уточнения по комплектации/ });
+  await expect(urgentCase).toHaveAccessibleName(/^Рассмотреть обращение/);
+  await urgentCase.click();
+  await expect(page).toHaveURL(/#appeal-actions$/);
+  await expect(page.getByRole('button', { name: 'Взять на рассмотрение', exact: true })).toBeVisible();
+  await page.locator('.back-link').click();
+  await expect(page).toHaveURL(/overview\?origin=DEMO/);
+  await expect(mine.getByRole('link', { name: /Поставщик ждёт уточнения по комплектации/ })).toHaveCount(0);
+  await expect(mine.getByRole('link', { name: /^Продолжить работу с проблемой/ }).first()).toBeVisible();
+  await reviews.getByRole('link', { name: /^Проверить доказательства/ }).first().click();
+  await expect(page.getByRole('tab', { name: 'Результат' })).toHaveAttribute('data-state', 'active');
+  await expect(page.getByRole('button', { name: 'Зафиксировать результат', exact: true })).toBeVisible();
+  await page.locator('.back-link').click();
+  await urgent.getByRole('link', { name: 'Показать все срочные' }).click();
+  await expect(page).toHaveURL(/tab=urgent/);
+  await page.locator('.back-link').click();
+  await expect(page).toHaveURL(/overview\?origin=DEMO/);
   await overdue.click();
   await expect(page).toHaveURL(/tab=overdue/);
   await page.getByRole('button', { name: /^Фильтры/ }).click();
@@ -134,6 +159,8 @@ async function login(page: Page, role: keyof typeof profileNames) {
   const landingPath = role === 'admin' ? '/admin/users' : role === 'manager' ? '/overview' :
     role === 'handler' || role === 'sensitive-handler' ? '/work-queue' : '/';
   await expect(page).toHaveURL(url => url.pathname === landingPath);
+  await expect(page.getByRole('navigation', { name: 'Основная навигация' })).toBeVisible();
+  await expect.poll(async () => (await page.context().cookies(page.url())).some(cookie => cookie.name === 'modus_csrf')).toBe(true);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 }
 

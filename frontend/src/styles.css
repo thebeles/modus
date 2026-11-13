@@ -934,3 +934,22 @@ a.metric:hover { border-color: #bac6df; }
 .overview-filters { padding: 10px 13px; margin-bottom: 12px; }
 .overview-filters summary { cursor: pointer; min-height: 28px; font-weight: 650; }
 .overview-filters .filter-bar { padding: 8px 0 0; margin-bottom: 8px; }
+
+.overview-groups { display: grid; gap: 12px; }
+.overview-groups > h2 { margin: 4px 0 0; }
+.overview-group .section-head { margin-bottom: 6px; }
+.overview-list { list-style: none; padding: 0; margin: 0; }
+.overview-list .overview-task { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 9px 0; }
+.overview-list li + li { border-top: 1px solid var(--line); }
+.overview-task strong { display: block; }
+.overview-task small { display: block; margin-top: 3px; color: #46526a; }
+.overview-empty { padding-block: 6px; color: var(--muted); }
+#appeal-actions, #appeal-dialogue { scroll-margin-top: 12px; }
+
+@media (max-width: 570px) {
+  .overview-list .overview-task { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  .overview-task > div { grid-column: 1 / -1; }
+  .overview-task > .chip { justify-self: start; white-space: normal; }
+  .overview-task > .button { max-width: 52vw; }
+  .overview-group .section-head { flex-wrap: wrap; }
+}

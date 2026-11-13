@@ -13,7 +13,7 @@ import { assessEffect } from './effect';
 const workStatuses: ImprovementStatus[] = ['DRAFT', 'UNDER_REVIEW', 'APPROVED', 'DEFERRED', 'IN_PROGRESS'];
 const reviewStatuses: ImprovementStatus[] = ['IMPLEMENTED', 'VERIFYING'];
 const listInput = z.strictObject({ ...pagination, q: z.string().trim().max(150).optional(), status: z.string().max(30).optional(), processId: id.optional(),
-  stage: z.enum(['work', 'review', 'results']).optional(), actionable: z.enum(['true']).optional(),
+  stage: z.enum(['work', 'review', 'results']).optional(), actionable: z.enum(['true']).optional(), mine: z.enum(['true']).optional(),
 });
 const problemInput = z.strictObject({ title, symptoms: bodyText, hypothesis: bodyText.optional(), appealId: id.optional(), relatedAppealIds: z.array(id).max(8).default([]), explanation: bodyText.optional() });
 const improvementInput = z.strictObject({ title, rationale: bodyText, goal: bodyText, scope: shortText, risks: bodyText.optional(),
@@ -98,14 +98,16 @@ export class Cases {
 
   async list(user: Principal, raw: unknown, kind: 'problem' | 'improvement') {
     this.requireStaff(user);
-    const { page, limit, q, status, processId, stage, actionable } = parse(listInput, raw);
+    const { page, limit, q, status, processId, stage, actionable, mine } = parse(listInput, raw);
     const search = q ? { OR: ['number', 'title'].map(field => ({ [field]: { contains: q, mode: 'insensitive' } })) } : {};
     const options = { orderBy: [{ createdAt: 'desc' as const }, { id: 'asc' as const }], skip: (page - 1) * limit, take: limit };
     const owner = { select: { id: true, name: true } } as const;
     if (kind === 'problem') {
       const where: Prisma.ProblemWhereInput = { AND: [this.policy.problems(user), search,
         { status: status ? parse(z.enum(problemStatuses), status) : undefined },
-        ...(actionable ? [{ status: { in: ['CANDIDATE', 'INVESTIGATING', 'CONFIRMED'] } } satisfies Prisma.ProblemWhereInput] : []),
+        ...(actionable || mine ? [{ status: { in: ['CANDIDATE', 'INVESTIGATING', 'CONFIRMED'] } } satisfies Prisma.ProblemWhereInput] : []),
+        ...(mine ? [{ OR: [{ ownerId: user.id }, ...(user.role === 'MANAGER' && user.departmentId
+          ? [{ departmentId: user.departmentId, visibility: 'NORMAL_INTERNAL' as const }] : [])] }] : []),
       ] };
       const [items, total] = await this.db.$transaction([this.db.problem.findMany({ ...options, where, select: {
         id: true, number: true, title: true, status: true, owner, isSynthetic: true, createdAt: true, updatedAt: true,

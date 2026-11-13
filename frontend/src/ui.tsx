@@ -56,8 +56,8 @@ export function PageHeading({ title, subtitle, action, back }: { title: string; 
   </header>;
 }
 
-export function Section({ title, icon, action, children, className = '' }: { title: string; icon?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
-  return <section className={`surface section ${className}`}><header className="section-head"><h2>{icon}{title}</h2>{action}</header>{children}</section>;
+export function Section({ id, title, icon, action, children, className = '' }: { id?: string; title: string; icon?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
+  return <section id={id} tabIndex={id ? -1 : undefined} className={`surface section ${className}`}><header className="section-head"><h2>{icon}{title}</h2>{action}</header>{children}</section>;
 }
 
 export function TableRegion({ label, children }: { label: string; children: ReactNode }) {
