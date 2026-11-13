@@ -15,7 +15,17 @@ export class Policy {
     return this.isStaff(user) && user.permissions.includes(permission);
   }
 
+  canReview(user: Principal, permission: string, departmentId: string | null) {
+    return user.permissions.includes(permission) && (user.role === 'DIRECTOR' ||
+      (this.isStaff(user) && !!departmentId && user.departmentId === departmentId));
+  }
+
+  canReadOperations(user: Principal) {
+    return this.isStaff(user) || user.role === 'DIRECTOR';
+  }
+
   staffAppeals(user: Principal, delegatedOnly = false): Prisma.AppealWhereInput {
+    if (user.role === 'DIRECTOR' && !delegatedOnly) return { visibility: 'NORMAL_INTERNAL', authorId: { not: null }, isSynthetic: user.demo };
     if (!this.isStaff(user)) return { id: { in: [] } };
     const membership: Prisma.AppealWhereInput[] = [
       { assigneeId: user.id },
@@ -50,6 +60,7 @@ export class Policy {
   }
 
   cases(user: Principal): { OR: Prisma.ImprovementWhereInput[] } {
+    if (user.role === 'DIRECTOR') return { OR: [{ visibility: 'NORMAL_INTERNAL', isSynthetic: user.demo }] };
     if (!this.isStaff(user)) return { OR: [{ id: { in: [] } }] };
     const normal: Prisma.ImprovementWhereInput[] = [{ ownerId: user.id }];
     if (user.role === 'MANAGER' && user.departmentId) normal.push({ departmentId: user.departmentId });

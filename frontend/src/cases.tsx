@@ -8,7 +8,6 @@ import { improvementStatuses, label, outcomes, problemStatuses } from './contrac
 import { api, uploadAttachment, type Attachment, type AppealRow, type CaseRow, type Catalog, type Change, type Effect, type Improvement, type Page, type Plan, type Problem, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { LinkedReviews } from './feedback-channels';
-import { ImprovementOneC } from './one-c';
 import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, numeric, optional, Options,
   PageHeading, Pagination, Section, TableRegion, Timeline, timestamp } from './ui';
 
@@ -58,7 +57,7 @@ function CaseList({ kind, view }: { kind: Kind; view: string }) {
   const mine = params.get('mine') === 'true' ? 'true' : undefined;
   const actionable = params.get('actionable') === 'true' ? 'true' : undefined;
   const location = useLocation();
-  const showMyVerifications = view === 'review' && !!user.departmentId && user.permissions.includes('RESULT_VERIFIER');
+  const showMyVerifications = view === 'review' && (user.role === 'DIRECTOR' || !!user.departmentId) && user.permissions.includes('RESULT_VERIFIER');
   const availableStatuses = stage ? statuses.filter(value => stageStatuses[stage].includes(value)) : statuses;
   const page = Number(params.get('page')) || 1;
   const q = params.get('q') ?? '';
@@ -402,10 +401,8 @@ export function ImprovementDetail() {
             <p className="preserve">{record.rationale}</p>{record.risks && <><h3>Риски</h3><p className="preserve">{record.risks}</p></>}
             {record.implementationNotes && <><h3>Что внедрили</h3><p className="preserve">{record.implementationNotes}</p><small>{date(record.implementedAt)}</small></>}
           </Section>
-          {record.visibility === 'NORMAL_INTERNAL' && record.isSynthetic === user.demo && <>
-            {record.departmentId && record.departmentId === user.departmentId && <LinkedReviews target="improvement" targetId={record.id} />}
-            <ImprovementOneC improvementId={record.id} />
-          </>}
+          {user.role !== 'DIRECTOR' && record.visibility === 'NORMAL_INTERNAL' && record.isSynthetic === user.demo &&
+            record.departmentId && record.departmentId === user.departmentId && <LinkedReviews target="improvement" targetId={record.id} />}
           <Section title="Решения согласования"><div className="inner-stack">{record.approvals.length ? record.approvals.map(item => <article className="comment" key={item.id}>
             <Chip value={item.status} /><p>{item.reason}</p><small>{date(item.createdAt)}</small></article>) : <Empty title="Решений пока нет" />}</div></Section>
         </Tabs.Content>

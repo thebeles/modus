@@ -38,7 +38,7 @@ export function queryString(params: Record<string, string | number | undefined>)
 }
 
 export type Session = { user: User; demoMode: boolean };
-export type User = { id: string; name: string; email: string; role: 'EMPLOYEE' | 'HANDLER' | 'MANAGER' | 'ADMIN'; departmentId: string | null; permissions: string[]; demo: boolean };
+export type User = { id: string; name: string; email: string; role: 'EMPLOYEE' | 'HANDLER' | 'MANAGER' | 'DIRECTOR' | 'ADMIN'; departmentId: string | null; permissions: string[]; demo: boolean };
 export type Entity = { id: string; name: string };
 export type Catalog = { categories: (Entity & { sensitive: boolean })[]; processes: Entity[]; departments: Entity[]; people: Entity[] };
 export type Page<T> = { items: T[]; total: number; page: number; limit: number };
@@ -53,8 +53,10 @@ export function uploadAttachment(file: File) {
 export type AppealRow = Reference & {
   nextActionKind?: string | null;
   recommendedAction?: string | null;
+  routingOnly?: boolean;
   type: string; status: string; priority: string; visibility: string; version: number; isSynthetic: boolean;
-  authorId: string | null; assigneeId: string | null; departmentId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null; category: { name: string } | null;
+  authorId: string | null; assigneeId: string | null; departmentId: string | null; createdAt: string; dueAt: string | null; controlDueAt: string | null;
+  resolutionDueAt?: string | null; category: { name: string } | null;
   process: { name: string } | null; department: { name: string } | null; categoryId: string | null; processId: string | null;
 };
 export type LinkRow = { id: string; version: number; from: Reference; to: Reference; relation: string; state: string; explanation: string; proposedBy: string };
@@ -62,6 +64,12 @@ type NextAction = { kind: string; state: string; dueAt: string | null; assignedA
 export type Appeal = AppealRow & {
   nextAction?: NextAction | null; nextActionHistory?: NextAction[];
   routingPending?: boolean;
+  firstResponseDueAt?: string | null;
+  firstHumanResponseAt?: string | null;
+  resolutionVersion?: number;
+  resolutionConfirmedAt?: string | null;
+  sharedTitle?: string | null;
+  author?: { name: string } | null;
   authorImprovements?: { number: string; status: string }[];
   resolutionOrigin?: string | null;
   description: string; proposedSolution: string | null; resolutionType: string | null; resolutionText: string | null; closedAt: string | null;

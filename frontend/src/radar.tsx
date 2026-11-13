@@ -47,8 +47,9 @@ function appealTask(item: AppealRow): AttentionItem {
   const author = action === 'AUTHOR_RESPONSE';
   const href = (author ? '/appeals/' : '/work-queue/appeals/') + item.id +
     (author ? '#appeal-dialogue' : action ? '#appeal-actions' : '');
-  const overdue = item.controlDueAt && Date.parse(item.controlDueAt) < Date.now();
-  const detail = item.controlDueAt ? (overdue ? 'Просрочено, срок был ' : 'Срок до ') + date(item.controlDueAt, true) :
+  const dueAt = [item.controlDueAt, item.resolutionDueAt].filter((value): value is string => !!value).sort()[0];
+  const overdue = dueAt && Date.parse(dueAt) < Date.now();
+  const detail = dueAt ? (overdue ? 'Просрочено, срок был ' : 'Срок до ') + date(dueAt, true) :
     item.priority === 'HIGH' ? 'Высокий приоритет' : undefined;
   return { ...item, href, detail, action: (action && actionText[action]) || 'Посмотреть' };
 }
@@ -66,7 +67,8 @@ export function RadarPage() {
   const { user, demoMode } = useSession();
   const defaults = { processId: '', departmentId: '', from: '', to: '', origin: demoMode ? 'DEMO' : 'LIVE', evidence: 'OBSERVED' };
   const [params, setParams] = useSearchParams();
-  const analysis = params.get('view') === 'analytics';
+  const director = user.role === 'DIRECTOR';
+  const analysis = director || params.get('view') === 'analytics';
   const filters = {
     processId: params.get('processId') ?? defaults.processId,
     departmentId: params.get('departmentId') ?? defaults.departmentId,
@@ -141,11 +143,12 @@ export function RadarPage() {
   }));
   const groupsLoading = urgent.isPending || mine.isPending || myProblems.isPending;
   const groupsError = urgent.error || mine.error || myProblems.error;
-  return <><PageHeading title="Обзор" action={analysis && user.permissions.includes('EXPORT_DATA') && <a className="button secondary" href={'/api/v1/analytics/export' + query}><Download size={17} />Выгрузить CSV</a>} />
-    <nav className="tab-strip" aria-label="Разделы обзора">
+  return <><PageHeading title={director ? 'Аналитика компании' : 'Обзор'} action={analysis && user.permissions.includes('EXPORT_DATA') && <a className="button secondary" href={'/api/v1/analytics/export' + query}><Download size={17} />Выгрузить CSV</a>} />
+    {director && user.permissions.includes('RESULT_VERIFIER') && <Link className="button secondary" to="/improvements?view=review&actionable=true">Улучшения на проверке</Link>}
+    {!director && <nav className="tab-strip" aria-label="Разделы обзора">
       <Link to={viewLink(false)} className={!analysis ? 'active' : undefined} aria-current={!analysis ? 'page' : undefined}>Требует внимания</Link>
       <Link to={viewLink(true)} className={analysis ? 'active' : undefined} aria-current={analysis ? 'page' : undefined}>Аналитика</Link>
-    </nav>
+    </nav>}
     {filters.origin === 'DEMO' || filters.evidence === 'DEMO_FIXTURE' ? <div className="info-box"><Activity size={18} /> В показателях обращений выбраны демонстрационные данные.</div> : null}
     {filters.origin === 'ORIGINAL' && <div className="info-box"><Activity size={18} /> В показателях обращений выбран исходный набор данных.</div>}
     {!analysis && <>
@@ -160,7 +163,7 @@ export function RadarPage() {
       {(data.isPending || actionable.isPending || groupsLoading || (canVerify && verifications.isPending)) && <Loading />}
       <div className="metric-grid overview-signals">
         {values && <>
-          <Metric label="Просроченные обращения" value={values.overdue} detail="Истёк контрольный срок первого ответа или следующего действия" returnTo={returnTo} icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
+          <Metric label="Просроченные обращения" value={values.overdue} detail="Истёк срок первого ответа, следующего действия или решения" returnTo={returnTo} icon={<TriangleAlert size={19} />} to={toQueue({ tab: 'overdue' })} />
           <Metric label="Обращения без активности" value={values.stale} detail={`Нет значимого действия более ${values.staleHours} ч или доступного ответственного`} returnTo={returnTo} icon={<Clock3 size={19} />} to={toQueue({ tab: 'stale' })} />
         </>}
         {actionable.data && <Metric label="Открытые проблемы" value={actionable.data.total} detail="Кандидаты, проблемы на исследовании и подтверждённые проблемы" returnTo={returnTo} icon={<GitPullRequest size={19} />} to="/improvements?view=problems&actionable=true" />}

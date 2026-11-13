@@ -1,0 +1,5 @@
+BEGIN;
+ALTER TABLE "User" ADD COLUMN "absentUntil" TIMESTAMP(3);
+ALTER TABLE "RoutingRule" ADD COLUMN "deputyId" TEXT REFERENCES "User"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "RoutingRule" ADD CONSTRAINT "RoutingRule_distinct_deputy" CHECK ("deputyId" IS NULL OR "deputyId" IS DISTINCT FROM "assigneeId");
+COMMIT;

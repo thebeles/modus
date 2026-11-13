@@ -20,7 +20,7 @@ export default defineConfig({
       timeout: 120000,
       env: { NODE_ENV: 'development', DATABASE_URL: process.env.E2E_DATABASE_URL!, PORT: '4080',
         WEB_ORIGIN: baseURL, DEMO_MODE: 'true', COOKIE_SECURE: 'false', GROQ_AI_ENABLED: 'false', STORAGE_DIR: '.storage/e2e',
-        ANONYMOUS_DATA_KEY: '0123456789abcdef'.repeat(4), ONEC_MODE: 'simulator' },
+        ANONYMOUS_DATA_KEY: '0123456789abcdef'.repeat(4), LEGACY_DEMO_FIXTURES: 'true' },
     },
     {
       name: 'Worker',

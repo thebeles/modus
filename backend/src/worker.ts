@@ -13,7 +13,9 @@ const routing = new Routing();
 const hour = 3600000;
 
 function slaDeadline(item: Appeal, kind: string) {
-  if (!activeAppeal(item.status) || item.status === 'WAITING_AUTHOR' || item.slaVersion === null) return null;
+  if (!activeAppeal(item.status)) return null;
+  if (kind.startsWith('RESOLUTION_')) return item.resolutionDueAt;
+  if (item.status === 'WAITING_AUTHOR' || item.slaVersion === null) return null;
   if (kind.startsWith('FIRST_RESPONSE_')) return item.firstHumanResponseAt ? null : item.firstResponseDueAt;
   return item.dueAt;
 }
@@ -34,7 +36,14 @@ async function canDeliver(tx: Tx, job: OutboxJob, user: Principal, now: Date) {
         return item.authorId === user.id && item.status === 'WAITING_AUTHOR' &&
           !!item.waitingSince && job.key === clarificationKey(item.id, item.waitingSince);
       }
-      if (/^(SLA|FIRST_RESPONSE)_(DUE|OVERDUE)$/.test(job.kind)) {
+      if (job.kind === 'SLA_ESCALATED') {
+        if (item.queue?.coordinatorId !== user.id || item.authorId === user.id || item.assigneeId === user.id) return false;
+        return ['SLA', 'FIRST_RESPONSE', 'RESOLUTION'].some(name => {
+          const dueAt = slaDeadline(item, name + '_DUE');
+          return !!dueAt && dueAt < now && job.key === `${item.id}:${name}_ESCALATED:${dueAt.toISOString()}:${user.id}`;
+        });
+      }
+      if (/^(SLA|FIRST_RESPONSE|RESOLUTION)_(DUE|OVERDUE)$/.test(job.kind)) {
         const dueAt = slaDeadline(item, job.kind);
         return item.authorId !== user.id && (item.assigneeId ?? item.queue?.coordinatorId) === user.id &&
           !!dueAt && dueAt.getTime() <= now.getTime() + hour &&
@@ -97,6 +106,7 @@ export async function deadlines(client: PrismaClient, now = new Date()) {
       where: { id: { gt: after }, OR: [
         { status: 'WAITING_AUTHOR', waitingSince: { lte: waitingCutoff } },
         { controlDueAt: { lte: soon } },
+        { status: { in: ['NEW', 'REVIEW', 'IN_PROGRESS', 'WAITING_AUTHOR'] }, resolutionDueAt: { lte: soon } },
       ] },
       orderBy: { id: 'asc' }, take: 100, select: { id: true },
     });
@@ -112,21 +122,24 @@ export async function deadlines(client: PrismaClient, now = new Date()) {
             const inserted = await tx.auditEvent.createMany({ data: { id: key, entity: 'appeal', entityId: item.id,
               action: 'CLARIFICATION_REMINDER', authorVisible: true, origin: 'SYSTEM' }, skipDuplicates: true });
             if (inserted.count) await anonymousStaffMessage(tx, item.id, 'Служба обработки ожидает вашего ответа на запрос уточнения.', 'REMINDER');
-            return;
+          } else {
+            const inserted = await tx.outboxJob.createMany({ data: { key, userId: item.authorId, kind: 'CLARIFICATION_REMINDER', href }, skipDuplicates: true });
+            if (inserted.count) await audit(tx, 'appeal', item.id, 'CLARIFICATION_REMINDER', undefined, true);
           }
-          const inserted = await tx.outboxJob.createMany({ data: { key, userId: item.authorId, kind: 'CLARIFICATION_REMINDER', href }, skipDuplicates: true });
-          if (inserted.count) await audit(tx, 'appeal', item.id, 'CLARIFICATION_REMINDER', undefined, true);
-          return;
         }
         const owner = item.assigneeId ?? item.queue?.coordinatorId;
         if (!owner) return;
         const recipient = await tx.user.findFirst({ where: { id: owner, active: true }, select: principalSelect });
         if (!recipient || !await policy.handles(tx, recipient, id)) return;
-        for (const name of ['SLA', 'FIRST_RESPONSE']) {
+        for (const name of ['SLA', 'FIRST_RESPONSE', 'RESOLUTION']) {
           const dueAt = slaDeadline(item, name + '_DUE');
           if (!dueAt || dueAt > soon) continue;
           const kind = `${name}_${dueAt < now ? 'OVERDUE' : 'DUE'}`;
           await notify(tx, `${item.id}:${kind}:${dueAt.toISOString()}`, [owner], kind, href);
+          const coordinator = item.queue?.coordinatorId;
+          if (dueAt < now && coordinator && coordinator !== owner && coordinator !== item.authorId) {
+            await notify(tx, `${item.id}:${name}_ESCALATED:${dueAt.toISOString()}`, [coordinator], 'SLA_ESCALATED', href);
+          }
         }
       });
     }

@@ -4,6 +4,7 @@ import { hash } from 'bcryptjs';
 import { readFile } from 'node:fs/promises';
 import { assessEffect } from '../src/effect';
 import { permissions } from '../src/contracts';
+import { audit, notify } from '../src/common';
 
 const db = new PrismaClient();
 const demoPassword = 'Modus-Demo-2026!';
@@ -61,6 +62,8 @@ async function seed() {
       user('design', 'Сотрудник проектирования', 'EMPLOYEE', 3), user('projects', 'Координатор проекта', 'EMPLOYEE', 4),
       user('project-lead', 'Руководитель проекта', 'EMPLOYEE', 4), user('office', 'Сотрудник офиса', 'EMPLOYEE', 6),
     ]);
+    const directorRights = ['IMPROVEMENT_APPROVER', 'RESULT_VERIFIER', 'PUBLICATION_APPROVER', 'EXPORT_DATA'];
+    const director = await user('director', 'Данияр Ахметов', 'DIRECTOR', 5, directorRights);
     const ownersByRole = new Map([
       ['Сотрудник закупок', employee], ['Сотрудник бухгалтерии', accounting], ['Менеджер по продажам', sales],
       ['Сотрудник проектирования', design], ['Координатор проекта', projects], ['Руководитель проекта', lead], ['Сотрудник офиса', office],
@@ -82,8 +85,8 @@ async function seed() {
         categoryId: category.id, queueId: categoryQueue.id, assigneeId: handler.id } });
     }
     await tx.category.upsert({ where: { name: 'Конфиденциальное обращение' }, update: {}, create: { name: 'Конфиденциальное обращение', sensitive: true } });
-    for (const [priority, firstResponseHours, nextActionHours] of [['LOW', 16, 40], ['MEDIUM', 8, 24], ['HIGH', 4, 12]] as const) {
-      await tx.slaPolicy.upsert({ where: { priority }, update: {}, create: { priority, firstResponseHours, nextActionHours } });
+    for (const [priority, firstResponseHours, nextActionHours, resolutionHours] of [['LOW', 16, 40, 80], ['MEDIUM', 8, 24, 48], ['HIGH', 4, 12, 24]] as const) {
+      await tx.slaPolicy.upsert({ where: { priority }, update: {}, create: { priority, firstResponseHours, nextActionHours, resolutionHours } });
     }
 
     const appeals: Appeal[] = [];
@@ -275,6 +278,37 @@ async function seed() {
       }
     }
     await tx.sequence.upsert({ where: { name: 'A' }, update: {}, create: { name: 'A', value: 20 } });
+    if (process.env.LEGACY_DEMO_FIXTURES !== 'true') {
+      const retired = [handler.id, sensitive.id];
+      const demoQueues = (await tx.workQueue.findMany({ where: { coordinatorId: { in: retired }, coordinator: { demo: true } }, select: { id: true } }))
+        .map(queue => queue.id);
+      await tx.user.update({ where: { id: manager.id }, data: { permissions: [...staffRights, 'SENSITIVE_CASE_HANDLER'], active: true } });
+      await tx.user.update({ where: { id: director.id }, data: { permissions: directorRights, active: true } });
+      await tx.workQueue.updateMany({ where: { id: { in: demoQueues } }, data: { coordinatorId: manager.id } });
+      await tx.routingRule.updateMany({ where: { queueId: { in: demoQueues }, assigneeId: { in: retired }, OR: [
+        { deputyId: null }, { deputyId: { not: manager.id } },
+      ] }, data: { assigneeId: manager.id } });
+      await tx.routingRule.updateMany({ where: { queueId: { in: demoQueues }, assigneeId: { in: retired }, deputyId: manager.id },
+        data: { assigneeId: manager.id, deputyId: null } });
+      const appealsToTransfer = await tx.appeal.findMany({ where: { isSynthetic: true, assigneeId: { in: retired },
+        queueId: { in: demoQueues }, status: { in: ['NEW', 'REVIEW', 'IN_PROGRESS', 'WAITING_AUTHOR', 'IMPLEMENTED'] },
+        OR: [{ authorId: null }, { authorId: { not: manager.id } }] }, select: { id: true, assigneeId: true, authorId: true } });
+      for (const appeal of appealsToTransfer) {
+        await tx.appeal.update({ where: { id: appeal.id }, data: { assigneeId: manager.id, version: { increment: 1 } } });
+        const event = await audit(tx, 'appeal', appeal.id, 'ASSIGNED', undefined, true, {
+          previousAssigneeId: appeal.assigneeId, assigneeId: manager.id, reason: 'Передано руководителю при обновлении демостенда.',
+        });
+        await notify(tx, event.id, [appeal.authorId, manager.id], 'ASSIGNED', '/appeals/' + appeal.id);
+      }
+      await tx.problem.updateMany({ where: { isSynthetic: true, ownerId: { in: retired }, status: { not: 'CLOSED' } },
+        data: { ownerId: manager.id, version: { increment: 1 } } });
+      await tx.improvement.updateMany({ where: { isSynthetic: true, ownerId: { in: retired }, status: { notIn: ['COMPLETED', 'REJECTED', 'CANCELED'] } },
+        data: { ownerId: manager.id, version: { increment: 1 } } });
+      await tx.actionItem.updateMany({ where: { ownerId: { in: retired }, improvement: { isSynthetic: true,
+        status: { notIn: ['COMPLETED', 'REJECTED', 'CANCELED'] } } }, data: { ownerId: manager.id } });
+      await tx.user.updateMany({ where: { id: { in: [...retired, other.id, accounting.id, sales.id, design.id, projects.id, lead.id, office.id] },
+        demo: true }, data: { active: false } });
+    }
   }, { timeout: 45000 });
   console.info('Seed complete: 20 original synthetic appeals and separate demo scenarios');
 }

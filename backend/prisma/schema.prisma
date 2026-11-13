@@ -7,6 +7,7 @@ datasource db {
 }
 
 enum Role {
+  DIRECTOR
   EMPLOYEE
   HANDLER
   MANAGER
@@ -26,6 +27,7 @@ enum AppealType {
 }
 
 enum AppealStatus {
+  IMPLEMENTED
   NEW
   REVIEW
   WAITING_AUTHOR
@@ -140,6 +142,9 @@ model OrganizationUnit {
 }
 
 model User {
+  appealSubscriptions AppealSubscription[]
+  absentUntil DateTime?
+  deputyRules RoutingRule[] @relation("RoutingDeputy")
   id String @id @default(uuid())
   email String @unique
   name String
@@ -227,6 +232,8 @@ model QueueMember {
 }
 
 model RoutingRule {
+  deputyId String?
+  deputy User? @relation("RoutingDeputy", fields: [deputyId], references: [id], onDelete: Restrict)
   id String @id @default(uuid())
   name String @unique
   categoryId String
@@ -251,6 +258,7 @@ model SlaPolicy {
   priority Priority @unique
   firstResponseHours Int
   nextActionHours Int
+  resolutionHours Int?
   active Boolean @default(true)
   version Int @default(1)
 }
@@ -292,6 +300,9 @@ model Appeal {
   resolutionType Resolution?
   resolutionText String?
   resolutionBy String?
+  resolutionVersion Int @default(0)
+  resolutionConfirmedAt DateTime?
+  resolutionDueAt DateTime?
   resolutionOrigin EvidenceOrigin?
   closedAt DateTime?
   withdrawnAt DateTime?
@@ -312,6 +323,9 @@ model Appeal {
   isSynthetic Boolean @default(false)
   sourceId String? @unique
   sourceSnapshot Json?
+  sharedTitle String?
+  subscribers AppealSubscription[]
+  resolutionReviews AppealResolutionReview[]
   comments Comment[]
   attachments Attachment[]
   reviews ReviewRequest[]
@@ -321,6 +335,7 @@ model Appeal {
   linksTo AppealLink[] @relation("LinkTo")
   @@index([createdAt])
   @@index([status, dueAt])
+  @@index([status, resolutionDueAt])
   @@index([controlDueAt])
   @@index([authorId])
   @@index([assigneeId])
@@ -331,12 +346,35 @@ model Appeal {
   @@index([priority])
   @@index([processId])
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_title_search_idx")
+  @@index([sharedTitle(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_shared_title_search_idx")
   @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_description_search_idx")
   @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "Appeal_number_search_idx")
   workPeriods AppealWorkPeriod[]
   nextActions AppealNextAction[]
   anonymousAccess AnonymousAccess?
   customerReviews CustomerReviewAppeal[]
+}
+
+model AppealSubscription {
+  appealId String
+  userId String
+  createdAt DateTime @default(now())
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([appealId, userId])
+  @@index([userId])
+}
+
+model AppealResolutionReview {
+  appealId String
+  version Int
+  authorId String
+  confirmed Boolean
+  reason String?
+  snapshot String
+  createdAt DateTime @default(now())
+  appeal Appeal @relation(fields: [appealId], references: [id], onDelete: Restrict)
+  @@id([appealId, version])
 }
 
 model AppealNextAction {

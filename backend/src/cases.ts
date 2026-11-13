@@ -63,30 +63,30 @@ export class Cases {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Policy) private readonly policy: Policy) {}
 
   private requireStaff(user: Principal) {
-    if (!this.policy.isStaff(user)) throw forbidden();
+    if (!this.policy.canReadOperations(user)) throw forbidden();
   }
 
   async problem(tx: Tx, user: Principal, item: string) {
-    if (!this.policy.isStaff(user)) throw missing();
+    if (!this.policy.canReadOperations(user)) throw missing();
     const found = await tx.problem.findFirst({ where: { AND: [{ id: item }, this.policy.problems(user)] } });
     if (!found) throw missing();
     return found;
   }
 
   async improvement(tx: Tx, user: Principal, item: string) {
-    if (!this.policy.isStaff(user)) throw missing();
+    if (!this.policy.canReadOperations(user)) throw missing();
     const found = await tx.improvement.findFirst({ where: { AND: [{ id: item }, this.policy.improvements(user)] } });
     if (!found) throw missing();
     return found;
   }
 
   private manages(user: Principal, record: Problem | Improvement) {
-    return record.ownerId === user.id || (record.visibility === 'NORMAL_INTERNAL' && user.role === 'MANAGER' && !!user.departmentId && user.departmentId === record.departmentId);
+    return this.policy.isStaff(user) && (record.ownerId === user.id ||
+      (record.visibility === 'NORMAL_INTERNAL' && user.role === 'MANAGER' && !!user.departmentId && user.departmentId === record.departmentId));
   }
 
   private approvalScope(user: Principal, record: Improvement, permission: string) {
-    return this.policy.has(user, permission) && user.id !== record.ownerId && record.visibility === 'NORMAL_INTERNAL' &&
-      !!user.departmentId && user.departmentId === record.departmentId;
+    return this.policy.canReview(user, permission, record.departmentId) && user.id !== record.ownerId && record.visibility === 'NORMAL_INTERNAL';
   }
 
   private steps(user: Principal, record: Improvement) {
@@ -115,8 +115,9 @@ export class Cases {
       return { items: items.map(item => ({ ...item, owner: { id: item.owner.id, name: item.owner.name } })), total, page, limit };
     }
     const stages = { work: workStatuses, review: reviewStatuses, results: ['COMPLETED'] as ImprovementStatus[] };
-    const availableForVerification: Prisma.ImprovementWhereInput = this.policy.has(user, 'RESULT_VERIFIER') && user.departmentId
-      ? { status: 'VERIFYING', verification: null, visibility: 'NORMAL_INTERNAL', departmentId: user.departmentId, ownerId: { not: user.id } }
+    const availableForVerification: Prisma.ImprovementWhereInput = this.policy.canReview(user, 'RESULT_VERIFIER', user.departmentId)
+      ? { status: 'VERIFYING', verification: null, visibility: 'NORMAL_INTERNAL',
+        departmentId: user.role === 'DIRECTOR' ? undefined : user.departmentId, ownerId: { not: user.id } }
       : { id: { in: [] } };
     const where: Prisma.ImprovementWhereInput = { AND: [this.policy.improvements(user), search,
       { status: status ? parse(z.enum(improvementStatuses), status) : undefined, processId },
@@ -278,8 +279,9 @@ export class Cases {
         tx.verificationAmendment.findMany({ where: { improvementId: item }, orderBy: { requestedAt: 'desc' } }),
         tx.verificationRevision.findMany({ where: { improvementId: item }, orderBy: { revision: 'desc' } }),
         manager && record.departmentId ? tx.user.findMany({ where: {
-          active: true, departmentId: record.departmentId, id: { notIn: [record.ownerId, user.id] },
-          role: { in: ['HANDLER', 'MANAGER'] }, permissions: { has: 'RESULT_VERIFIER' },
+          active: true, id: { notIn: [record.ownerId, user.id] },
+          OR: [{ role: 'DIRECTOR', demo: record.isSynthetic }, { departmentId: record.departmentId, role: { in: ['HANDLER', 'MANAGER'] } }],
+          permissions: { has: 'RESULT_VERIFIER' },
         }, select: { id: true, name: true }, orderBy: { name: 'asc' } }) : [],
       ]) : [[], [], []];
       const pendingAmendment = amendments.find(row => row.resolvedAt === null);
@@ -425,8 +427,9 @@ export class Cases {
       await this.bump(tx, record, updates);
       const event = await audit(tx, 'improvement', item, target, user.id, false, { previous: record.status, reason: input.text ?? '' });
       const permission = target === 'UNDER_REVIEW' ? 'IMPROVEMENT_APPROVER' : target === 'VERIFYING' ? 'RESULT_VERIFIER' : null;
-      const reviewers = permission && record.departmentId ? await tx.user.findMany({ where: {
-        departmentId: record.departmentId, active: true, id: { not: record.ownerId }, role: { in: ['HANDLER', 'MANAGER'] }, permissions: { has: permission },
+      const reviewers = permission ? await tx.user.findMany({ where: {
+        active: true, id: { not: record.ownerId }, permissions: { has: permission },
+        OR: [{ role: 'DIRECTOR', demo: record.isSynthetic }, { departmentId: record.departmentId, role: { in: ['HANDLER', 'MANAGER'] } }],
       }, select: { id: true } }) : [];
       await notify(tx, event.id, [record.ownerId, ...reviewers.map(person => person.id)], target, `/improvements/${item}`);
     });

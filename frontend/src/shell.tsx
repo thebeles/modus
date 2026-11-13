@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowRight, Bell, BookOpen, ChevronRight, CircleHelp,
-  House, Inbox, Layers3, LogOut, Menu, Plus, Settings, X } from './icons';
+  House, Inbox, Layers3, LogOut, Menu, Settings, X } from './icons';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { label } from './contracts';
@@ -11,7 +11,6 @@ import { AppealChannels, AppealDetail, AppealList, Home, NewAppeal } from './app
 import { AnonymousPage } from './anonymous';
 const ProposalsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ProposalsPage })));
 const ReviewsPage = lazy(() => import('./feedback-channels').then(module => ({ default: module.ReviewsPage })));
-const OneCPage = lazy(() => import('./one-c').then(module => ({ default: module.OneCPage })));
 const ImprovementsWorkspace = lazy(() => import('./cases').then(module => ({ default: module.ImprovementsWorkspace })));
 const CreateCase = lazy(() => import('./cases').then(module => ({ default: module.CreateCase })));
 const ImprovementDetail = lazy(() => import('./cases').then(module => ({ default: module.ImprovementDetail })));
@@ -33,10 +32,11 @@ const overviewNav = { to: '/overview', text: 'Обзор', icon: Activity };
 const navigation = {
   EMPLOYEE: employeeNav,
   HANDLER: [queueNav, improvementNav],
-  MANAGER: [overviewNav, { ...queueNav, text: 'Обращения' }, improvementNav],
+  MANAGER: [overviewNav, queueNav, improvementNav],
+  DIRECTOR: [{ to: '/overview', text: 'Аналитика', icon: Activity }],
   ADMIN: [{ to: '/admin', text: 'Администрирование', icon: Settings }],
 };
-const landing = { EMPLOYEE: '/', HANDLER: '/work-queue', MANAGER: '/overview', ADMIN: '/admin/users' };
+const landing = { EMPLOYEE: '/', HANDLER: '/work-queue', MANAGER: '/overview', DIRECTOR: '/overview', ADMIN: '/admin/users' };
 
 function Brand() {
   return <div className="brand"><strong>До результата</strong></div>;
@@ -51,32 +51,29 @@ function Login() {
   const [password, setPassword] = useState('');
   const login = useMutation({ mutationFn: (data: { email: string; password: string } | { profile: string }) => api<Session>('profile' in data ? '/auth/demo' : '/auth/login', { method: 'POST', body: data }),
     onSuccess: session => { client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); client.setQueryData(['session'], session); navigate(['/', '/login'].includes(location.pathname) ? landing[session.user.role] : location, { replace: true }); } });
-  const demoAccounts = [['employee', 'Сотрудник'], ['manager', 'Руководитель'], ['handler', 'Обработчик'], ['admin', 'Администратор'],
-    ['other-employee', 'Другой сотрудник'], ['sensitive-handler', 'Спецочередь']];
+  const demoAccounts = [
+    ['employee', 'Сотрудник', 'Пишет обращения'],
+    ['manager', 'Руководитель', 'Разбирает обращения'],
+    ['director', 'Директор', 'Видит общую картину'],
+    ['admin', 'Администратор', 'Настраивает систему'],
+  ];
   return <main className="login-main">
     <div className="login-card">
       <h1>До результата</h1>
-      <p>Ваши идеи. Реальные изменения. Проверенный результат</p>
-      <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
+      {demo.isPending && <Loading />}
+      <ErrorBox error={demo.error || login.error} retry={demo.error ? () => demo.refetch() : undefined} />
+      {demo.data?.demoMode && <div className="demo-options" aria-label="Демонстрационные роли">
+        {demoAccounts.map(([profile, name, description]) => <button type="button" key={profile} disabled={login.isPending}
+          aria-label={name} onClick={() => login.mutate({ profile })}>
+          <span><strong>{name}</strong><small>{description}</small></span><ChevronRight size={16} aria-hidden="true" />
+        </button>)}
+      </div>}
+      {demo.data && !demo.data.demoMode && <form className="form-stack" onSubmit={event => { event.preventDefault(); login.mutate({ email, password }); }}>
         <Field label="Рабочая почта"><input type="email" required autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} /></Field>
         <Field label="Пароль"><input type="password" required autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></Field>
-        <ErrorBox error={login.error} />
-        <button className="button primary login-submit" disabled={login.isPending}>{login.isPending ? 'Входим…' : 'Войти'} <ArrowRight size={20} aria-hidden="true" /></button>
-      </form>
+        <button className="button primary login-submit" disabled={login.isPending}>Войти <ArrowRight size={20} aria-hidden="true" /></button>
+      </form>}
       <a className="text-button anonymous-login" href="/anonymous">Сообщить анонимно</a>
-      {demo.data?.demoMode && <details className="demo-box">
-        <summary>Попробовать демоверсию</summary>
-        <div className="demo-options">
-          {demoAccounts.slice(0, 3).map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => login.mutate({ profile: account })}>
-            <span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
-        </div>
-        <details className="demo-other"><summary>Другие сценарии</summary>
-          <div className="demo-options">
-            {demoAccounts.slice(3).map(([account, name]) => <button type="button" key={account} disabled={login.isPending} onClick={() => login.mutate({ profile: account })}>
-              <span>{name}</span><ChevronRight size={16} aria-hidden="true" /></button>)}
-          </div>
-        </details>
-      </details>}
     </div>
   </main>;
 }
@@ -91,19 +88,17 @@ function Layout() {
     onSuccess: () => { client.setQueryData(['session'], null); client.removeQueries({ predicate: query => query.queryKey[0] !== 'session' }); navigate('/login', { replace: true }); } });
   const location = useLocation();
   const staff = user.role === 'HANDLER' || user.role === 'MANAGER';
-  const oneC = useQuery({ queryKey: ['one-c-capabilities'], queryFn: () => api<{ mode: string | null }>('/one-c/capabilities'),
-    enabled: staff && (user.demo || user.permissions.includes('ONEC_OPERATOR')) });
-  const isHome = user.role === 'EMPLOYEE' && location.pathname === '/';
   const profileLinks = staff || user.role === 'ADMIN';
   function sideContent() {
     return <><div className="sidebar-brand"><Link to={landing[user.role]} onClick={() => setMobile(false)}><Brand /></Link></div>
-      {user.role !== 'ADMIN' && !isHome && <div className="sidebar-create"><Link className="button primary" to="/appeals/new" onClick={() => setMobile(false)}><Plus size={19} />Создать обращение</Link></div>}
       <nav className="nav-list" aria-label="Основная навигация">
         {navigation[user.role].map(({ to, text, icon: Icon }) => {
           const legacyActive = (to === '/improvements' && /^\/problems(?:\/|$)/.test(location.pathname)) ||
             (to === '/work-queue' && location.pathname === '/customer-reviews') ||
             (to === '/my/appeals' && location.pathname === '/proposals');
-          return <NavLink key={to} end={to === '/'} to={to} className={legacyActive ? 'active' : undefined}
+          const previous = location.state?.returnTo;
+          const target = to === '/work-queue' && typeof previous === 'string' && previous.startsWith('/work-queue?') ? previous : to;
+          return <NavLink key={to} end={to === '/'} to={target} className={legacyActive ? 'active' : undefined}
             aria-current={legacyActive ? 'location' : undefined} onClick={() => setMobile(false)}><Icon size={18} aria-hidden="true" />{text}</NavLink>;
         })}
       </nav>
@@ -124,10 +119,10 @@ function Layout() {
             <summary>{user.name}</summary>
             <div className="surface account-panel">
               <div className="user-card"><strong>{user.name}</strong><small>{user.email}</small><small>{label(user.role)}</small></div>
+              {staff && <Link to="/appeals/new">Создать обращение</Link>}
               {profileLinks && <Link to="/my/appeals">Мои обращения</Link>}
               {profileLinks && <Link to="/changes">Что изменилось</Link>}
               {staff && user.role !== 'MANAGER' && <Link to="/overview">Обзор</Link>}
-              {staff && oneC.data?.mode && <Link to="/one-c">Интеграция 1С</Link>}
               <button className="button secondary" type="button" disabled={logout.isPending} onClick={() => logout.mutate()}><LogOut size={17} aria-hidden="true" />Выйти из аккаунта</button>
               <ErrorBox error={logout.error} />
             </div>
@@ -168,8 +163,8 @@ export function Notifications() {
 }
 
 function Help() {
-  return <><PageHeading title="Помощь" /><div className="surface detail-section"><h2>Как отправить обращение</h2><p>Выберите тип, опишите ситуацию и отправьте. Категорию и решение можно добавить, если они уже известны.</p>
-    <h2>Кто увидит обращение</h2><p>Автор и сотрудники с разрешением на обработку. Для чувствительных тем используйте ограниченный доступ или специальную очередь. Для подачи без учётной записи откройте <a href="/anonymous">анонимный канал</a>.</p>
+  return <><PageHeading title="Помощь" /><div className="surface detail-section"><h2>Как отправить обращение</h2><p>Опишите ситуацию и отправьте. При необходимости приложите файл или предложите решение.</p>
+    <h2>Кто увидит обращение</h2><p>Автор и сотрудники с разрешением на обработку. Для подачи без учётной записи откройте <a href="/anonymous">анонимный канал</a>.</p>
     <h2>Как узнать результат</h2><p>Откройте карточку обращения или перейдите по ссылке из уведомления. Итог и обоснование появятся после рассмотрения.</p></div></>;
 }
 
@@ -206,6 +201,7 @@ export function App() {
   if (me.error) return <main className="full-center"><ErrorBox error={me.error} retry={() => me.refetch()} /></main>;
   if (!me.data) return <Login />;
   const staff: Session['user']['role'][] = ['HANDLER', 'MANAGER'];
+  const readers: Session['user']['role'][] = [...staff, 'DIRECTOR'];
   return <SessionContext.Provider value={me.data}><Routes>
     <Route element={<Layout />}>
       <Route index element={me.data.user.role === 'EMPLOYEE' ? <Home /> : <Navigate to={landing[me.data.user.role]} replace />} />
@@ -213,19 +209,18 @@ export function App() {
       <Route path="appeals/new" element={<Guard roles={['EMPLOYEE', ...staff]}><NewAppeal /></Guard>} />
       <Route path="my/appeals" element={<AppealList />} />
       <Route path="appeals/:id" element={<AppealDetail />} />
-      <Route path="work-queue" element={<Guard roles={staff}><AppealList staff /></Guard>} />
-      <Route path="work-queue/appeals/:id" element={<Guard roles={staff}><AppealDetail /></Guard>} />
-      <Route path="problems" element={<Guard roles={staff}><LegacyList to="/improvements" view="problems" /></Guard>} />
+      <Route path="work-queue" element={<Guard roles={readers}><AppealList staff /></Guard>} />
+      <Route path="work-queue/appeals/:id" element={<Guard roles={readers}><AppealDetail /></Guard>} />
+      <Route path="problems" element={<Guard roles={readers}><LegacyList to="/improvements" view="problems" /></Guard>} />
       <Route path="problems/new" element={<Guard roles={staff}><CreateCase kind="problem" /></Guard>} />
-      <Route path="problems/:id" element={<Guard roles={staff}><ProblemDetail /></Guard>} />
-      <Route path="improvements" element={<Guard roles={staff}><ImprovementsWorkspace /></Guard>} />
+      <Route path="problems/:id" element={<Guard roles={readers}><ProblemDetail /></Guard>} />
+      <Route path="improvements" element={<Guard roles={readers}><ImprovementsWorkspace /></Guard>} />
       <Route path="improvements/new" element={<Guard roles={staff}><CreateCase kind="improvement" /></Guard>} />
-      <Route path="improvements/:id" element={<Guard roles={staff}><ImprovementDetail /></Guard>} />
+      <Route path="improvements/:id" element={<Guard roles={readers}><ImprovementDetail /></Guard>} />
       <Route path="proposals" element={<Guard roles={['EMPLOYEE', ...staff]}><><AppealChannels /><ProposalsPage /></></Guard>} />
       <Route path="customer-reviews" element={<Guard roles={staff}><><AppealChannels staff /><ReviewsPage /></></Guard>} />
-      <Route path="one-c" element={<Guard roles={staff}><OneCPage /></Guard>} />
-      <Route path="overview" element={<Guard roles={staff}><RadarPage /></Guard>} />
-      <Route path="radar" element={<Guard roles={staff}><LegacyList to="/overview" /></Guard>} />
+      <Route path="overview" element={<Guard roles={readers}><RadarPage /></Guard>} />
+      <Route path="radar" element={<Guard roles={readers}><LegacyList to="/overview" /></Guard>} />
       <Route path="changes" element={<Changes />} /><Route path="changes/:id" element={<ChangeDetail />} />
       <Route path="feedback/:id" element={<FeedbackPage />} /><Route path="notifications" element={<Notifications />} />
       <Route path="admin" element={<Guard roles={['ADMIN']}><LegacyList to="/admin/users" /></Guard>} />

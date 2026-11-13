@@ -1,14 +1,14 @@
 export const appealTypes = ['PROBLEM', 'PROPOSAL', 'POSITIVE_FEEDBACK'] as const;
 export const priorities = ['LOW', 'MEDIUM', 'HIGH'] as const;
 export const visibilities = ['NORMAL_INTERNAL', 'RESTRICTED', 'SPECIAL'] as const;
-export const appealStatuses = ['NEW', 'REVIEW', 'WAITING_AUTHOR', 'IN_PROGRESS', 'CLOSED', 'WITHDRAWN'] as const;
+export const appealStatuses = ['NEW', 'REVIEW', 'WAITING_AUTHOR', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'WITHDRAWN'] as const;
 export const resolutions = ['RESOLVED', 'ACCEPTED_FOR_IMPROVEMENT', 'EXPLANATION_PROVIDED', 'REJECTED', 'ALREADY_ADDRESSED', 'LINKED_TO_EXISTING_CASE', 'TRANSFERRED', 'POSITIVE_FEEDBACK_RECORDED', 'INSUFFICIENT_INFO'] as const;
 export const problemStatuses = ['CANDIDATE', 'INVESTIGATING', 'CONFIRMED', 'DISPROVED', 'CLOSED'] as const;
 export const improvementStatuses = ['DRAFT', 'UNDER_REVIEW', 'APPROVED', 'DEFERRED', 'REJECTED', 'IN_PROGRESS', 'IMPLEMENTED', 'VERIFYING', 'COMPLETED', 'CANCELED'] as const;
 export const actionStatuses = ['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELED'] as const;
 export const outcomes = ['VERIFIED', 'PARTIAL', 'NOT_ACHIEVED', 'INCONCLUSIVE'] as const;
 export const relations = ['SIMILAR_TOPIC', 'POSSIBLE_DUPLICATE', 'CONFIRMED_SAME_ISSUE', 'RELATED_CONTEXT'] as const;
-export const roles = ['EMPLOYEE', 'HANDLER', 'MANAGER', 'ADMIN'] as const;
+export const roles = ['EMPLOYEE', 'HANDLER', 'MANAGER', 'DIRECTOR', 'ADMIN'] as const;
 export const permissions = ['ROUTING_COORDINATOR', 'PROBLEM_OWNER', 'IMPROVEMENT_OWNER', 'IMPROVEMENT_APPROVER', 'RESULT_VERIFIER', 'PUBLICATION_APPROVER', 'SENSITIVE_CASE_HANDLER', 'EXPORT_DATA', 'ONEC_OPERATOR'] as const;
 export const feedbackChoices = ['YES', 'PARTLY', 'NO', 'CANNOT_ASSESS'] as const;
 
@@ -22,7 +22,7 @@ export const labels: Record<string, string> = {
   IMPLEMENTED: 'Внедрено', VERIFYING: 'Проверка эффекта', COMPLETED: 'Завершено', CANCELED: 'Отменено',
   TODO: 'К выполнению', BLOCKED: 'Заблокировано', DONE: 'Выполнено', VERIFIED: 'Подтверждён', PARTIAL: 'Частичный эффект', NOT_ACHIEVED: 'Цель не достигнута', INCONCLUSIVE: 'Недостаточно данных',
   EXPECTED: 'Ожидаемый эффект', PRELIMINARY: 'Предварительный результат',
-  EMPLOYEE: 'Сотрудник', HANDLER: 'Обработчик', MANAGER: 'Руководитель', ADMIN: 'Администратор',
+  EMPLOYEE: 'Сотрудник', HANDLER: 'Обработчик', MANAGER: 'Руководитель', DIRECTOR: 'Директор', ADMIN: 'Администратор',
   RESOLVED: 'Решено', ACCEPTED_FOR_IMPROVEMENT: 'Принято к улучшению', EXPLANATION_PROVIDED: 'Дано пояснение',
   ALREADY_ADDRESSED: 'Уже решено', LINKED_TO_EXISTING_CASE: 'Связано с существующим обращением', TRANSFERRED: 'Передано',
   POSITIVE_FEEDBACK_RECORDED: 'Отзыв передан', INSUFFICIENT_INFO: 'Недостаточно информации',
@@ -37,6 +37,10 @@ export const labels: Record<string, string> = {
   ROUTING_FALLBACK: 'Направлено в резервную очередь', CLARIFICATION: 'Запрошено уточнение',
   AUTHOR_RESPONSE: 'Автор ответил', COMMENT: 'Новое сообщение', INTERNAL_NOTE: 'Служебная заметка',
   RESOLVED_EVENT: 'Зафиксировано решение', REVIEW_REQUEST: 'Запрошен пересмотр', REVIEW_DECISION: 'Решение о пересмотре',
+  RESULT_SUBMITTED: 'Результат ожидает проверки автора', RESULT_CONFIRMED: 'Автор подтвердил результат', RESULT_REWORK: 'Автор вернул на доработку',
+  RESOLUTION_DEADLINE_CHANGED: 'Изменён срок решения', RESOLUTION_DUE: 'Приближается срок решения',
+  RESOLUTION_OVERDUE: 'Срок решения истёк', SLA_ESCALATED: 'Просрочка передана координатору',
+  SHARED_TOPIC_PUBLISHED: 'Опубликована общая тема', SHARED_TOPIC_RETRACTED: 'Общая тема снята', SHARED_TOPIC_JOINED: 'Сотрудник присоединился к общей теме',
   SLA_DUE: 'Приближается срок действия', SLA_OVERDUE: 'Срок действия истёк',
   FIRST_RESPONSE_DUE: 'Приближается срок ответа', FIRST_RESPONSE_OVERDUE: 'Срок ответа истёк',
   FINDING: 'Добавлено наблюдение', ACTION: 'Изменена задача', MEASUREMENT: 'Записано измерение',

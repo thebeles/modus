@@ -61,7 +61,7 @@ export class Publications {
       if (!row) throw missing();
       const record = await this.cases.improvement(tx, user, row.improvementId);
       const departmentManager = user.role === 'MANAGER' && !!user.departmentId && user.departmentId === record.departmentId;
-      const reviewer = !!user.departmentId && user.departmentId === record.departmentId && this.policy.has(user, 'PUBLICATION_APPROVER');
+      const reviewer = this.policy.canReview(user, 'PUBLICATION_APPROVER', record.departmentId);
       if (record.visibility !== 'NORMAL_INTERNAL' || !(record.ownerId === user.id || departmentManager || reviewer)) throw missing();
       const [items, total] = await Promise.all([
         tx.publicationRevision.findMany({ where: { publicationId: item }, orderBy: { version: 'desc' }, skip: (page - 1) * limit, take: limit }),
@@ -104,13 +104,13 @@ export class Publications {
 
   async transition(user: Principal, item: string, operation: 'approve' | 'publish' | 'unpublish' | 'request-changes', raw: unknown) {
     const { expectedVersion: version, reason } = parse(editorialTransitionInput, raw);
-    if (!this.policy.has(user, 'PUBLICATION_APPROVER')) throw forbidden();
     const transitions = { approve: ['DRAFT', 'APPROVED'], publish: ['APPROVED', 'PUBLISHED'], unpublish: ['PUBLISHED', 'RETRACTED'] } as const;
     return atomic(this.db, async tx => {
       const row = await tx.publication.findUnique({ where: { id: item } });
       if (!row) throw missing();
       const record = await this.cases.improvement(tx, user, row.improvementId);
-      if (!user.departmentId || user.departmentId !== record.departmentId || user.id === row.authorId) throw forbidden();
+      if (record.visibility !== 'NORMAL_INTERNAL' ||
+        !this.policy.canReview(user, 'PUBLICATION_APPROVER', record.departmentId) || user.id === row.authorId) throw forbidden();
       if (operation === 'request-changes') {
         if (!reason) throw invalid('Опишите необходимые правки.');
         if (!['DRAFT', 'APPROVED'].includes(row.state)) throw invalidState();

@@ -6,16 +6,17 @@ import { Request } from 'express';
 import { z } from 'zod';
 import { scanUpload } from './attachment-scan';
 import { AuthRequest, demoMode, Public } from './auth';
-import { allocate, AppError, atomic, audit, bodyText, checked, Database, digest, id, invalid, invalidState, missing, notify, parse, throttle, title, Tx } from './common';
+import { AppError, atomic, bodyText, checked, Database, digest, id, invalid, invalidState, missing, notify, parse, throttle, title, Tx } from './common';
 import { JsonBody, QueryFields } from './openapi';
 import { Policy } from './policy';
-import { notifyRoutingPending, Routing } from './routing';
+import { classifyAppeal, Intake } from './intake';
 import { activeAppeal, businessDeadline } from './workflow';
 
 const attachmentMaxBytes = 64 * 1024;
 const tokenFormat = /^[A-Za-z0-9_-]{43}$/;
 const message = z.strictObject({ text: bodyText, attachment: z.string().max(attachmentMaxBytes).optional() });
-const submission = message.extend({ title, type: z.enum(['PROBLEM', 'PROPOSAL', 'POSITIVE_FEEDBACK']) });
+const submission = message.extend({ title: title.optional(), type: z.enum(['PROBLEM', 'PROPOSAL', 'POSITIVE_FEEDBACK']).optional(),
+  proposedSolution: bodyText.optional() });
 const cursorInput = z.strictObject({ cursor: id.optional() });
 const tokenHeader = ApiHeader({ name: 'X-Appeal-Token', required: true });
 const threadSelect = { id: true, side: true, content: true, createdAt: true } as const;
@@ -28,7 +29,7 @@ function key() {
   return Buffer.from(secret, 'hex');
 }
 
-const storedMessage = message.extend({ kind: z.enum(['RESOLUTION', 'REMINDER']).optional() });
+const storedMessage = message.extend({ kind: z.enum(['RESOLUTION', 'REMINDER']).optional(), proposedSolution: bodyText.optional() });
 
 function seal(appealId: string, side: string, data: z.output<typeof storedMessage>) {
   const nonce = randomBytes(12);
@@ -66,7 +67,7 @@ async function validateAttachment(text?: string) {
 @Injectable()
 export class AnonymousAppeals {
   constructor(@Inject(Database) private readonly db: Database, @Inject(Policy) private readonly policy: Policy,
-    @Inject(Routing) private readonly routing: Routing) {}
+    @Inject(Intake) private readonly intake: Intake) {}
 
   private rate(ip: string, action: string, max: number) {
     const pseudonym = createHmac('sha256', key()).update(action + ':' + ip).digest('hex');
@@ -75,30 +76,18 @@ export class AnonymousAppeals {
 
   async create(ip: string, raw: unknown) {
     await this.rate(ip, 'create', 10);
-    const { title: subject, type, text, attachment } = parse(submission, raw);
+    const { title: subject, type, text, attachment, proposedSolution } = parse(submission, raw);
     await validateAttachment(attachment);
     const token = randomBytes(32).toString('base64url');
     return atomic(this.db, async tx => {
       const isSynthetic = demoMode();
-      const route = await this.routing.find(tx, { visibility: 'SPECIAL', demo: isSynthetic });
-      const sla = await tx.slaPolicy.findFirst({ where: { priority: 'MEDIUM', active: true } });
-      const now = new Date();
-      const appeal = await tx.appeal.create({ data: {
-        number: await allocate(tx, 'A'), title: subject, type, visibility: 'SPECIAL', isSynthetic,
+      const appeal = await this.intake.register(tx, {
+        title: subject ?? 'Анонимное обращение', type: type ?? classifyAppeal(text, []).type, visibility: 'SPECIAL', isSynthetic,
         description: 'Текст доступен в защищённой переписке.', descriptionOriginal: 'Текст доступен в защищённой переписке.',
-        queueId: route.queueId, assigneeId: route.assigneeId,
-        ...(route.queueId ? {} : { routingReason: route.reason, routingRetryAt: now }),
-        dueAt: sla ? businessDeadline(now, sla.nextActionHours) : null,
-        firstResponseDueAt: sla ? businessDeadline(now, sla.firstResponseHours) : null, slaVersion: sla?.version,
         anonymousAccess: { create: { tokenHash: digest(token) } },
-      } });
-      await tx.anonymousMessage.create({ data: { appealId: appeal.id, side: 'AUTHOR', content: seal(appeal.id, 'AUTHOR', { text, attachment }) } });
-      const event = await audit(tx, 'appeal', appeal.id, 'CREATED', undefined, true);
-      if (!route.queueId) {
-        await audit(tx, 'appeal', appeal.id, 'ROUTING_PENDING', undefined, true, { reason: route.reason });
-        await notifyRoutingPending(tx, appeal);
-      }
-      await notify(tx, event.id, [route.assigneeId ?? route.coordinatorId], 'CREATED', '/appeals/' + appeal.id);
+      });
+      await tx.anonymousMessage.create({ data: { appealId: appeal.id, side: 'AUTHOR',
+        content: seal(appeal.id, 'AUTHOR', { text, attachment, proposedSolution }) } });
       return { number: appeal.number, token };
     });
   }

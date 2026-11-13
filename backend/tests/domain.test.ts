@@ -139,3 +139,18 @@ test('attachment quarantine accepts a clean framed response and rejects an infec
     else process.env.NODE_ENV = previousNodeEnv;
   }
 });
+import { classifyAppeal } from '../src/intake';
+import { lexicalScore } from '../src/discovery';
+
+test('local intake rules classify clear signals and leave ambiguous routing to a coordinator', () => {
+  const categories = [{ id: 'it', name: 'Интеграции и IT', sensitive: false },
+    { id: 'training', name: 'Обучение', sensitive: false }, { id: 'private', name: 'Тайна', sensitive: true }];
+  const suggestion = classifyAppeal('Работа остановлена: сервер недоступен.', categories);
+  assert.equal(suggestion.categoryId, 'it');
+  assert.equal(suggestion.priority, 'HIGH');
+  assert.equal(classifyAppeal('Предлагаю обучение работе с сервером.', categories).categoryId, null);
+  assert.equal(classifyAppeal('Спасибо за помощь, это тайна.', categories).type, 'POSITIVE_FEEDBACK');
+  assert.equal(classifyAppeal('Спасибо за помощь, это тайна.', categories).categoryId, null);
+  assert.equal(lexicalScore(['печать', 'этикет'], 'Печать этикеток'), 1);
+  assert.equal(lexicalScore(['печать', 'этикет'], 'Печать договоров'), 0);
+});

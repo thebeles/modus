@@ -19,7 +19,10 @@ const writeMethods = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 const sessionCookie = { httpOnly: true, sameSite: 'strict' as const, path: '/' };
 const token = () => randomBytes(32).toString('base64url');
 
-const demoInput = z.strictObject({ profile: z.enum(['employee', 'handler', 'manager', 'admin', 'other-employee', 'sensitive-handler']) });
+const publicDemoProfiles = ['employee', 'manager', 'director', 'admin'] as const;
+const demoInput = z.strictObject({ profile: z.enum([...publicDemoProfiles, 'handler', 'other-employee', 'sensitive-handler']) });
+const allowedDemoAccount = (email: string) => process.env.LEGACY_DEMO_FIXTURES === 'true' ||
+  publicDemoProfiles.some(profile => email === profile + '@demo.local');
 
 @Injectable()
 export class SessionGuard implements CanActivate {
@@ -36,7 +39,8 @@ export class SessionGuard implements CanActivate {
       where: { tokenHash: digest(cookie) },
       include: { user: { select: { ...principalSelect, active: true } } },
     });
-    if (!session || session.expiresAt <= new Date() || !session.user.active || (session.user.demo && !demoMode())) throw unauthenticated();
+    if (!session || session.expiresAt <= new Date() || !session.user.active ||
+      (session.user.demo && (!demoMode() || !allowedDemoAccount(session.user.email)))) throw unauthenticated();
     const csrf = req.header('x-csrf-token');
     if (changes && (!csrf || csrf.length !== 43 || digest(csrf) !== session.csrfHash)) throw forbidden();
     const { active: _active, ...user } = session.user;
@@ -68,6 +72,7 @@ export class AuthService {
   async demo(input: unknown, ip: string, res: Response) {
     if (!demoMode()) throw forbidden();
     const { profile } = parse(demoInput, input);
+    if (!allowedDemoAccount(profile + '@demo.local')) throw forbidden();
     await throttle(this.db, `demo-login:${ip}`, 120, 300);
     const user = await this.db.user.findFirst({ where: { email: `${profile}@demo.local`, demo: true, active: true }, select: principalSelect });
     if (!user) throw new AppError('INVALID_CREDENTIALS', 'Демонстрационная учётная запись недоступна.', 401);
@@ -78,6 +83,7 @@ export class AuthService {
   }
 
   async login(input: unknown, ip: string, res: Response) {
+    if (demoMode() && process.env.LEGACY_DEMO_FIXTURES !== 'true') throw forbidden();
     const { email, password } = parse(loginInput, input);
     await throttle(this.db, `login:${ip}`, 20, 300);
     const found = await this.db.user.findUnique({ where: { email: email.toLowerCase() }, select: { ...principalSelect, active: true, passwordHash: true } });

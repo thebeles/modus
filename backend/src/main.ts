@@ -27,6 +27,8 @@ import { Proposals, ProposalsController } from './proposals';
 import { Reviews, ReviewsController } from './customer-reviews';
 import { OneC, OneCController } from './one-c';
 import { Routing } from './routing';
+import { Intake } from './intake';
+import { Discovery, DiscoveryController } from './discovery';
 
 @Controller('health')
 class HealthController {
@@ -80,9 +82,9 @@ class ResponseEnvelope implements NestInterceptor {
 }
 
 @Module({
-  controllers: [HealthController, AuthController, AppealsController, CasesController, RadarController,
+  controllers: [HealthController, AuthController, AppealsController, DiscoveryController, CasesController, RadarController,
     PublicationsController, AdminController, NotificationsController, FileController, AiController, AnonymousAppealsController, ProposalsController, ReviewsController, OneCController],
-  providers: [Database, Policy, Routing, AuthService, Appeals, Cases, Radar, Publications, Admin, Files, LocalStorage, Ai, Groq, AnonymousAppeals, Proposals, Reviews, OneC,
+  providers: [Database, Policy, Routing, Intake, Discovery, AuthService, Appeals, Cases, Radar, Publications, Admin, Files, LocalStorage, Ai, Groq, AnonymousAppeals, Proposals, Reviews, OneC,
     { provide: APP_GUARD, useClass: SessionGuard }],
 })
 export class AppModule {}

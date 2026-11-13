@@ -27,6 +27,7 @@ jobs:
       WEB_ORIGIN: http://localhost:5173
       DEMO_MODE: "true"
       SEED_DEMO_USERS: "true"
+      LEGACY_DEMO_FIXTURES: "true"
       GROQ_AI_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4

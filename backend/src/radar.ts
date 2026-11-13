@@ -120,7 +120,7 @@ export class Radar {
   }
 
   private analyticsScope(user: Principal, filters: z.output<typeof appealListInput>, now: Date) {
-    if (!this.policy.isStaff(user)) throw forbidden();
+    if (!this.policy.canReadOperations(user)) throw forbidden();
     const where: Prisma.AppealWhereInput = { AND: [this.appeals.where(user, filters, true, now), { visibility: 'NORMAL_INTERNAL' }] };
     const tabs = appealQueueFilters(user, now);
     const sourceFilters = { ...filters, from: undefined, to: undefined, processId: undefined, departmentId: undefined };
@@ -159,7 +159,8 @@ export class Radar {
       tx.appeal.groupBy({ by: ['status'], orderBy: { status: 'asc' }, where, _count: { _all: true } }),
     ]), { isolationLevel: 'RepeatableRead' });
     return { total, closed, documented, types: types.map(row => ({ key: row.type, count: row._count._all })),
-      statuses: statuses.map(row => ({ key: row.status, count: row._count._all })) };
+      statuses: statuses.sort((left, right) => appealStatuses.indexOf(left.status) - appealStatuses.indexOf(right.status))
+        .map(row => ({ key: row.status, count: row._count._all })) };
   }
 
   async slaAnalytics(user: Principal, raw: unknown) {
@@ -210,7 +211,7 @@ export class Radar {
     const now = new Date();
     const { where, tabs, overdueWhere, staleWhere, improvementWhere, implementedWhere, linkWhere, recurrenceWhere, evidence, metrics } =
       this.analyticsScope(user, filters, now);
-    const activeAttention: Prisma.AppealWhereInput = { status: { notIn: ['CLOSED', 'WITHDRAWN', 'WAITING_AUTHOR'] } };
+    const activeAttention: Prisma.AppealWhereInput = { status: { in: ['NEW', 'REVIEW', 'IN_PROGRESS'] } };
     const nextDay = new Date(now.getTime() + 86400000);
     const dueSoon = { controlDueAt: { gte: now, lte: nextDay } };
     const repeats = { OR: [{ linksFrom: { some: recurrenceWhere } }, { linksTo: { some: recurrenceWhere } }] };
@@ -285,7 +286,7 @@ export class Radar {
   }
 
   async export(user: Principal, raw: unknown) {
-    if (!this.policy.has(user, 'EXPORT_DATA')) throw forbidden();
+    if (!this.policy.canReadOperations(user) || !user.permissions.includes('EXPORT_DATA')) throw forbidden();
     const filters = parse(appealListInput, raw);
     const rows = await this.db.appeal.findMany({ where: { AND: [this.appeals.where(user, filters, true), { visibility: 'NORMAL_INTERNAL' }] },
       select: { number: true, type: true, status: true, priority: true, createdAt: true,

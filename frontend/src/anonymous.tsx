@@ -4,16 +4,18 @@ import { api, queryString } from './api';
 import { ActionForm, Chip, date, Empty, ErrorBox, Field, field, Loading, Options } from './ui';
 
 type Thread = { number: string; title: string; status: string; resolutionType: string | null; nextCursor?: string;
-  messages: { id: string; side: 'STAFF' | 'AUTHOR'; kind?: 'RESOLUTION' | 'REMINDER'; text: string; hasAttachment: boolean; createdAt: string }[] };
+  messages: { id: string; side: 'STAFF' | 'AUTHOR'; kind?: 'RESOLUTION' | 'REMINDER'; text: string; proposedSolution?: string; hasAttachment: boolean; createdAt: string }[] };
 
 async function payload(form: FormData) {
   const file = form.get('attachment');
   if (!(file instanceof File) || !file.size) return { text: field(form, 'text') };
+  return { text: field(form, 'text'), attachment: await readAnonymousAttachment(file) };
+}
+
+async function readAnonymousAttachment(file: File) {
   if (!file.name.toLowerCase().endsWith('.txt') || file.size > 65536) throw new Error('Выберите файл .txt размером до 64 КиБ.');
-  let attachment: string;
-  try { attachment = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()); }
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()); }
   catch { throw new Error('Сохраните вложение в кодировке UTF-8.'); }
-  return { text: field(form, 'text'), attachment };
 }
 
 function MessageFields() {
@@ -38,6 +40,7 @@ function Messages({ thread, older, download }: { thread: Thread; older: (cursor:
       <header><strong>{item.side === 'AUTHOR' ? 'Анонимный автор' : 'Служба обработки'}</strong><small>{date(item.createdAt, true)}</small></header>
       {item.kind === 'RESOLUTION' && <strong>Итог рассмотрения</strong>}
       <p className="preserve">{item.text}</p>
+      {item.proposedSolution && <><strong>Предложенное решение</strong><p className="preserve">{item.proposedSolution}</p></>}
       {item.hasAttachment && <button type="button" className="button subtle" disabled={attachment.isPending}
         onClick={() => attachment.mutate(item.id)}>Скачать текстовое вложение</button>}
     </article>)}</>;

@@ -9,27 +9,28 @@ import { ActionForm, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, L
 
 const resources = {
   users: 'Пользователи', 'organization-units': 'Структура', categories: 'Категории', processes: 'Процессы', 'work-queues': 'Очереди',
-  'routing-rules': 'Маршрутизация', 'sla-policies': 'Сроки', 'one-c': '1С', ai: 'ИИ-помощник', 'outbox-failures': 'Мониторинг', audit: 'Аудит',
+  'routing-rules': 'Маршрутизация', 'sla-policies': 'Сроки', ai: 'ИИ-помощник', 'outbox-failures': 'Мониторинг', audit: 'Аудит',
 } as const;
 const groups = [
   { title: 'Сотрудники и доступ', resources: ['users', 'organization-units'] },
   { title: 'Обработка обращений', resources: ['categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies'] },
-  { title: 'Интеграции', resources: ['one-c', 'ai'] },
+  { title: 'Интеграции', resources: ['ai'] },
   { title: 'Контроль системы', resources: ['outbox-failures', 'audit'] },
 ] as const;
 type Resource = keyof typeof resources;
 type Row = { id: string; name?: string; email?: string; role?: string; departmentId?: string; department?: { name: string }; parentId?: string; categoryId?: string;
   processId?: string; queueId?: string; assigneeId?: string; coordinatorId?: string; active?: boolean; fallback?: boolean; permissions?: string[];
   sensitive?: boolean; rank?: number; effectiveFrom?: string; effectiveTo?: string; visibility?: string; priority?: string; firstResponseHours?: number;
-  nextActionHours?: number; members?: { userId: string }[]; version?: number; entity?: string; action?: string; createdAt?: string; kind?: string; deadAt?: string; attempts?: number };
+  nextActionHours?: number; resolutionHours?: number | null; deputyId?: string; absentUntil?: string;
+  members?: { userId: string }[]; version?: number; entity?: string; action?: string; createdAt?: string; kind?: string; deadAt?: string; attempts?: number };
 const permissionLabels: Record<string, string> = {
   ROUTING_COORDINATOR: 'Переназначение обращений', PROBLEM_OWNER: 'Исследование проблем', IMPROVEMENT_OWNER: 'Управление улучшениями',
   IMPROVEMENT_APPROVER: 'Согласование улучшений', RESULT_VERIFIER: 'Проверка результата', PUBLICATION_APPROVER: 'Согласование публикаций',
-  SENSITIVE_CASE_HANDLER: 'Обработка чувствительных обращений', EXPORT_DATA: 'Выгрузка данных', ONEC_OPERATOR: 'Обмен с 1С',
+  SENSITIVE_CASE_HANDLER: 'Обработка чувствительных обращений', EXPORT_DATA: 'Выгрузка данных',
 };
 const routeReasons: Record<string, string> = { MATCH: 'Найдено подходящее правило', SPECIAL_ROUTE: 'Специальная очередь',
   NO_RULE: 'Правило отсутствует, резервная очередь', RULE_CONFLICT: 'Совпали приоритеты правил, резервная очередь',
-  ASSIGNEE_UNAVAILABLE: 'Обработчик недоступен, резервная очередь' };
+  ASSIGNEE_UNAVAILABLE: 'Обработчик недоступен, резервная очередь', DEPUTY: 'Назначен заместитель', DEPARTMENT_MANAGER: 'Назначен руководитель подразделения' };
 
 export function AdminPage() {
   const { resource: raw } = useParams();
@@ -48,16 +49,14 @@ function AdminResource({ resource }: { resource: Resource }) {
   const group = groups.find(item => (item.resources as readonly Resource[]).includes(resource)) ?? groups[0];
   const directory = useQuery({ queryKey: ['admin', 'user-directory', q, role, page], enabled: resource === 'users',
     queryFn: ({ signal }) => api<Page<Row>>('/admin/user-directory' + queryString({ q, role, page, limit: 20 }), { signal }) });
-  const integrations = useQuery({ queryKey: ['admin', 'integrations'], enabled: resource === 'one-c',
-    queryFn: () => api<{ oneC: 'http' | 'simulator' | null }>('/admin/integrations') });
   const updateDirectory = (key: string, value: string) => {
     const updated = new URLSearchParams(params);
     if (key !== 'page') updated.delete('page');
     if (value) updated.set(key, value); else updated.delete(key);
     setParams(updated, { replace: true });
   };
-  const editable = !['audit', 'outbox-failures', 'ai', 'one-c'].includes(resource);
-  const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: !['ai', 'one-c', 'users'].includes(resource) });
+  const editable = !['audit', 'outbox-failures', 'ai'].includes(resource);
+  const rows = useQuery({ queryKey: ['admin', resource], queryFn: () => api<Row[]>(`/admin/${resource}`), enabled: !['ai', 'users'].includes(resource) });
   const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean; fallback: string }>('/ai/capabilities'), enabled: resource === 'ai' });
   const monitor = useQuery({ queryKey: ['admin', 'worker-status'], enabled: resource === 'outbox-failures', refetchInterval: 15000,
     queryFn: () => api<{ healthy: boolean; lastCheckAt: string | null; oldestAvailableAt: string | null; pendingCount: number; deadCount: number; routingPendingCount: number; attachmentProtection: { mode: string; lastCleanAt: string | null; scanFailureAt: string | null; storageFailureAt: string | null } }>('/admin/worker-status') });
@@ -73,16 +72,19 @@ function AdminResource({ resource }: { resource: Resource }) {
     let body: Record<string, unknown> = { name: field(data, 'name') };
     switch (resource) {
       case 'users': body = { ...body, email: field(data, 'email'), role: field(data, 'role'), password: row ? undefined : field(data, 'password'),
-        departmentId: optional(data, 'departmentId') ?? null, permissions: data.getAll('permissions'), active: data.has('active') }; break;
+        departmentId: optional(data, 'departmentId') ?? null, permissions: data.getAll('permissions'), active: data.has('active'),
+        absentUntil: timestamp(data, 'absentUntil') ?? null }; break;
       case 'organization-units': body.parentId = optional(data, 'parentId') ?? null; break;
       case 'categories': body = { ...body, parentId: optional(data, 'parentId') ?? null, sensitive: data.has('sensitive') }; break;
       case 'work-queues': body = { ...body, visibility: field(data, 'visibility'), coordinatorId: field(data, 'coordinatorId'),
         memberIds: data.getAll('memberIds'), fallback: data.has('fallback') }; break;
       case 'routing-rules': body = { ...body, categoryId: field(data, 'categoryId'), departmentId: optional(data, 'departmentId') ?? null,
         processId: optional(data, 'processId') ?? null, queueId: field(data, 'queueId'), assigneeId: optional(data, 'assigneeId') ?? null,
+        deputyId: optional(data, 'deputyId') ?? null,
         rank: numeric(data, 'rank'), active: data.has('active'), effectiveFrom: timestamp(data, 'effectiveFrom') ?? null, effectiveTo: timestamp(data, 'effectiveTo') ?? null }; break;
       case 'sla-policies': body = { priority: field(data, 'priority'), firstResponseHours: numeric(data, 'firstResponseHours'),
-        nextActionHours: numeric(data, 'nextActionHours'), active: data.has('active'), expectedVersion: row?.version }; break;
+        nextActionHours: numeric(data, 'nextActionHours'), resolutionHours: numeric(data, 'resolutionHours') ?? null,
+        active: data.has('active'), expectedVersion: row?.version }; break;
     }
     return api(`/admin/${resource}${row ? '/' + row.id : ''}`, { method: row ? 'PATCH' : 'POST', body });
   }, onSuccess: () => { setEditor(null); void client.invalidateQueries({ queryKey: ['admin'] }); void client.invalidateQueries({ queryKey: ['catalog'] }); } });
@@ -103,13 +105,7 @@ function AdminResource({ resource }: { resource: Resource }) {
     <nav className="context-links admin-resources" aria-label={group.title}>
       {group.resources.map(key => <NavLink key={key} to={'/admin/' + key}>{resources[key]}</NavLink>)}
     </nav>
-    {resource === 'one-c' ? <Section title="Обмен с 1С">
-      <ErrorBox error={integrations.error} retry={() => integrations.refetch()} />{integrations.isPending && <Loading />}
-      {integrations.data && <dl className="facts">
-        <div><dt>Режим</dt><dd>{integrations.data.oneC === 'simulator' ? 'Демонстрационный симулятор' : integrations.data.oneC === 'http' ? 'Подключение по HTTP' : 'Отключено'}</dd></div>
-        <div><dt>Настройка подключения</dt><dd>Режим и реквизиты задаются на сервере. Рабочий обмен доступен обработчикам и руководителям с полномочием «Обмен с 1С».</dd></div>
-      </dl>}
-    </Section> : resource === 'ai' ? <Section title="Groq" icon={<Settings size={18} />}><ErrorBox error={ai.error} retry={() => ai.refetch()} />
+    {resource === 'ai' ? <Section title="Groq" icon={<Settings size={18} />}><ErrorBox error={ai.error} retry={() => ai.refetch()} />
       {ai.isPending && <Loading />}{ai.data && <div className="inner-stack"><span className="chip tone-muted">{ai.data.available ? 'Включено' : 'Отключено'}</span>
         <p>{ai.data.fallback}</p><p>Провайдер настраивается серверными переменными окружения. Конфиденциальные карточки закрыты для передачи.</p></div>}</Section> :
       <Section title={resources[resource]} icon={<Settings size={18} />} action={resource === 'routing-rules' && <button className="button secondary"
@@ -164,8 +160,10 @@ function AdminResource({ resource }: { resource: Resource }) {
           {!row && <Field label="Пароль"><input name="password" type="password" minLength={12} maxLength={72} required /></Field>}
           <Field label="Роль"><select name="role" defaultValue={row?.role ?? 'EMPLOYEE'}><Options items={roles} /></select></Field>
           {select('Подразделение', 'departmentId', units.data, row?.departmentId)}
-          <fieldset className="checks"><legend>Полномочия в рабочей области</legend>{permissions.map(item => <label className="checkbox-line" key={item}>
-            <input type="checkbox" name="permissions" value={item} defaultChecked={row?.permissions?.includes(item)} /> {permissionLabels[item]}</label>)}</fieldset>{active}
+          <details className="admin-advanced"><summary>Дополнительные настройки доступа</summary>
+          <Field label="Отсутствует до (UTC)"><DatePicker name="absentUntil" type="datetime-local" defaultValue={row?.absentUntil?.slice(0, 16)} /></Field>
+          <fieldset className="checks"><legend>Полномочия в рабочей области</legend>{permissions.filter(item => item !== 'ONEC_OPERATOR').map(item => <label className="checkbox-line" key={item}>
+            <input type="checkbox" name="permissions" value={item} defaultChecked={row?.permissions?.includes(item)} /> {permissionLabels[item]}</label>)}</fieldset>          </details>{active}
         </>}
         {resource === 'organization-units' && select('Родительское подразделение', 'parentId', units.data, row?.parentId)}
         {resource === 'categories' && <>{select('Родительская категория', 'parentId', cats.data, row?.parentId)}
@@ -181,6 +179,7 @@ function AdminResource({ resource }: { resource: Resource }) {
           {select('Категория', 'categoryId', cats.data, row?.categoryId, true)}{select('Подразделение', 'departmentId', units.data, row?.departmentId)}
           {select('Процесс', 'processId', processes.data, row?.processId)}{select('Очередь', 'queueId', queues.data?.filter(item => item.visibility === 'NORMAL_INTERNAL'), row?.queueId, true)}
           {select('Ответственный', 'assigneeId', staff, row?.assigneeId)}
+          {select('Заместитель', 'deputyId', staff, row?.deputyId)}
           <Field label="Приоритет правила" hint="Меньшее число имеет преимущество. При совпадении сработает резерв."><input name="rank" type="number" min={0} max={1000} defaultValue={row?.rank ?? 100} required /></Field>
           <div className="two-fields"><Field label="Действует с (UTC)"><DatePicker name="effectiveFrom" type="date" defaultValue={row?.effectiveFrom?.slice(0, 10)} /></Field>
             <Field label="Действует до (UTC)"><DatePicker name="effectiveTo" type="date" defaultValue={row?.effectiveTo?.slice(0, 10)} /></Field></div>{active}
@@ -188,6 +187,7 @@ function AdminResource({ resource }: { resource: Resource }) {
         {resource === 'sla-policies' && <>
           <Field label="Приоритет"><select name="priority" defaultValue={row?.priority ?? 'MEDIUM'}><Options items={priorities} /></select></Field>
           <Field label="Первый ответ, рабочих часов"><input type="number" name="firstResponseHours" min={1} max={240} defaultValue={row?.firstResponseHours ?? 8} required /></Field>
+          <Field label="Полное решение, рабочих часов"><input type="number" name="resolutionHours" min={1} max={1440} defaultValue={row?.resolutionHours ?? undefined} /></Field>
           <Field label="Следующее действие, рабочих часов"><input type="number" name="nextActionHours" min={1} max={480} defaultValue={row?.nextActionHours ?? 24} required /></Field>{active}
         </>}
       </ActionForm></Modal>}

@@ -149,22 +149,30 @@ test('opens the oldest unread notification beyond the first fifty', async ({ pag
   await expect(old).toHaveCount(0);
 });
 
-const profileNames = { employee: 'Сотрудник', handler: 'Обработчик', manager: 'Руководитель', admin: 'Администратор', other: 'Другой сотрудник', 'sensitive-handler': 'Спецочередь' } as const;
+const profileNames = { employee: 'Сотрудник', manager: 'Руководитель', director: 'Директор', admin: 'Администратор' } as const;
+type Profile = keyof typeof profileNames | 'handler' | 'other' | 'sensitive-handler';
 
-async function login(page: Page, role: keyof typeof profileNames) {
+async function login(page: Page, role: Profile) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.getByText('Попробовать демоверсию', { exact: true }).click();
-  if (['admin', 'other', 'sensitive-handler'].includes(role)) await page.getByText('Другие сценарии', { exact: true }).click();
-  await page.getByRole('button', { name: profileNames[role], exact: true }).press('Enter');
-  const landingPath = role === 'admin' ? '/admin/users' : role === 'manager' ? '/overview' :
+  if (role === 'handler' || role === 'other' || role === 'sensitive-handler') {
+    const response = await page.request.post('/api/v1/auth/demo', {
+      headers: { Origin: new URL(page.url()).origin }, data: { profile: role === 'other' ? 'other-employee' : role },
+    });
+    expect(response.ok()).toBeTruthy();
+    await page.reload();
+  } else {
+    await page.getByRole('button', { name: profileNames[role], exact: true }).press('Enter');
+  }
+  const landingPath = role === 'admin' ? '/admin/users' : role === 'manager' || role === 'director' ? '/overview' :
     role === 'handler' || role === 'sensitive-handler' ? '/work-queue' : '/';
   await expect(page).toHaveURL(url => url.pathname === landingPath);
   await expect(page.getByRole('navigation', { name: 'Основная навигация' })).toBeVisible();
   await expect.poll(async () => (await page.context().cookies(page.url())).some(cookie => cookie.name === 'modus_csrf')).toBe(true);
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  if (landingPath === '/') await expect(page.getByLabel('Опишите проблему или предложите улучшение')).toBeVisible();
+  else await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 }
 
-async function session(browser: Browser, role: keyof typeof profileNames) {
+async function session(browser: Browser, role: Profile) {
   const context = await browser.newContext({ baseURL: process.env.E2E_BASE_URL || 'http://localhost:4180' });
   const page = await context.newPage();
   await login(page, role);
@@ -192,8 +200,15 @@ async function create(page: Page, title: string, visibility = 'NORMAL_INTERNAL')
   }, randomUUID());
 }
 
+async function openAppealActions(page: Page, action: ReturnType<Page['getByRole']>) {
+  const menu = page.getByText('Другие действия', { exact: true });
+  if (!await action.isVisible() && await menu.isVisible()) await menu.click();
+}
+
 async function mutation(page: Page, name: string, fill?: (dialog: ReturnType<Page['getByRole']>) => Promise<void>, submit = 'Сохранить') {
-  await page.getByRole('button', { name, exact: true }).click();
+  const button = page.getByRole('button', { name, exact: true });
+  await openAppealActions(page, button);
+  await button.click();
   const dialog = page.getByRole('dialog');
   if (fill) await fill(dialog);
   await dialog.getByRole('button', { name: submit, exact: true }).click();
@@ -214,21 +229,17 @@ test('opens an appeal when the API omits review timing', async ({ page }) => {
   });
   await appeal.click();
   await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'История' })).toBeVisible();
+  await expect(page.getByText('История обращения', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Время рассмотрения' })).toHaveCount(0);
 });
 
 test('E2E-01 creates a real appeal and shows it to its author and the queue', async ({ page, browser }) => {
   await login(page, 'employee');
   const title = 'Проверка подачи ' + randomUUID().slice(0, 8);
-  await page.getByRole('link', { name: /Сообщить о проблеме/ }).click();
-  await page.getByLabel('Что вы хотите сообщить?').fill('Не хватает данных в тестовом шаблоне заявки.');
-  await page.getByRole('button', { name: 'Продолжить' }).click();
-  await page.getByLabel('Заголовок').fill(title);
-  await page.getByLabel('Категория', { exact: true }).selectOption({ label: 'Межотдельное взаимодействие' });
-  await page.getByRole('button', { name: 'Проверить и отправить' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Отправить обращение' }).click();
-  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await page.goto('/');
+  await page.getByLabel('Опишите проблему или предложите улучшение').fill(title + ' — не хватает данных в шаблоне заявки.');
+  await page.getByRole('button', { name: 'Отправить обращение' }).click();
+  await expect(page.getByRole('heading', { name: new RegExp(title) })).toBeVisible();
   await expect(page.getByText(/A-\d+ · Проблема/)).toBeVisible();
   await page.goto('/my/appeals');
   await expect(page.getByRole('link', { name: new RegExp(title) })).toBeVisible();
@@ -258,7 +269,9 @@ test('E2E-02 author receives clarification, replies, and restores the previous s
     await handler.page.getByRole('button', { name: 'Служебные заметки' }).click();
     await handler.page.getByLabel('Заметка только для обработчиков').fill(note);
     await handler.page.getByRole('button', { name: 'Сохранить служебную заметку' }).click();
-    await expect(handler.page.getByRole('button', { name: 'Запросить уточнение' })).toBeDisabled();
+    const clarify = handler.page.getByRole('button', { name: 'Запросить уточнение' });
+    await openAppealActions(handler.page, clarify);
+    await expect(clarify).toBeDisabled();
   } finally {
     releaseComment();
   }
@@ -272,8 +285,6 @@ test('E2E-02 author receives clarification, replies, and restores the previous s
   await handler.page.reload();
   await expect(handler.page.getByText('Использовали тестовый образец заявки на оборудование.', { exact: true })).toBeVisible();
   await expect(handler.page.locator('.heading-line').getByText('В работе', { exact: true })).toBeVisible();
-  await handler.page.getByText('Последние периоды', { exact: true }).click();
-  await expect(handler.page.getByText(/^Ожидание автора ·/)).toBeVisible();
   await handler.close();
 });
 
@@ -282,7 +293,6 @@ test('a handler closes a fallback appeal with an explanation after the author re
   const item = await create(page, 'Характеристики оборудования ' + randomUUID().slice(0, 8));
   const handler = await session(browser, 'handler');
   await handler.page.goto('/work-queue/appeals/' + item.id);
-  await expect(handler.page.getByText('Направлено в резервную очередь')).toBeVisible();
   await mutation(handler.page, 'Взять на рассмотрение', undefined, 'Подтвердить');
   await mutation(handler.page, 'Запросить уточнение', async dialog => {
     await dialog.getByLabel('Вопрос автору').fill('Какие характеристики приходится уточнять чаще всего?');
@@ -295,7 +305,7 @@ test('a handler closes a fallback appeal with an explanation after the author re
   await page.getByRole('button', { name: 'Отправить сообщение' }).click();
   await expect(page.getByText('Подготовили пример заявки для уточнения.', { exact: true })).toBeVisible();
   await expect(page.locator('.heading-line').getByText('Ожидает уточнения', { exact: true })).toBeVisible();
-  const conversation = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Диалог', exact: true }) });
+  const conversation = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Обсуждение', exact: true }) });
   await expect(conversation.getByRole('button', { name: 'Ответить на уточнение', exact: true })).toBeVisible();
   await mutation(page, 'Ответить на уточнение', async dialog => {
     await dialog.getByLabel('Ваш ответ').fill('Чаще всего не хватает точной модели и срока поставки.');
@@ -303,6 +313,7 @@ test('a handler closes a fallback appeal with an explanation after the author re
 
   await handler.page.reload();
   await expect(handler.page.locator('.heading-line').getByText('На рассмотрении', { exact: true })).toBeVisible();
+  await openAppealActions(handler.page, close);
   await expect(close).toBeVisible();
   const explanation = 'Указывайте модель оборудования и желаемый срок поставки.';
   await mutation(handler.page, 'Закрыть с решением', async dialog => {
@@ -323,7 +334,9 @@ test('E2E-03 a manager must enter a reason for rejection and the author sees it'
   const manager = await session(browser, 'manager');
   await manager.page.goto('/work-queue/appeals/' + item.id);
   await mutation(manager.page, 'Взять на рассмотрение', undefined, 'Подтвердить');
-  await manager.page.getByRole('button', { name: 'Закрыть с решением' }).click();
+  const closeAction = manager.page.getByRole('button', { name: 'Закрыть с решением' });
+  await openAppealActions(manager.page, closeAction);
+  await closeAction.click();
   const dialog = manager.page.getByRole('dialog');
   await dialog.getByLabel('Тип решения').selectOption('REJECTED');
   await dialog.getByRole('button', { name: 'Сохранить' }).click();
@@ -342,7 +355,6 @@ test('E2E-04 fallback is visible and coordinator can assign the appeal', async (
   const item = await create(page, 'Резервный маршрут ' + randomUUID().slice(0, 8));
   const handler = await session(browser, 'handler');
   await handler.page.goto('/work-queue/appeals/' + item.id);
-  await expect(handler.page.getByText('Направлено в резервную очередь')).toBeVisible();
   await mutation(handler.page, 'Назначить ответственного', async dialog => {
     await expect(dialog.getByRole('option', { name: 'Илья Орлов' })).toBeAttached();
     await dialog.getByLabel('Ответственный').selectOption({ label: 'Илья Орлов' });
@@ -356,10 +368,13 @@ test('E2E-05 independent approval, implementation and verification through the i
   await login(page, 'handler');
   const original = await get<{ items: { id: string }[] }>(page, '/work-queue?q=A-001');
   await page.goto('/work-queue/appeals/' + original.items[0].id);
+  await page.getByText('Похожие обращения и источники', { exact: true }).click();
   const relatedLinks = page.locator('.link-pair a');
   await expect(relatedLinks.first()).toBeVisible();
   expect(await relatedLinks.evaluateAll(links => links.every(link => link.getBoundingClientRect().height >= 24))).toBe(true);
-  await page.getByRole('link', { name: 'Создать улучшение' }).click();
+  const improvementLink = page.getByRole('link', { name: 'Создать улучшение' });
+  await openAppealActions(page, improvementLink);
+  await improvementLink.click();
   const title = 'Изменение шаблона ' + randomUUID().slice(0, 8);
   await page.getByLabel('Название', { exact: true }).fill(title);
   await page.getByLabel('Основание', { exact: true }).fill('В тестовом шаблоне не хватает полей.');
@@ -488,7 +503,6 @@ test('registers in the browser before a route is available and assigns after rec
     await configure(originalMembers);
     await expect.poll(async () => (await get<{ routingPending: boolean }>(page, '/appeals/' + item.id)).routingPending, { timeout: 30000 }).toBe(false);
     await page.reload();
-    await expect(page.getByText('Маршрут восстановлен')).toBeVisible();
   } finally {
     await configure(originalMembers);
     await admin.close();
@@ -609,15 +623,37 @@ test('E2E-09 inconclusive verification is presented as insufficient data', async
   await expect(page.getByText('Наблюдений: 0', { exact: false })).toBeVisible();
 });
 
+test('author returns a result, then confirms the next revision from the appeal card', async ({ page, browser }, info) => {
+  await login(page, 'employee');
+  const item = await create(page, 'Проверка результата ' + randomUUID().slice(0, 8));
+  const handler = await session(browser, 'handler');
+  const path = '/appeals/' + item.id;
+  await handler.page.goto('/work-queue' + path);
+  await mutation(handler.page, 'Взять на рассмотрение', undefined, 'Подтвердить');
+  const publish = (text: string) => mutation(handler.page, 'Закрыть с решением', async dialog => {
+    await dialog.getByLabel('Обоснование').fill(text);
+  });
+  await publish('Перезапустили сервер, доступ восстановлен.');
+  await page.goto(path);
+  await page.getByRole('button', { name: 'Вернуть на доработку' }).click();
+  await page.getByLabel('Что нужно доработать').fill('Сервер снова недоступен после перезапуска.');
+  await page.getByRole('button', { name: 'Отправить на доработку' }).click();
+  await expect(page.getByRole('status')).toContainText('Обращение возвращено в работу');
+  await handler.page.reload();
+  await publish('Восстановили сетевое соединение и проверили доступ.');
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Подтвердить результат' })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('result-review.png'), fullPage: true, animations: 'disabled' });
+  await page.getByRole('button', { name: 'Подтвердить результат' }).click();
+  await expect(page.getByText(/Автор подтвердил результат/).first()).toBeVisible();
+  await handler.close();
+});
+
 test('E2E-10 no Groq key leaves a working manual form', async ({ page }) => {
   await login(page, 'employee');
   await page.goto('/appeals/new?type=PROPOSAL');
-  await page.getByLabel('Что вы хотите сообщить?').fill('Предлагаю улучшить учебный пример без подсказок.');
-  await page.getByRole('button', { name: 'Продолжить' }).click();
-  await expect(page.getByText('Заполните детали вручную.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Подсказать заголовок' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Проверить и отправить' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Отправить обращение' }).click();
+  await page.getByLabel('Опишите проблему или предложите улучшение').fill('Предлагаю улучшить учебный пример без подсказок.');
+  await page.getByRole('button', { name: 'Отправить обращение' }).click();
   await expect(page.locator('.heading-line').getByText('Новое', { exact: true })).toBeVisible();
 });
 
@@ -649,23 +685,20 @@ test('E2E-12 responsive home and keyboard-operable submission at 360 px', async 
   for (const width of [360, 768, 1280, 1600]) {
     await page.setViewportSize({ width, height: 950 });
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Главная' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Мои последние обращения' })).toBeVisible();
+    await expect(page.getByLabel('Опишите проблему или предложите улучшение')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Мои последние обращения' })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     if (width === 1280 || width === 360) await page.screenshot({ path: info.outputPath(`dashboard-${width}.png`), fullPage: true, animations: 'disabled' });
   }
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto('/appeals/new?type=PROBLEM');
-  await page.getByRole('button', { name: 'Продолжить' }).focus();
+  const submit = page.getByRole('button', { name: 'Отправить обращение' });
+  await submit.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('alert')).toContainText('Опишите ситуацию');
-  await page.getByLabel('Что вы хотите сообщить?').fill('Проверка мобильной формы с клавиатуры.');
-  await page.getByRole('button', { name: 'Продолжить' }).focus();
+  await page.getByLabel('Опишите проблему или предложите улучшение').fill('Проверка мобильной формы с клавиатуры.');
+  await submit.focus();
   await page.keyboard.press('Enter');
-  await page.getByRole('button', { name: 'Проверить и отправить' }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByRole('dialog').getByRole('button', { name: 'Отправить обращение' }).click();
   await expect(page.getByRole('heading', { name: /Проверка мобильной формы/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
 });
@@ -674,14 +707,12 @@ test('a draft survives reload and reuses the submission after a lost response', 
   await login(page, 'employee');
   page.on('dialog', dialog => void dialog.accept());
   await page.goto('/appeals/new');
-  const description = page.getByLabel('Что вы хотите сообщить?');
+  const description = page.getByLabel('Опишите проблему или предложите улучшение');
   await description.fill('Три');
   await page.reload();
   await expect(description).toHaveValue('Три');
-  await description.fill('Проверка повторной подачи после потери ответа.');
-  await page.getByRole('button', { name: 'Продолжить' }).click();
   const title = 'Повторная подача ' + randomUUID().slice(0, 8);
-  await page.getByLabel('Заголовок').fill(title);
+  await description.fill(title);
   await page.getByLabel('Вложения').setInputFiles({ name: 'sample.txt', mimeType: 'text/plain', buffer: Buffer.from('Контрольное вложение.') });
   await expect(page.getByText('sample.txt', { exact: true })).toBeVisible();
   let createdId: string | undefined;
@@ -693,19 +724,32 @@ test('a draft survives reload and reuses the submission after a lost response', 
     await route.abort();
   }, { times: 1 });
   const submit = async () => {
-    await page.getByRole('button', { name: 'Проверить и отправить' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Отправить обращение' }).click();
+    await page.getByRole('button', { name: 'Отправить обращение' }).click();
   };
   await submit();
-  await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('alert')).toBeVisible();
   expect(createdId).toBeTruthy();
   await page.reload();
-  await expect(page.getByLabel('Заголовок')).toHaveValue(title);
+  await expect(description).toHaveValue(title);
   await expect(page.getByText('sample.txt', { exact: true })).toBeVisible();
   await submit();
   await expect(page).toHaveURL(new RegExp('/appeals/' + createdId + '$'));
   const rows = await get<{ total: number }>(page, '/appeals?own=true&q=' + encodeURIComponent(title));
   expect(rows.total).toBe(1);
+});
+
+test('demo login shows four roles and anonymous entry; director sees company analytics', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Директор', exact: true })).toBeVisible();
+  for (const name of Object.values(profileNames)) await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Сообщить анонимно' })).toBeVisible();
+  await expect(page.getByLabel('Рабочая почта')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Обработчик', exact: true })).toHaveCount(0);
+  await login(page, 'director');
+  await expect(page.getByRole('heading', { name: 'Аналитика компании' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Процессы и подразделения' })).toBeVisible();
+  await page.goto('/work-queue');
+  await expect(page.getByRole('heading', { name: 'Очередь' })).toBeVisible();
 });
 
 test('guest submits and tracks a private appeal without signing in', async ({ page, browser }) => {
@@ -769,8 +813,9 @@ test('an employee discusses a proposal and the owner converts it to a draft', as
   await handler.close();
 });
 
-test('staff can import feedback and send a request through the labeled 1C simulator', async ({ page }) => {
-  await login(page, 'handler');
+test('manager can import client feedback', async ({ page }) => {
+  await login(page, 'manager');
+  await page.goto('/work-queue');
   await page.getByRole('link', { name: 'Клиентские отзывы' }).click();
   const title = 'Опоздание доставки ' + randomUUID().slice(0, 8);
   await page.getByRole('button', { name: 'Импортировать CSV' }).click();
@@ -780,15 +825,4 @@ test('staff can import feedback and send a request through the labeled 1C simula
   await dialog.getByRole('button', { name: 'Импортировать', exact: true }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await expect(page.getByText(/Добавлено: 1/)).toBeVisible();
-  await page.locator('.account-menu > summary').click();
-  await page.getByRole('link', { name: 'Интеграция 1С' }).click();
-  await expect(page.getByText('Демонстрационный симулятор 1С')).toBeVisible();
-  await page.getByRole('button', { name: 'Новая заявка' }).click();
-  await page.getByRole('dialog').getByLabel('Товар').selectOption('DEMO-001');
-  await page.getByRole('dialog').getByLabel('Количество').fill('2');
-  await page.getByRole('dialog').getByRole('button', { name: 'Отправить заявку' }).click();
-  await expect(page.getByRole('dialog')).toBeHidden();
-  await expect(page.getByText('DEMO-001 · 2 шт.', { exact: true }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Журнал операций' }).click();
-  await expect(page.getByText('Отправка заявки', { exact: true }).first()).toBeVisible();
 });

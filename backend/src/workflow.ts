@@ -3,7 +3,8 @@ import { AppealStatus, ImprovementStatus, ProblemStatus } from '@prisma/client';
 export const appealTransitions: Record<AppealStatus, readonly AppealStatus[]> = {
   NEW: ['REVIEW', 'WITHDRAWN'], REVIEW: ['WAITING_AUTHOR', 'IN_PROGRESS', 'CLOSED', 'WITHDRAWN'],
   WAITING_AUTHOR: ['REVIEW', 'IN_PROGRESS', 'CLOSED', 'WITHDRAWN'],
-  IN_PROGRESS: ['WAITING_AUTHOR', 'REVIEW', 'CLOSED', 'WITHDRAWN'], CLOSED: ['REVIEW'], WITHDRAWN: ['REVIEW'],
+  IN_PROGRESS: ['WAITING_AUTHOR', 'REVIEW', 'CLOSED', 'WITHDRAWN'], IMPLEMENTED: ['CLOSED', 'IN_PROGRESS'],
+  CLOSED: ['REVIEW'], WITHDRAWN: ['REVIEW'],
 };
 export const problemTransitions: Record<ProblemStatus, readonly ProblemStatus[]> = {
   CANDIDATE: ['INVESTIGATING'], INVESTIGATING: ['CONFIRMED', 'DISPROVED', 'CLOSED'],
@@ -15,7 +16,7 @@ export const improvementTransitions: Record<ImprovementStatus, readonly Improvem
   IN_PROGRESS: ['IMPLEMENTED', 'DEFERRED', 'CANCELED'], IMPLEMENTED: ['VERIFYING', 'IN_PROGRESS'],
   VERIFYING: ['COMPLETED', 'IN_PROGRESS'], COMPLETED: [], REJECTED: [], CANCELED: [],
 };
-export const activeAppeal = (status: AppealStatus) => status !== 'CLOSED' && status !== 'WITHDRAWN';
+export const activeAppeal = (status: AppealStatus) => status !== 'CLOSED' && status !== 'WITHDRAWN' && status !== 'IMPLEMENTED';
 
 export function businessDeadline(start: Date, hours: number, timeZone = process.env.APP_TIMEZONE || 'Asia/Almaty') {
   const formatter = new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' });

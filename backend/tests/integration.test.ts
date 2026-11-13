@@ -17,6 +17,7 @@ import { Cases } from '../src/cases';
 import { OneC } from '../src/one-c';
 import { LocalStorage, purgeUploads } from '../src/files';
 import { deadlines, deliver, retryRouting } from '../src/worker';
+import { Intake } from '../src/intake';
 
 const origin = 'http://localhost:5173';
 const testUrl = process.env.TEST_DATABASE_URL;
@@ -43,6 +44,7 @@ before(async () => {
   process.env.DATABASE_URL = testUrl;
   process.env.WEB_ORIGIN = origin;
   process.env.DEMO_MODE = 'true';
+  process.env.LEGACY_DEMO_FIXTURES = 'true';
   process.env.GROQ_AI_ENABLED = 'false';
   process.env.ANONYMOUS_DATA_KEY = randomBytes(32).toString('hex');
   process.env.ONEC_MODE = 'simulator';
@@ -75,6 +77,143 @@ async function login(profile: string): Promise<Session> {
   const csrf = cookies.find(value => value.startsWith('modus_csrf='))!.split(';')[0].split('=')[1];
   return { cookie: cookies.map(value => value.split(';')[0]).join('; '), csrf };
 }
+
+test('one-field intake, safe subscription and versioned confirmation work through the API', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const other = await login('other-employee');
+  const colleague = await db.user.findUniqueOrThrow({ where: { email: 'other-employee@demo.local' } });
+  const author = await db.user.findUniqueOrThrow({ where: { email: 'employee@demo.local' } });
+  const category = await db.category.findUniqueOrThrow({ where: { name: 'Интеграции и IT' } });
+  const description = 'Работа остановлена: сервер печати этикеток недоступен.';
+  const key = randomUUID();
+  const created = success(await request<{ id: string }>('/appeals', { session: employee, key, body: { description } }));
+  const initial = await db.appeal.findUniqueOrThrow({ where: { id: created.id } });
+  assert.equal(initial.categoryId, category.id);
+  assert.equal(initial.priority, 'HIGH');
+  assert.ok(initial.assigneeId && initial.firstResponseDueAt && initial.resolutionDueAt);
+  const path = '/appeals/' + created.id;
+  const topic = '/intake/shared/' + created.id;
+  await request(topic + '/publish', { session: handler, body: { expectedVersion: 1, title: 'Сервер печати этикеток' } }).then(success);
+  assert.equal((await request(topic + '/join', { session: other, body: {} })).response.status, 404);
+  await db.user.update({ where: { id: colleague.id }, data: { departmentId: author.departmentId } });
+  try {
+    const preview = success(await request<{ similar: { id: string; title: string }[] }>('/intake/preview', {
+      session: other, body: { description: 'Сервер печати этикеток недоступен.' },
+    }));
+    assert.deepEqual(preview.similar.find(row => row.id === created.id), {
+      id: created.id, title: 'Сервер печати этикеток', status: 'NEW', joined: false,
+    });
+    await Promise.all([1, 2].map(() => request(topic + '/join', { session: other, body: {} }).then(success)));
+    assert.equal(await db.appealSubscription.count({ where: { appealId: created.id, userId: colleague.id } }), 1);
+    const joined = success(await request<Record<string, unknown>[]>('/intake/joined', { session: other }));
+    assert.deepEqual(joined.find(row => row.id === created.id), { id: created.id, title: 'Сервер печати этикеток', status: 'NEW', results: [] });
+    for (const suffix of ['', '/comments', '/events']) assert.equal((await request(path + suffix, { session: other })).response.status, 404);
+  } finally {
+    await db.user.update({ where: { id: colleague.id }, data: { departmentId: colleague.departmentId } });
+  }
+  const step = (expectedVersion: number, action: string, rest = {}) => request<Row & { resolutionVersion: number }>(path + '/transition', {
+    session: handler, body: { expectedVersion, action, ...rest },
+  }).then(success);
+  const review = await step(2, 'REVIEW');
+  const publish = (version: number) => step(version, 'RESOLVE', { resolutionType: 'RESOLVED', text: 'Доступ к серверу печати восстановлен.' });
+  const first = await publish(review.version);
+  assert.equal(first.status, 'IMPLEMENTED');
+  const decision = (session: Session, expectedVersion: number, confirm: boolean, reason?: string) =>
+    request<Row>(path + '/result-review', { session, body: { expectedVersion, confirm, reason } });
+  assert.equal((await decision(handler, first.resolutionVersion, true)).response.status, 403);
+  const rework = success(await decision(employee, first.resolutionVersion, false, 'Этикетки всё ещё не печатаются.'));
+  assert.equal(rework.status, 'IN_PROGRESS');
+  const second = await publish(rework.version);
+  assert.equal((await decision(employee, first.resolutionVersion, true)).response.status, 409);
+  const confirms = await Promise.all([1, 2].map(() => decision(employee, second.resolutionVersion, true).then(success)));
+  assert.ok(confirms.every(row => row.status === 'CLOSED'));
+  assert.equal(await db.appealResolutionReview.count({ where: { appealId: created.id } }), 2);
+  assert.equal(await db.outboxJob.count({ where: { href: path, kind: 'RESULT_CONFIRMED' } }), 1);
+});
+
+test('local model accepts only validated output and falls back when the model cannot respond', async () => {
+  const intake = app.get(Intake);
+  const category = await db.category.findUniqueOrThrow({ where: { name: 'Интеграции и IT' } });
+  let categoryId = category.id;
+  const server = createServer((_req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      categoryId, type: 'PROPOSAL', priority: 'LOW', confidence: 'HIGH',
+    }) } }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const previous = process.env.INTAKE_LOCAL_AI_URL;
+  process.env.INTAKE_LOCAL_AI_URL = 'http://127.0.0.1:' + (server.address() as AddressInfo).port;
+  try {
+    assert.equal((await intake.classify(db, 'Отказ сервера.')).type, 'PROPOSAL');
+    categoryId = randomUUID();
+    assert.equal((await intake.classify(db, 'Отказ сервера.')).type, 'PROBLEM');
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    assert.equal((await intake.classify(db, 'Отказ сервера.')).categoryId, category.id);
+  } finally {
+    if (server.listening) server.close();
+    if (previous === undefined) delete process.env.INTAKE_LOCAL_AI_URL;
+    else process.env.INTAKE_LOCAL_AI_URL = previous;
+  }
+});
+
+test('knowledge suggestions require a verified publication and feedback is bound to its version', async () => {
+  const employee = await login('employee');
+  const id = 'a0200000-1aaa-4ccc-8aaa-000000000001';
+  const article = await db.publication.findUniqueOrThrow({ where: { id } });
+  const preview = success(await request<{ knowledge: { id: string; version: number }[] }>('/intake/preview', {
+    session: employee, body: { description: 'Новый шаблон заявки на закупку, уточнения по характеристикам оборудования.' },
+  }));
+  assert.equal(preview.knowledge.find(row => row.id === id)?.version, article.version);
+  const path = '/intake/knowledge/' + id + '/solved';
+  assert.equal((await request(path, { session: employee, body: { expectedVersion: article.version + 1 } })).response.status, 409);
+  await Promise.all([1, 2].map(() => request(path, { session: employee, body: { expectedVersion: article.version } }).then(success)));
+  assert.equal(await db.auditEvent.count({ where: { entityId: id, action: 'KNOWLEDGE_SOLVED' } }), 1);
+});
+
+test('absent primary routes to the deputy and full-resolution deadlines notify once per recipient', async () => {
+  const employee = await login('employee');
+  const handler = await login('handler');
+  const manager = await login('manager');
+  const primary = await db.user.findUniqueOrThrow({ where: { email: 'handler@demo.local' } });
+  const deputy = await db.user.findUniqueOrThrow({ where: { email: 'manager@demo.local' } });
+  const rule = await db.routingRule.findUniqueOrThrow({ where: { name: 'Обработка · Интеграции и IT' } });
+  const now = new Date();
+  await db.user.update({ where: { id: primary.id }, data: { absentUntil: new Date(+now + 86400000) } });
+  await db.routingRule.update({ where: { id: rule.id }, data: { deputyId: deputy.id } });
+  let appealId: string;
+  try {
+    const { id } = success(await request<{ id: string }>('/appeals', { session: employee, key: randomUUID(),
+      body: { description: 'Сервер недоступен после обновления.' } }));
+    appealId = id;
+    assert.equal((await db.appeal.findUniqueOrThrow({ where: { id } })).assigneeId, deputy.id);
+    assert.equal(await db.auditEvent.count({ where: { entityId: id, action: 'ROUTING_FALLBACK',
+      details: { path: ['reason'], equals: 'DEPUTY' } } }), 1);
+  } finally {
+    await db.user.update({ where: { id: primary.id }, data: { absentUntil: primary.absentUntil } });
+    await db.routingRule.update({ where: { id: rule.id }, data: { deputyId: rule.deputyId } });
+  }
+  const path = '/appeals/' + appealId;
+  const endpoint = path + '/resolution-deadline';
+  const dueAt = new Date(Date.now() + 1800000);
+  const body = { expectedVersion: 1, dueAt: dueAt.toISOString(), reason: 'Уточнили срок восстановления сервера.' };
+  assert.equal((await request(endpoint, { session: employee, body })).response.status, 403);
+  await request(endpoint, { session: manager, body }).then(success);
+  assert.equal((await request(endpoint, { session: handler, body })).response.status, 409);
+  const before = new Date(+dueAt - 60000);
+  await deadlines(db, before);
+  await deliver(db, before);
+  const after = new Date(+dueAt + 60000);
+  await deadlines(db, after);
+  await deadlines(db, after);
+  const notifications = await db.outboxJob.findMany({ where: { href: path, OR: [
+    { kind: { in: ['RESOLUTION_DUE', 'RESOLUTION_OVERDUE'] } },
+    { kind: 'SLA_ESCALATED', key: { contains: 'RESOLUTION_ESCALATED' } },
+  ] }, orderBy: { kind: 'asc' } });
+  assert.deepEqual(notifications.map(row => [row.kind, row.userId]),
+    [['RESOLUTION_DUE', deputy.id], ['RESOLUTION_OVERDUE', deputy.id], ['SLA_ESCALATED', primary.id]]);
+});
 
 function success<T>(result: { response: Response; data: T; error?: unknown }) {
   assert.ok(result.response.ok, JSON.stringify(result.error));

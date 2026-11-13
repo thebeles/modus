@@ -1,0 +1,1 @@
+ALTER TYPE "AppealStatus" ADD VALUE 'IMPLEMENTED';

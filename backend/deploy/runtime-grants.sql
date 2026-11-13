@@ -6,5 +6,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"runtime
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"runtime_role";
 REVOKE INSERT, UPDATE, DELETE ON public."_prisma_migrations" FROM :"runtime_role";
 REVOKE UPDATE, DELETE, TRUNCATE ON public."AuditEvent", public."AppealNextAction",
-  public."VerificationRevision", public."PublicationRevision" FROM :"runtime_role";
+  public."VerificationRevision", public."PublicationRevision", public."AppealResolutionReview" FROM :"runtime_role";
 COMMIT;

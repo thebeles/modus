@@ -1,25 +1,18 @@
 import { DatePicker } from './date-picker';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, ChevronRight, Clock3, FileText, GitPullRequest, Heart,
-  Inbox, Lightbulb, LockKeyhole, MessageCircle, Paperclip, Plus, Search, Send, ShieldCheck, Sparkles, TriangleAlert, X } from './icons';
-import { lazy, useEffect, useRef, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { ArrowRight, BookOpen, CheckCircle2, ChevronRight, FileText, GitPullRequest,
+  LockKeyhole, MessageCircle, Paperclip, Search, Send, Sparkles } from './icons';
+import { lazy, useEffect, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { z } from 'zod';
-import { appealStatuses, appealTypes, label, priorities, resolutions, visibilities } from './contracts';
-import { api, uploadAttachment, type Appeal, type AppealRow, type Attachment, type Catalog, type Change, type LinkRow, type Page, queryString, type Reference } from './api';
+import { appealStatuses, appealTypes, label, priorities, resolutions } from './contracts';
+import { api, type Appeal, type AppealRow, type Catalog, type LinkRow, type Page, queryString, type Reference } from './api';
 import { useSession } from './session';
 import { StaffAnonymousThread } from './anonymous';
 import { AppealTriage } from './appeal-triage';
+import { AppealComposer, JoinedAppeals } from './appeal-composer';
+export { NewAppeal } from './appeal-composer';
 
-import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, Timeline } from './ui';
-
-const kinds = [
-  { code: 'PROBLEM', name: 'Сообщить о проблеме', description: 'Расскажите, что мешает работе.', icon: TriangleAlert, tone: 'peach' },
-  { code: 'PROPOSAL', name: 'Предложить улучшение', description: 'Поделитесь идеей, как сделать лучше.', icon: Lightbulb, tone: 'mint' },
-  { code: 'POSITIVE_FEEDBACK', name: 'Поблагодарить', description: 'Отметьте то, что хорошо работает.', icon: Heart, tone: 'lavender' },
-] as const;
+import { ActionForm, AiDecision, Chip, date, Empty, EntityOptions, ErrorBox, Field, field, Loading, Modal, optional, Options, PageHeading, Pagination, Section, TableRegion, timestamp } from './ui';
 
 const nextActionLabels: Record<string, string> = {
   NONE: 'Рассмотрение завершено', TRIAGE: 'Первичное рассмотрение', DECISION: 'Рассмотрение и решение',
@@ -27,6 +20,7 @@ const nextActionLabels: Record<string, string> = {
 };
 
 function nextActionText(item: Pick<AppealRow, 'nextActionKind' | 'status'>) {
+  if (item.status === 'IMPLEMENTED') return 'Проверка результата автором';
   if (item.nextActionKind && nextActionLabels[item.nextActionKind]) return nextActionLabels[item.nextActionKind];
   if (['CLOSED', 'WITHDRAWN'].includes(item.status)) return nextActionLabels.NONE;
   if (item.status === 'WAITING_AUTHOR') return nextActionLabels.AUTHOR_RESPONSE;
@@ -39,63 +33,28 @@ function AppealTable({ rows, staff = false, compact = false, returnTo }: { rows:
   return <TableRegion label={compact ? 'Мои последние обращения' : staff ? 'Очередь обращений' : 'Мои обращения'}><table className={tableClass}><thead><tr>
     <th>Обращение</th><th>Статус</th>{!compact && <th className="appeal-context">{staff ? 'Подразделение' : 'Тип'}</th>}<th>{staff ? 'Срок' : 'Дата'}</th><th className="appeal-arrow"><span className="sr-only">Открыть</span></th>
   </tr></thead><tbody>{rows.map(item => {
-    const overdue = staff && !!item.controlDueAt && !['CLOSED', 'WITHDRAWN'].includes(item.status) && Date.parse(item.controlDueAt) < Date.now();
+    const dueAt = ['CLOSED', 'WITHDRAWN', 'IMPLEMENTED'].includes(item.status) ? null :
+      [item.controlDueAt, item.resolutionDueAt].filter((value): value is string => !!value).sort()[0];
+    const overdue = staff && !!dueAt && Date.parse(dueAt) < Date.now();
     const to = `${staff && item.recommendedAction !== 'AUTHOR_RESPONSE' ? '/work-queue' : ''}/appeals/${item.id}`;
+    if (item.routingOnly) return <tr key={item.id}><td><span className="table-title"><span><small>{item.number}</small><strong>{item.title}</strong></span></span></td>
+      <td><Chip value={item.status} /></td><td className="appeal-context">{item.department?.name}</td><td className="date-cell">Назначается</td><td className="appeal-arrow" /></tr>;
     return <tr key={item.id}><td><Link className="table-title" to={to} state={{ returnTo }}><span className="row-icon"><FileText size={17} /></span><span>
       <small>{item.number}{item.isSynthetic && <span className="tiny-demo"> · демо</span>}{item.visibility !== 'NORMAL_INTERNAL' && <LockKeyhole size={12} aria-label="Ограниченный доступ" />}</small><strong>{item.title}</strong>
       {!compact && <small className="appeal-context-mobile">{staff ? item.department?.name : label(item.type)}</small>}
       {staff && <small className="queue-next">{nextActionText(item)}</small>}
     </span></Link></td><td><Chip value={item.status} /></td>{!compact && <td className="appeal-context">{staff ? item.department?.name ?? '—' : label(item.type)}</td>}
-      <td className="date-cell">{overdue && <strong className="overdue-label">Просрочено</strong>}{staff ? item.controlDueAt ? date(item.controlDueAt, true) : 'Срок не задан' : date(item.createdAt)}</td>
+      <td className="date-cell">{overdue && <strong className="overdue-label">Просрочено</strong>}{staff ? dueAt ? date(dueAt, true) : '—' : date(item.createdAt)}</td>
       <td className="appeal-arrow"><Link className="icon-button row-arrow" to={to} state={{ returnTo }} aria-label={`Открыть ${item.number}`}>{compact ? <ArrowRight size={18} /> : <ChevronRight size={17} />}</Link></td></tr>;
   })}</tbody></table></TableRegion>;
 }
 
 export function Home() {
-  const { user } = useSession();
-  const latest = useQuery({ queryKey: ['appeals', 'home'], queryFn: () => api<Page<AppealRow>>('/appeals?own=true&limit=4') });
-  const waiting = useQuery({ queryKey: ['appeals', 'waiting'], queryFn: () => api<Page<AppealRow>>('/appeals?own=true&status=WAITING_AUTHOR&limit=3') });
-  const changes = useQuery({ queryKey: ['changes', 'home'], queryFn: () => api<Page<Change>>('/publications?limit=2') });
-  return <div className="home-page">
-    <section className="home-hero">
-      <div className="hero-content"><p className="hero-greeting">Здравствуйте, {user.name.split(' ')[0]}!</p>
-        <h1>Главная</h1><p className="hero-copy">Расскажите, что мешает работе, предложите идею или поблагодарите коллег.</p>
-        <Link className="button primary hero-button" to="/appeals/new"><Plus size={19} /> Создать обращение <ArrowRight size={17} /></Link>
-      </div></section>
-    <nav className="context-links home-shortcuts" aria-label="Быстрый выбор типа обращения">
-      {kinds.map(({ code, name, icon: Icon }) => <Link key={code} to={`/appeals/new?type=${code}`}><Icon size={17} aria-hidden="true" />{name}</Link>)}
-    </nav>
-    <ErrorBox error={waiting.error} retry={() => waiting.refetch()} />
-    {waiting.data?.items.length ? <Section title="Требует вашего ответа" icon={<MessageCircle size={18} />} className="attention-section">
-      {waiting.data.items.map(item => <Link key={item.id} className="inline-reference" to={`/appeals/${item.id}`}><small>{item.number}</small>{item.title}<ArrowRight size={16} /></Link>)}
-    </Section> : null}
-    <div className="home-columns">
-      <Section title="Мои последние обращения" icon={<Inbox size={25} />} className="recent-section"
-        action={<Link className="text-button" to="/my/appeals">Все обращения <ArrowRight size={15} /></Link>}>
-        {latest.isPending && <Loading />}<ErrorBox error={latest.error} retry={() => latest.refetch()} />
-        {latest.data && (latest.data.items.length ? <AppealTable rows={latest.data.items} compact /> : <Empty title="Обращений пока нет" />)}
-      </Section>
-      <Section title="Что изменилось" icon={<BookOpen size={25} />} className="home-library"
-        action={<Link className="text-button" to="/changes">Все изменения <ArrowRight size={15} /></Link>}>
-        {changes.isPending && <Loading />}<ErrorBox error={changes.error} retry={() => changes.refetch()} />
-        {changes.data && (changes.data.items.length ? changes.data.items.map(item => <article className="mini-change" key={item.id}>
-          <div><Link to={`/changes/${item.id}`}><h3>{item.title}</h3></Link>
-            <dl className="publication-facts">
-              <div><dt>Что было</dt><dd>{item.problem}</dd></div>
-              <div><dt>Что изменили</dt><dd>{item.change}</dd></div>
-              <div><dt>Результат</dt><dd>{item.result}</dd></div>
-              <div><dt>Как проверили</dt><dd>{item.method}</dd></div>
-            </dl>
-            {item.verificationOutcome && <Chip value={item.verificationOutcome} />}
-            {item.isSynthetic && <small className="demo-indicator">Демонстрационный пример</small>}
-          </div></article>) : <Empty title="Публикаций пока нет" />)}
-      </Section>
-    </div>
-  </div>;
+  return <div className="home-compose"><h1 className="sr-only">Главная</h1><AppealComposer /></div>;
 }
 
-const queueTabs = [['mine', 'Мои задачи'], ['all', 'Все'], ['overdue', 'Просроченные']] as const;
-const additionalTabs = [['new', 'Новые / без назначения'], ['waiting', 'Ждут автора'], ['risk', 'Под риском'], ['stale', 'Без активности'], ['urgent', 'Срочно'], ['attention-mine', 'Нужно моё действие']] as const;
+const queueTabs = [['mine', 'Мои задачи'], ['in-progress', 'В работе'], ['waiting', 'Ждут автора'], ['review-result', 'Ожидают проверки'], ['overdue', 'Просроченные'], ['all', 'Все']] as const;
+const additionalTabs = [['unassigned', 'Без маршрута'], ['new', 'Новые / без назначения'], ['risk', 'Под риском'], ['stale', 'Без активности'], ['urgent', 'Срочно'], ['attention-mine', 'Нужно моё действие']] as const;
 const filterKeys = ['q', 'status', 'type', 'priority', 'categoryId', 'departmentId', 'processId', 'sort', 'from', 'to',
   'normalOnly', 'assigneeId', 'dueFrom', 'dueTo', 'metric', 'origin', 'evidence'];
 
@@ -104,7 +63,7 @@ export function AppealChannels({ staff = false }: { staff?: boolean }) {
   const location = useLocation();
   const tabs = staff ? [['/work-queue', 'Очередь'], ['/customer-reviews', 'Клиентские отзывы']] :
     [['/my/appeals', 'Мои обращения'], ['/proposals', 'Предложения подразделения']];
-  if (!user.departmentId || (!staff && user.role === 'ADMIN')) return null;
+  if (!user.departmentId || user.role === 'DIRECTOR' || (!staff && user.role === 'ADMIN')) return null;
   return <nav className="context-links" aria-label={staff ? 'Каналы обратной связи' : 'Обращения и предложения'}>
     {tabs.map(([to, title]) => <NavLink key={to} to={typeof location.state?.returnTo === 'string' && location.state.returnTo.startsWith(to + '?') ? location.state.returnTo : to}
       state={{ returnTo: location.pathname + location.search }}>{title}</NavLink>)}
@@ -118,7 +77,7 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
   const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
   const assignees = useQuery({ queryKey: ['appeal-assignees'], enabled: staff,
     queryFn: () => api<{ id: string; name: string }[]>('/work-queue/assignees') });
-  const defaultTab = user.role === 'HANDLER' ? 'mine' : 'all';
+  const defaultTab = user.role === 'HANDLER' || user.role === 'MANAGER' ? 'mine' : 'all';
   const tab = params.get('tab') ?? (params.size ? 'all' : defaultTab);
   const page = Number(params.get('page')) || 1;
   const filter = Object.fromEntries(filterKeys.map(key => [key, params.get(key) ?? undefined]));
@@ -141,8 +100,11 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
   const back = staff && typeof previous === 'string' && previous.split('?')[0] === '/overview' ? { to: previous, label: 'Обзор' } : undefined;
   return <><PageHeading back={back} title={staff ? user.role === 'MANAGER' ? 'Обращения' : 'Очередь' : 'Мои обращения'} />
     <AppealChannels staff={staff} />
+    {!staff && <JoinedAppeals />}
     {staff && <nav className="tab-strip" aria-label="Представления очереди">{queueTabs.map(([key, title]) =>
-      <button type="button" aria-pressed={tab === key} key={key} onClick={() => apply('tab', key)}>{title}</button>)}</nav>}
+      <button type="button" aria-pressed={tab === key} key={key} onClick={() => apply('tab', key)}>{title}</button>)}
+      {user.permissions.includes('ROUTING_COORDINATOR') && <button type="button" aria-pressed={tab === 'unassigned'} onClick={() => apply('tab', 'unassigned')}>Без маршрута</button>}
+    </nav>}
     <div className="surface filter-bar">
       <label className="search-field"><Search size={18} aria-hidden="true" /><span className="sr-only">Поиск по обращениям</span><input placeholder="Поиск по номеру или тексту" value={filter.q ?? ''} onChange={event => apply('q', event.target.value)} maxLength={150} /></label>
       <button type="button" className="button secondary" aria-expanded={filtersOpen} aria-controls="appeal-filters" onClick={() => setFiltersOpen(!filtersOpen)}>
@@ -188,190 +150,13 @@ export function AppealList({ staff = false }: { staff?: boolean }) {
   </>;
 }
 
-const draftFields = z.object({
-  type: z.enum(appealTypes), description: z.string().max(10000), title: z.string().max(180),
-  categoryId: z.string(), processId: z.string(), proposedSolution: z.string().max(10000),
-  visibility: z.enum(visibilities),
-});
-const draftSchema = draftFields.extend({
-  description: z.string().trim().min(5, 'Опишите ситуацию хотя бы в нескольких словах.').max(10000),
-  title: z.string().trim().max(180).refine(value => !value || value.length >= 3, 'Введите не менее 3 символов.'),
-  proposedSolution: draftFields.shape.proposedSolution.refine(value => !value.trim() || value.trim().length >= 5, 'Опишите решение хотя бы в нескольких словах.'),
-});
-type Draft = z.infer<typeof draftSchema>;
-const storedDraft = z.object({
-  values: draftFields.partial(),
-  step: z.union([z.literal(1), z.literal(2)]).default(1),
-  attachments: z.array(z.object({ id: z.uuid(), name: z.string(), bytes: z.number(), mediaType: z.string() })).max(5).default([]),
-  attempts: z.array(z.tuple([z.string(), z.uuid()])).max(5).default([]),
-});
-type StoredDraft = z.output<typeof storedDraft>;
-function restoreDraft(key: string): StoredDraft {
-  try {
-    const raw = JSON.parse(sessionStorage.getItem(key) ?? '{}');
-    const envelope = storedDraft.safeParse(raw);
-    if (envelope.success) return envelope.data;
-    return storedDraft.parse({ values: draftFields.partial().parse(raw) });
-  } catch { return storedDraft.parse({ values: {} }); }
-}
-
-function persistDraft(key: string, draft: StoredDraft, catalog?: Catalog) {
-  const category = draft.values.categoryId;
-  try {
-    if (draft.values.visibility !== 'NORMAL_INTERNAL' || catalog?.categories.some(row => row.id === category && row.sensitive)) {
-      sessionStorage.removeItem(key);
-    } else if (!category || catalog?.categories.some(row => row.id === category)) {
-      sessionStorage.setItem(key, JSON.stringify(draft));
-    }
-  } catch { /* storage may be unavailable */ }
-}
-
-export function NewAppeal() {
-  const { user } = useSession();
-  const [params] = useSearchParams();
-  const navigate = useNavigate();
-  const client = useQueryClient();
-  const key = `modus-draft:${user.id}`;
-  const catalog = useQuery({ queryKey: ['catalog'], queryFn: () => api<Catalog>('/catalog') });
-  const ai = useQuery({ queryKey: ['ai'], queryFn: () => api<{ available: boolean }>('/ai/capabilities') });
-  const selected = z.enum(appealTypes).safeParse(params.get('type'));
-  const [initialDraft] = useState(() => restoreDraft(key));
-  const [step, setStep] = useState(initialDraft.step);
-  const [attachments, setAttachments] = useState<Attachment[]>(initialDraft.attachments);
-  const [showConsent, setShowConsent] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
-  const form = useForm<Draft>({ resolver: zodResolver(draftSchema), defaultValues: {
-    type: 'PROBLEM', description: '', title: '', categoryId: '', processId: '', proposedSolution: '', visibility: 'NORMAL_INTERNAL',
-    ...initialDraft.values, ...(selected.success ? { type: selected.data } : {}),
-  } });
-  const { errors } = form.formState;
-  const type = form.watch('type');
-  const visibility = form.watch('visibility');
-  const categoryId = form.watch('categoryId');
-  const category = catalog.data?.categories.find(item => item.id === categoryId);
-  const isConfidential = visibility !== 'NORMAL_INTERNAL' || (!!categoryId && (!category || category.sensitive));
-  const submitted = useRef(new Map(initialDraft.attempts));
-  const completed = useRef(false);
-
-  useEffect(() => {
-    const save = () => {
-      if (!completed.current) persistDraft(key, { values: form.getValues(), step, attachments, attempts: [...submitted.current] }, catalog.data);
-    };
-    save();
-    const subscription = form.watch(save);
-    return () => subscription.unsubscribe();
-  }, [form, key, catalog.data, step, attachments]);
-
-  useEffect(() => {
-    function beforeUnload(event: BeforeUnloadEvent) {
-      if (!completed.current && (form.getValues('description') || attachments.length)) { event.preventDefault(); }
-    }
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [form, attachments.length]);
-
-  const create = useMutation({ mutationFn: async (draft: Draft) => {
-    const { title, categoryId, processId, proposedSolution, ...required } = draft;
-    const body = { ...required, title: title || undefined, categoryId: categoryId || undefined, processId: processId || undefined,
-      proposedSolution: proposedSolution.trim() || undefined, attachmentIds: attachments.map(item => item.id) };
-    const bytes = new TextEncoder().encode(JSON.stringify(body));
-    const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
-    const attemptKey = submitted.current.get(fingerprint) ?? crypto.randomUUID();
-    submitted.current.delete(fingerprint);
-    submitted.current.set(fingerprint, attemptKey);
-    const attempts = [...submitted.current].slice(-5);
-    submitted.current = new Map(attempts);
-    persistDraft(key, { values: form.getValues(), step, attachments, attempts }, catalog.data);
-    return api<{ id: string }>('/appeals', { method: 'POST', body, key: attemptKey });
-  }, onSuccess: result => {
-    completed.current = true;
-    try { sessionStorage.removeItem(key); } catch { /* storage may be unavailable */ }
-    void client.invalidateQueries({ queryKey: ['appeals'] });
-    navigate(`/appeals/${result.id}`, { state: { created: true } });
-  } });
-  const upload = useMutation({ mutationFn: uploadAttachment, onSuccess: result => setAttachments(items => [...items, result]) });
-  const assist = useMutation({ mutationFn: () => api<{ usageId: string; suggestion: { title: string; type: Draft['type']; categoryId: string | null; rephrasedDescription: string; followUpQuestions: string[] }; truncated?: boolean }>('/ai/appeal-assist', {
-    method: 'POST', body: { consent: true, text: form.getValues('description'), visibility, categoryId: categoryId || undefined },
-  }) });
-  const acceptSuggestion = useMutation({ mutationFn: async (selection: FormData | null) => {
-    if (!assist.data) return;
-    const { usageId, suggestion } = assist.data;
-    await api(`/ai/usage/${usageId}/decision`, { method: 'POST', body: { decision: selection ? 'APPLIED' : 'DISMISSED' } });
-    if (selection?.has('title')) form.setValue('title', suggestion.title, { shouldValidate: true });
-    if (selection?.has('description')) form.setValue('description', suggestion.rephrasedDescription, { shouldValidate: true });
-    if (selection?.has('type')) form.setValue('type', suggestion.type, { shouldValidate: true });
-    if (selection?.has('category') && suggestion.categoryId) form.setValue('categoryId', suggestion.categoryId, { shouldValidate: true });
-  }, onSuccess: () => setShowConsent(false) });
-  const suggestedCategory = catalog.data?.categories.find(row => row.id === assist.data?.suggestion.categoryId && !row.sensitive);
-  return <><PageHeading title="Новое обращение" subtitle="Опишите ситуацию. Мы направим её ответственному сотруднику." back={{ to: '/my/appeals', label: 'Мои обращения' }} />
-    <div className="compose-grid"><div className="surface compose-panel">
-      <ol className="stepper"><li className={step === 1 ? 'active' : 'done'}><span>{step > 1 ? <CheckCircle2 size={16} /> : 1}</span> Суть обращения</li>
-        <li className={step === 2 ? 'active' : ''}><span>2</span> Детали и отправка</li></ol>
-      <form className="form-stack" onSubmit={event => { event.preventDefault(); if (step === 1) void form.trigger(['type', 'description']).then(ok => { if (ok) setStep(2); });
-        else void form.handleSubmit(() => setShowPreview(true))(); }}>
-        {step === 1 ? <><fieldset className="type-select"><legend>Тип обращения</legend>{kinds.map(({ code, icon: Icon, tone }) =>
-          <label key={code} className={type === code ? 'selected' : ''}><input type="radio" value={code} {...form.register('type')} /><span className={`kind-icon ${tone}`}><Icon size={18} /></span>{label(code)}</label>)}</fieldset>
-          <Field label="Что вы хотите сообщить?" hint="Укажите, где и когда это происходит, если это важно." error={errors.description?.message}><textarea rows={7} placeholder="Опишите ситуацию своими словами…" {...form.register('description')} /></Field>
-          <div className="form-actions"><button type="submit" className="button primary">Продолжить <ArrowRight size={17} /></button></div>
-        </> : <>
-          <Field label="Заголовок" hint="Можно оставить пустым. Система возьмёт первые слова из описания." error={errors.title?.message}><input {...form.register('title')} placeholder="Коротко о главном" /></Field>
-          {ai.data?.available && !isConfidential ? <button className="button subtle self-start" type="button" onClick={() => { assist.reset(); acceptSuggestion.reset(); setShowConsent(true); }}><Sparkles size={16} /> Подсказать заголовок</button>
-            : <small className="subtle-text">{isConfidential ? 'Для конфиденциальных обращений доступны ручные правки.' : 'Заполните детали вручную.'}</small>}
-          <div className="two-fields">
-            <Field label="Категория"><select {...form.register('categoryId')}><EntityOptions rows={catalog.data?.categories ?? []} blank="Не выбрана" /></select></Field>
-            <Field label="Рабочий процесс"><select {...form.register('processId')}><EntityOptions rows={catalog.data?.processes ?? []} blank="Не выбран" /></select></Field>
-          </div>
-          <Field label="Ваш вариант решения" error={errors.proposedSolution?.message}><textarea rows={3} {...form.register('proposedSolution')} placeholder="Если есть, опишите здесь" /></Field>
-          <Field label="Доступ" hint={category?.sensitive ? 'Эта категория будет направлена в специальную очередь.' : 'Ваше имя сохраняется в системе.'}>
-            <select {...form.register('visibility')}><Options items={visibilities} /></select></Field>
-          <Field label="Вложения" hint="До 5 файлов по 5 МБ. PDF, PNG, JPEG или TXT.">
-            <input type="file" aria-label="Вложения" accept=".pdf,.png,.jpg,.jpeg,.txt" disabled={upload.isPending || attachments.length >= 5} onChange={event => {
-              const selected = event.currentTarget.files?.[0]; if (selected) upload.mutate(selected); event.currentTarget.value = '';
-            }} />
-          </Field>
-          {upload.isPending && <span role="status">Загружаем файл…</span>}<ErrorBox error={upload.error || catalog.error} />
-          {attachments.map(item => <div className="file-line" key={item.id}><Paperclip size={16} />{item.name}
-            <button type="button" className="icon-button" aria-label={`Убрать ${item.name}`} onClick={() => setAttachments(rows => rows.filter(row => row.id !== item.id))}><X size={16} /></button></div>)}
-          <div className="form-actions split"><button className="button secondary" type="button" onClick={() => setStep(1)}><ArrowLeft size={16} /> Назад</button>
-            <button className="button primary" disabled={upload.isPending} type="submit">Проверить и отправить <ArrowRight size={17} /></button></div>
-        </>}
-      </form>
-    </div><aside className="surface compose-aside"><span className="kind-icon mint"><ShieldCheck size={22} /></span>
-      <h2>Кто увидит обращение</h2><p>Вы и сотрудники, отвечающие за рассмотрение в рамках выданных полномочий.</p>
-      <p>Для чувствительных тем можно выбрать ограниченный доступ. Если категория не выбрана, обращение получит координатор резервной очереди.</p></aside></div>
-    {showConsent && <Modal title="Подсказка Groq" close={() => { if (!acceptSuggestion.isPending) setShowConsent(false); }}
-      description="С вашего согласия описание и список обычных категорий будут переданы внешнему сервису. Проверьте, что в тексте нет конфиденциальных сведений.">
-      <ErrorBox error={assist.error} />
-      {assist.data ? <ActionForm pending={acceptSuggestion.isPending} error={acceptSuggestion.error} submit="Применить выбранное"
-        onSubmit={selection => { if (Array.from(selection.keys()).length) acceptSuggestion.mutate(selection); }}>
-        {assist.data.truncated && <small>Часть входных данных была сокращена.</small>}
-        <label className="checkbox-line"><input type="checkbox" name="title" defaultChecked /> Заголовок «{assist.data.suggestion.title}»</label>
-        <label className="checkbox-line"><input type="checkbox" name="type" /> Тип «{label(assist.data.suggestion.type)}»</label>
-        {suggestedCategory && <label className="checkbox-line"><input type="checkbox" name="category" /> Категория «{suggestedCategory.name}»</label>}
-        <div><h3>Текущее описание</h3><p className="preserve">{form.getValues('description')}</p></div>
-        <label className="checkbox-line"><input type="checkbox" name="description" /> Использовать предложенное описание</label>
-        <p className="preserve">{assist.data.suggestion.rephrasedDescription}</p>
-        {assist.data.suggestion.followUpQuestions.map((question, index) => <small key={index}>{question}</small>)}
-        <button className="button subtle self-start" type="button" disabled={acceptSuggestion.isPending}
-          onClick={() => acceptSuggestion.mutate(null)}>Оставить свой текст</button>
-      </ActionForm> :
-        <button className="button primary" disabled={assist.isPending} onClick={() => assist.mutate()}>{assist.isPending ? 'Получаем подсказку…' : 'Отправить описание в Groq'}</button>}
-    </Modal>}
-    {showPreview && <Modal title="Проверка обращения" close={() => { if (!create.isPending) setShowPreview(false); }}><div className="form-stack">
-      <div className="inline-chips"><Chip value={form.getValues('type')} /><Chip value={category?.sensitive ? 'SPECIAL' : visibility} /></div>
-      <h3>{form.getValues('title') || 'Заголовок будет сформирован из описания'}</h3><p className="preserve">{form.getValues('description')}</p>
-      {attachments.length > 0 && <small>Вложений: {attachments.length}</small>}
-      <ErrorBox error={create.error} /><button className="button primary" disabled={create.isPending} onClick={() => void form.handleSubmit(values => create.mutate(values))()}>
-        <Send size={17} />{create.isPending ? 'Отправляем…' : 'Отправить обращение'}</button>
-    </div></Modal>}
-  </>;
-}
-
 const actionNames: Record<string, string> = {
   REVIEW: 'Взять на рассмотрение', IN_PROGRESS: 'В работу', RESUME: 'Возобновить рассмотрение', CLARIFICATION: 'Запросить уточнение',
   AUTHOR_RESPONSE: 'Ответить на уточнение', RESOLVE: 'Закрыть с решением', WITHDRAW: 'Отозвать обращение',
   REVIEW_REQUEST: 'Запросить пересмотр', REVIEW_DECISION: 'Рассмотреть запрос', ASSIGN: 'Назначить ответственного', REROUTE: 'Перенаправить', EDIT: 'Редактировать',
   CREATE_PROBLEM: 'Создать проблему', CREATE_IMPROVEMENT: 'Создать улучшение',
+  SHARE_TOPIC: 'Опубликовать общую тему',
+  SET_RESOLUTION_DEADLINE: 'Изменить срок решения',
 };
 
 export function LinkCards({ items, onChanged }: { items: LinkRow[]; onChanged?: () => void }) {
@@ -468,6 +253,7 @@ function AppealDetailContent() {
   const [targetSearch, setTargetSearch] = useState('');
   const [targetPage, setTargetPage] = useState(1);
   const [notice, setNotice] = useState('');
+  const [returning, setReturning] = useState(false);
   const record = query.data;
   const recordId = record?.id;
   useEffect(() => {
@@ -508,15 +294,49 @@ function AppealDetailContent() {
     setAction(null);
     setNotice('Маршрут обновлён.');
   } });
+  const share = useMutation({ mutationFn: (data: FormData) => api(`/intake/shared/${id}/publish`, {
+    method: 'POST', body: { expectedVersion: actionVersion, title: optional(data, 'sharedTitle') ?? null },
+  }), onSuccess: () => {
+    void query.refetch();
+    setAction(null);
+    setNotice('Общая тема обновлена.');
+  } });
+  const reviewResult = useMutation({ mutationFn: (input: { confirm: boolean; reason?: string }) =>
+    api<Appeal>(`/appeals/${id}/result-review`, { method: 'POST', body: { expectedVersion: record?.resolutionVersion, ...input } }),
+  onSuccess: (item, { confirm }) => {
+    client.setQueryData(['appeal', id], item);
+    void client.invalidateQueries({ queryKey: ['appeals'] });
+    setReturning(false);
+    setNotice(confirm ? 'Результат подтверждён.' : 'Обращение возвращено в работу.');
+  } });
+  const deadline = useMutation({ mutationFn: (data: FormData) =>
+    api<Appeal>(`/appeals/${id}/resolution-deadline`, { method: 'POST', body: {
+      expectedVersion: actionVersion, dueAt: timestamp(data, 'dueAt') ?? null, reason: field(data, 'text'),
+    } }),
+  onSuccess: item => {
+    client.setQueryData(['appeal', id], item);
+    void client.invalidateQueries({ queryKey: ['appeals'] });
+    setAction(null);
+    setNotice('Срок решения обновлён.');
+  } });
   if (!record) return <><PageHeading title="Обращение" />{query.isPending ? <Loading /> : <ErrorBox error={query.error} retry={() => query.refetch()} />}</>;
-  const { timing } = record;
   const can = (key: string) => record.allowedActions.includes(key);
-  const saving = update.isPending || reroute.isPending;
+  const saving = update.isPending || reroute.isPending || share.isPending || reviewResult.isPending || deadline.isPending;
   const awaitingAnswer = can('AUTHOR_RESPONSE');
   const sideActions = record.allowedActions.filter(item => actionNames[item] && item !== 'EDIT' && item !== 'AUTHOR_RESPONSE');
+  const primaryByStatus: Record<string, string[]> = {
+    NEW: ['REVIEW'], REVIEW: ['IN_PROGRESS'], IN_PROGRESS: ['RESOLVE'], WAITING_AUTHOR: ['RESUME'],
+  };
+  const primary = ['REVIEW_DECISION', ...(primaryByStatus[record.status] ?? [])].find(item => sideActions.includes(item));
+  const clarify = sideActions.includes('CLARIFICATION');
+  const secondary = sideActions.filter(item => item !== primary && item !== 'CLARIFICATION' && !['CREATE_PROBLEM', 'SHARE_TOPIC'].includes(item));
+  const linkedReviews = staff && record.visibility === 'NORMAL_INTERNAL' && record.departmentId &&
+    record.departmentId === user.departmentId && record.isSynthetic === user.demo;
   const openAction = (operation: string) => {
     update.reset();
     reroute.reset();
+    share.reset();
+    deadline.reset();
     setNotice('');
     setActionVersion(record.version);
     if (operation === 'RESOLVE') setResolution(record.status === 'WAITING_AUTHOR' ? 'INSUFFICIENT_INFO' : 'RESOLVED');
@@ -528,8 +348,11 @@ function AppealDetailContent() {
     setActionVersion(result.data.version);
     update.reset();
     reroute.reset();
+    share.reset();
+    deadline.reset();
   };
-  const next = record.routingPending ? nextActionLabels.ROUTING : nextActionText({ ...record, nextActionKind: record.nextAction?.kind });
+  const next = record.status === 'IMPLEMENTED' ? 'Проверка результата автором' :
+    record.routingPending ? nextActionLabels.ROUTING : nextActionText({ ...record, nextActionKind: record.nextAction?.kind });
   const nextDue = record.nextAction ? record.nextAction.dueAt : record.controlDueAt;
   const plain = ['REVIEW', 'IN_PROGRESS'].includes(action ?? '') && record.status !== 'IN_PROGRESS';
   const fromQueue = location.pathname.startsWith('/work-queue/');
@@ -541,19 +364,50 @@ function AppealDetailContent() {
   return <><PageHeading title={record.title} subtitle={`${record.number} · ${label(record.type)} · ${date(record.createdAt)}`}
     back={{ to: backTo, label: fromOverview ? 'Обзор' : fromQueue || previousPath === '/work-queue' ? 'Очередь' : 'Мои обращения' }}
     action={<Chip value={record.status} />} />
-    {notice && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice}</div>}
+    {(notice || location.state?.created) && <div className="success-box" role="status"><CheckCircle2 size={18} />{notice || `Обращение ${record.number} зарегистрировано.`}</div>}
     {record.routingPending && <div className="success-box" role="status">Обращение зарегистрировано. Назначение будет повторено автоматически.</div>}
-    <div className="detail-grid"><div className="detail-main">
+    <div className="appeal-reading"><div className="detail-main">
       <Section title="Об обращении" icon={<FileText size={18} />} action={can('EDIT') ? <button className="text-button" disabled={saving} onClick={() => openAction('EDIT')}>Редактировать</button> : undefined}>
         <div className="inline-chips"><Chip value={record.priority} />{record.visibility !== 'NORMAL_INTERNAL' && <Chip value={record.visibility} />}</div>
         <p className="preserve detail-text">{record.description}</p>
         {record.proposedSolution && <><h3>Предложенное решение</h3><p className="preserve">{record.proposedSolution}</p></>}
         {record.attachments.map(file => <a className="file-line" key={file.id} href={`/api/v1/attachments/${file.id}/download`}><Paperclip size={16} />{file.name}<small>{Math.max(1, Math.ceil(file.bytes / 1024))} КБ</small></a>)}
+      <div id="appeal-actions" className="appeal-workflow" tabIndex={-1}>
+        <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
+          <div><dt>Срок следующего шага</dt><dd>{nextDue ? date(nextDue, true) : 'Срок не задан'}</dd></div>
+          <div><dt>Первый ответ</dt><dd>{record.firstHumanResponseAt ? date(record.firstHumanResponseAt, true) : record.firstResponseDueAt ? `до ${date(record.firstResponseDueAt, true)}` : 'Срок не задан'}</dd></div>
+          <div><dt>Срок решения</dt><dd>{record.resolutionDueAt ? date(record.resolutionDueAt, true) : 'Срок не задан'}</dd></div>
+          <div><dt>Автор</dt><dd>{record.author?.name ?? 'Анонимно'}</dd></div>
+          {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
+        <div className="appeal-workflow-actions">
+        {primary && <button className="button primary" disabled={saving} onClick={() => openAction(primary)}>{actionNames[primary]}</button>}
+        {clarify && <button className="button secondary" disabled={saving} onClick={() => openAction('CLARIFICATION')}>Запросить уточнение</button>}
+        {secondary.length > 0 && <details className="appeal-actions-menu">
+          <summary>Другие действия</summary>
+          <div className="side-actions">
+            {secondary.map(item => item === 'CREATE_IMPROVEMENT' ?
+              <Link key={item} className="button secondary" to={`/improvements/new?appealId=${record.id}`}>{actionNames[item]}</Link> :
+              <button key={item} className="button secondary" disabled={saving} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
+          </div>
+        </details>}
+        </div>
+      </div>
       </Section>
       {record.resolutionText && <Section title="Итог рассмотрения" icon={<CheckCircle2 size={18} />} className="resolution-section">
-        {record.resolutionType && <Chip value={record.resolutionType} />}{record.resolutionOrigin === 'DEMO_FIXTURE' && <small>Демонстрационный пример решения</small>}<p className="preserve">{record.resolutionText}</p><small>{date(record.closedAt, true)}</small>
+        {record.resolutionType && <Chip value={record.resolutionType} />}{record.resolutionOrigin === 'DEMO_FIXTURE' && <small>Демонстрационный пример решения</small>}
+        <p className="preserve">{record.resolutionText}</p>{record.closedAt && <small>{date(record.closedAt, true)}</small>}
+        {record.resolutionConfirmedAt && <p>Автор подтвердил результат {date(record.resolutionConfirmedAt, true)}.</p>}
+        {can('CONFIRM_RESULT') && <div className="form-actions">
+          <button className="button primary" disabled={saving} onClick={() => reviewResult.mutate({ confirm: true })}>Подтвердить результат</button>
+          <button className="button secondary" disabled={saving} onClick={() => setReturning(value => !value)}>Вернуть на доработку</button>
+        </div>}
+        {returning && can('RETURN_RESULT') && <ActionForm pending={reviewResult.isPending} submit="Отправить на доработку"
+          onSubmit={data => reviewResult.mutate({ confirm: false, reason: field(data, 'reason') })}>
+          <Field label="Что нужно доработать"><textarea name="reason" minLength={5} maxLength={10000} required /></Field>
+        </ActionForm>}
+        <ErrorBox error={reviewResult.error} retry={() => query.refetch()} />
       </Section>}
-      <Section id="appeal-dialogue" title="Диалог" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
+      <Section id="appeal-dialogue" title="Обсуждение" icon={<MessageCircle size={18} />} action={awaitingAnswer ?
         <button className="button primary" disabled={saving} onClick={() => openAction('AUTHOR_RESPONSE')}>{actionNames.AUTHOR_RESPONSE}</button> : undefined}>
         {staff && <div className="tab-strip compact-tabs"><button aria-pressed={!notes} onClick={() => setNotes(false)}>Переписка с автором</button><button aria-pressed={notes} onClick={() => setNotes(true)}>Служебные заметки</button></div>}
         {!notes && record.authorId === null && <StaffAnonymousThread appealId={record.id} />}
@@ -568,32 +422,13 @@ function AppealDetailContent() {
           <button className={`button ${notes ? 'secondary' : 'primary'} self-start`} disabled={saving}><Send size={16} />{notes ? 'Сохранить служебную заметку' : 'Отправить сообщение'}</button>
         </form>}
       </Section>
-      {staff && record.visibility === 'NORMAL_INTERNAL' && <RelatedAppeals record={record} reload={() => void query.refetch()} />}
-      {staff && record.visibility === 'NORMAL_INTERNAL' && can('EDIT') && <AppealTriage record={record} />}
-      {staff && record.visibility === 'NORMAL_INTERNAL' && record.departmentId && record.departmentId === user.departmentId &&
-        record.isSynthetic === user.demo && <LinkedReviews target="appeal" targetId={record.id} />}
-      {timing && <Section title="Время рассмотрения" icon={<Clock3 size={18} />}>
-        <dl className="facts"><div><dt>Активное время</dt><dd>{Math.floor(timing.activeSeconds / 60)} мин</dd></div>
-          <div><dt>Ожидание автора</dt><dd>{Math.floor(timing.waitingSeconds / 60)} мин</dd></div></dl>
-        {timing.periods.length > 0 && <details><summary>Последние периоды</summary><ul>
-          {timing.periods.map(period => <li key={period.startedAt}>{period.phase === 'ACTIVE' ? 'Рассмотрение' : 'Ожидание автора'} · {date(period.startedAt, true)} — {period.endedAt ? date(period.endedAt, true) : 'сейчас'}</li>)}
-        </ul></details>}
-      </Section>}
-      <Section title="История" icon={<Clock3 size={18} />}><Timeline items={record.events} /></Section>
-    </div><aside className="detail-side">
-      <Section id="appeal-actions" title="Следующий шаг" icon={<ArrowRight size={18} />}>
-        <dl className="facts"><div><dt>Действие</dt><dd>{next}</dd></div><div><dt>Ответственный</dt><dd>{record.status === 'WAITING_AUTHOR' ? 'Автор обращения' : record.assignee?.name ?? record.queue?.name ?? 'Служба обработки'}</dd></div>
-          <div><dt>Срок</dt><dd>{nextDue ? date(nextDue, true) : 'Срок не задан'}</dd></div>
-          {record.category && <div><dt>Категория</dt><dd>{record.category.name}</dd></div>}{record.process && <div><dt>Процесс</dt><dd>{record.process.name}</dd></div>}</dl>
-        {!!record.nextActionHistory?.length && <details><summary>История следующих действий</summary><ul>
-          {record.nextActionHistory.map((step, index) => <li key={index}>{date(step.assignedAt, true)} · {nextActionLabels[step.kind] ?? step.kind}</li>)}
-        </ul></details>}
-        {sideActions.length > 0 && <div className="side-actions">
-          {sideActions.map(item => item === 'CREATE_PROBLEM' || item === 'CREATE_IMPROVEMENT' ?
-            <Link key={item} className="button secondary" to={`/${item === 'CREATE_PROBLEM' ? 'problems' : 'improvements'}/new?appealId=${record.id}`}>{actionNames[item]}</Link> :
-            <button key={item} className={`button ${item === 'REVIEW' ? 'primary' : 'secondary'}`} disabled={saving} onClick={() => openAction(item)}>{actionNames[item]}</button>)}
-        </div>}
-      </Section>
+      {staff && user.role !== 'DIRECTOR' && record.visibility === 'NORMAL_INTERNAL' && <details className="surface appeal-extra">
+        <summary>Похожие обращения и источники</summary>
+        {can('SHARE_TOPIC') && <button className="button secondary" onClick={() => openAction('SHARE_TOPIC')}>Опубликовать общую тему</button>}
+        <RelatedAppeals record={record} reload={() => void query.refetch()} />
+        {can('EDIT') && <AppealTriage record={record} />}
+        {linkedReviews && <LinkedReviews target="appeal" targetId={record.id} />}
+      </details>}
       {(record.improvements.length > 0 || record.problems.length > 0) && <Section title="Связанные записи">
         {record.problems.map(item => <Link key={item.id} className="inline-reference" to={`/problems/${item.id}`}><small>{item.number}</small>{item.title}</Link>)}
         {record.improvements.map(item => <Link key={item.id} className="inline-reference" to={`/improvements/${item.id}`}><small>{item.number}</small>{item.title}</Link>)}
@@ -608,10 +443,14 @@ function AppealDetailContent() {
         </article>)}
       </Section>}
       {record.reviews.length > 0 && <Section title="Запросы на отзыв и пересмотр">{record.reviews.map(item => <div className="review-row" key={item.id}><strong>{item.kind === 'WITHDRAWAL' ? 'Отзыв' : 'Пересмотр'}</strong><p>{item.reason}</p><small>{item.approved === true ? 'Одобрен. ' : item.approved === false ? 'Отклонён. ' : ''}{item.decision ?? 'Ожидает рассмотрения'}</small></div>)}</Section>}
-    </aside></div>
+    </div></div>
     {action && <Modal title={actionNames[action]} close={() => setAction(null)}>
-      <ActionForm pending={update.isPending || reroute.isPending || (action === 'REROUTE' && !catalog.data)} error={update.error || reroute.error || catalog.error} reload={() => void refreshAction()} submit={plain ? 'Подтвердить' : 'Сохранить'} onSubmit={data => {
-        if (action === 'REROUTE') {
+      <ActionForm pending={saving || (action === 'REROUTE' && !catalog.data)} error={update.error || reroute.error || share.error || deadline.error || catalog.error} reload={() => void refreshAction()} submit={plain ? 'Подтвердить' : 'Сохранить'} onSubmit={data => {
+        if (action === 'SET_RESOLUTION_DEADLINE') {
+          deadline.mutate(data);
+        } else if (action === 'SHARE_TOPIC') {
+          share.mutate(data);
+        } else if (action === 'REROUTE') {
           reroute.mutate(data);
         } else if (action === 'EDIT') {
           update.mutate({ edit: true, data: { title: field(data, 'title'), description: staff ? undefined : field(data, 'description'),
@@ -620,6 +459,13 @@ function AppealDetailContent() {
           relatedId: optional(data, 'relatedId'), assigneeId: action === 'ASSIGN' ? optional(data, 'assigneeId') ?? null : undefined,
           approve: action === 'REVIEW_DECISION' ? field(data, 'decision') === 'yes' : undefined } });
       }}>
+        {action === 'SET_RESOLUTION_DEADLINE' && <Field label="Срок решения (UTC)" hint="Пустое поле снимает срок.">
+          <DatePicker name="dueAt" type="datetime-local" defaultValue={record.resolutionDueAt?.slice(0, 16)} />
+        </Field>}
+        {action === 'SHARE_TOPIC' && <Field label="Название для подразделения"
+          hint="Укажите общую проблему без имён и закрытых подробностей. Пустое поле снимает тему с публикации.">
+          <input name="sharedTitle" maxLength={180} defaultValue={record.sharedTitle ?? ''} />
+        </Field>}
         {action === 'REROUTE' && catalog.data && <>
           <Field label="Категория"><select name="categoryId" defaultValue={record.categoryId ?? ''}><EntityOptions rows={catalog.data.categories} blank="Не выбрана" /></select></Field>
           <Field label="Процесс"><select name="processId" defaultValue={record.processId ?? ''}><EntityOptions rows={catalog.data.processes} blank="Не выбран" /></select></Field>
@@ -641,7 +487,7 @@ function AppealDetailContent() {
             <Field label="Связанная запись"><select name="relatedId" required><EntityOptions rows={(resolution === 'ACCEPTED_FOR_IMPROVEMENT' ? record.improvements : targets.data?.items ?? []).filter(item => item.id !== record.id).map(item => ({ id: item.id, name: `${item.number} · ${item.title}` }))} /></select></Field></>}
           {action === 'ASSIGN' && <Field label="Ответственный"><select name="assigneeId" key={catalog.data?.people.length ?? 0} defaultValue={record.assigneeId ?? ''}><EntityOptions rows={catalog.data?.people ?? []} blank="Координатор очереди" /></select></Field>}
           {action === 'REVIEW_DECISION' && <Field label="Решение"><select name="decision"><option value="yes">Одобрить запрос</option><option value="no">Отклонить запрос</option></select></Field>}
-          {!plain && <Field label={action === 'CLARIFICATION' ? 'Вопрос автору' : action === 'AUTHOR_RESPONSE' ? 'Ваш ответ' : 'Обоснование'}>
+          {!plain && action !== 'SHARE_TOPIC' && <Field label={action === 'CLARIFICATION' ? 'Вопрос автору' : action === 'AUTHOR_RESPONSE' ? 'Ваш ответ' : 'Обоснование'}>
             <textarea name="text" rows={4} required minLength={5} maxLength={10000} /></Field>}
         </>}
       </ActionForm>

@@ -13,16 +13,19 @@ import { eligibleStaff, queueStaff, Routing } from './routing';
 
 const name = shortText;
 const userInput = z.strictObject({ name, email: z.email().max(254), password: z.string().min(12).refine(value => Buffer.byteLength(value, 'utf8') <= 72, 'Пароль должен занимать не более 72 байт.'),
-  role: z.enum(roles), departmentId: id.nullable().optional(), permissions: z.array(z.enum(permissions)).max(8).default([]), active: z.boolean().default(true) });
+  role: z.enum(roles), departmentId: id.nullable().optional(), permissions: z.array(z.enum(permissions)).max(permissions.length).default([]),
+  active: z.boolean().default(true), absentUntil: dateTime.nullable().optional() });
 const ruleInput = z.strictObject({ name, categoryId: id, departmentId: id.nullable().optional(), processId: id.nullable().optional(),
-  queueId: id, assigneeId: id.nullable().optional(), rank: z.number().int().min(0).max(1000).default(100), active: z.boolean().default(true),
+  queueId: id, assigneeId: id.nullable().optional(), deputyId: id.nullable().optional(),
+  rank: z.number().int().min(0).max(1000).default(100), active: z.boolean().default(true),
   effectiveFrom: dateTime.nullable().optional(), effectiveTo: dateTime.nullable().optional() });
 const unitInput = z.strictObject({ name, parentId: id.nullable().optional() });
 const categoryInput = z.strictObject({ name, parentId: id.nullable().optional(), sensitive: z.boolean().default(false) });
 const processInput = z.strictObject({ name });
 const queueInput = z.strictObject({ name, visibility: z.enum(visibilities), fallback: z.boolean().default(false), coordinatorId: id, memberIds: z.array(id).max(100).default([]) });
 const slaInput = z.strictObject({ expectedVersion: expectedVersion.optional(), priority: z.enum(priorities),
-            firstResponseHours: z.number().int().min(1).max(240), nextActionHours: z.number().int().min(1).max(480), active: z.boolean().default(true) });
+            firstResponseHours: z.number().int().min(1).max(240), nextActionHours: z.number().int().min(1).max(480),
+            resolutionHours: z.number().int().min(1).max(1440).nullable().optional(), active: z.boolean().default(true) });
 const previewInput = z.strictObject({ categoryId: id.optional(), departmentId: id.optional(), processId: id.optional(),
       visibility: z.enum(visibilities).default('NORMAL_INTERNAL') });
 const resources = ['users', 'organization-units', 'categories', 'processes', 'work-queues', 'routing-rules', 'sla-policies', 'audit', 'outbox-failures'] as const;
@@ -92,7 +95,7 @@ export class Admin {
   async list(user: Principal, resource: Resource) {
     this.check(user);
     switch (resource) {
-      case 'users': return this.db.user.findMany({ take: 200, orderBy: { name: 'asc' }, select: { ...principalSelect, active: true } });
+      case 'users': return this.db.user.findMany({ take: 200, orderBy: { name: 'asc' }, select: { ...principalSelect, active: true, absentUntil: true } });
       case 'organization-units': return this.db.organizationUnit.findMany({ take: 200, orderBy: { name: 'asc' } });
       case 'categories': return this.db.category.findMany({ take: 200, orderBy: { name: 'asc' } });
       case 'processes': return this.db.businessProcess.findMany({ take: 200, orderBy: { name: 'asc' } });
@@ -240,6 +243,12 @@ export class Admin {
           if (!queue || queue.visibility !== 'NORMAL_INTERNAL') throw invalid('Для обычного правила выберите обычную очередь.');
           if (data.assigneeId && !await tx.user.findFirst({ where: { id: data.assigneeId, ...eligibleStaff(queue.visibility), ...queueStaff(queue.id) }, select: { id: true } })) {
             throw invalid('Назначенный сотрудник должен иметь действующие полномочия в очереди.');
+          }
+          const existing = item && data.deputyId === undefined ? await tx.routingRule.findUnique({ where: { id: item }, select: { deputyId: true } }) : null;
+          const deputyId = data.deputyId === undefined ? existing?.deputyId : data.deputyId;
+          if (deputyId && (deputyId === (data.assigneeId ?? queue.coordinatorId) ||
+            !await tx.user.findFirst({ where: { id: deputyId, ...eligibleStaff(queue.visibility), ...queueStaff(queue.id) }, select: { id: true } }))) {
+            throw invalid('Укажите другого действующего участника очереди в качестве заместителя.');
           }
           result = item ? await tx.routingRule.update({ where: { id: item }, data }) : await tx.routingRule.create({ data });
           break;
